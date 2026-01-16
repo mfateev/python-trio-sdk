@@ -14,6 +14,7 @@ from temporalio_trio.worker._activation import (
     WorkflowStartedJob,
 )
 from temporalio_trio.worker._clock import WorkflowClock
+from temporalio_trio.worker._worker import Worker
 from temporalio_trio.worker._workflow_instance import (
     TrioWorkflowInstance,
     TrioWorkflowRunner,
@@ -23,6 +24,8 @@ from temporalio_trio.worker._workflow_instance import (
 )
 
 __all__ = [
+    # High-level Worker API
+    "Worker",
     # Activation types
     "WorkflowActivation",
     "WorkflowActivationCompletion",

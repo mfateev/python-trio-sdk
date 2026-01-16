@@ -15,6 +15,7 @@ import temporalio.bridge.worker
 import temporalio.converter
 import temporalio.workflow
 import trio
+import trio_asyncio
 
 from temporalio_trio.worker._bridge_types import (
     bridge_to_poc_activation,
@@ -110,8 +111,11 @@ class TrioBridgeWorker:
         try:
             while not self._shutdown_event.is_set():
                 # Poll for activation (this returns a protobuf)
+                # NOTE: Bridge returns asyncio coroutines, so we need trio-asyncio
                 try:
-                    bridge_act = await self._bridge_worker.poll_workflow_activation()
+                    bridge_act = await trio_asyncio.run_aio_coroutine(
+                        self._bridge_worker.poll_workflow_activation()
+                    )
                 except Exception as e:
                     # Check if it's a PollShutdownError (not exported, check by name)
                     if e.__class__.__name__ == "PollShutdownError":
@@ -158,7 +162,9 @@ class TrioBridgeWorker:
                 comp = temporalio.bridge.proto.workflow_completion.workflow_completion_pb2.WorkflowActivationCompletion()
                 comp.run_id = run_id
                 comp.successful.SetInParent()
-                await self._bridge_worker.complete_workflow_activation(comp)
+                await trio_asyncio.run_aio_coroutine(
+                    self._bridge_worker.complete_workflow_activation(comp)
+                )
                 return
 
             # Convert bridge activation to POC activation
@@ -224,9 +230,10 @@ class TrioBridgeWorker:
                 instance = self._runner.create_instance(details)
                 self._instances[run_id] = instance
 
-            # Run activation in a thread for isolation (Phase 3 improvement)
-            # For Phase 1, we'll just call it directly
-            poc_comp = instance.activate(poc_act)
+            # Run activation in a thread for isolation
+            # Each workflow activation runs in its own thread with its own trio.run()
+            # This allows deterministic, isolated execution per workflow
+            poc_comp = await trio.to_thread.run_sync(instance.activate, poc_act)
 
             # Convert POC completion to bridge completion
             bridge_comp = poc_to_bridge_completion(
@@ -234,7 +241,9 @@ class TrioBridgeWorker:
             )
 
             # Send completion to bridge
-            await self._bridge_worker.complete_workflow_activation(bridge_comp)
+            await trio_asyncio.run_aio_coroutine(
+                self._bridge_worker.complete_workflow_activation(bridge_comp)
+            )
 
             logger.debug(f"Completed activation for workflow {run_id}")
 
@@ -246,7 +255,9 @@ class TrioBridgeWorker:
             comp.run_id = run_id
             comp.failed.failure.message = f"Workflow activation failed: {err}"
             comp.failed.failure.stack_trace = ""
-            await self._bridge_worker.complete_workflow_activation(comp)
+            await trio_asyncio.run_aio_coroutine(
+                self._bridge_worker.complete_workflow_activation(comp)
+            )
 
     def shutdown(self) -> None:
         """Initiate graceful shutdown of the worker.
