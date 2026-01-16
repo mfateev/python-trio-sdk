@@ -1,5 +1,6 @@
 """Basic tests for temporalio_trio package."""
 
+import pytest
 import trio
 
 import temporalio_trio
@@ -10,6 +11,7 @@ def test_version() -> None:
     assert temporalio_trio.__version__ == "0.1.0"
 
 
+@pytest.mark.trio
 async def test_trio_works() -> None:
     """Test that trio async tests work."""
     result = []
