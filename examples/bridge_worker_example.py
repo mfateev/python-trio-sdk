@@ -15,7 +15,6 @@ import logging
 
 import temporalio.client
 import trio
-import trio_asyncio
 
 from temporalio_trio import workflow
 from temporalio_trio.worker import Worker
@@ -57,37 +56,47 @@ class TimerWorkflow:
 
 async def run_worker():
     """Run the Trio worker."""
-    # Connect to Temporal server using trio-asyncio to bridge asyncio and Trio
-    # The temporalio client uses asyncio, so we need to run it in an asyncio context
-    async with trio_asyncio.open_loop():
-        client = await trio_asyncio.run_aio_coroutine(
-            temporalio.client.Client.connect("localhost:7233")
-        )
+    # TODO(Phase 1): Once the Rust bridge is fully implemented, create a Trio-native
+    # client connection API. For now, this example shows the intended API structure.
+    #
+    # The current temporalio.client.Client.connect() is asyncio-based.
+    # Phase 1 will implement a Trio-native client that connects via our PyO3 bridge:
+    #
+    # from temporalio_trio.client import Client
+    # client = await Client.connect("localhost:7233")
 
-        # Create Trio worker - API matches the standard SDK Worker!
-        worker = Worker(
-            client,
-            task_queue="trio-example-queue",
-            workflows=[TimerWorkflow],
-        )
+    # For now, this example demonstrates the Worker API structure but won't run
+    # until Phase 1 Rust bridge integration is complete.
+    raise NotImplementedError(
+        "Client connection requires Phase 1 Rust bridge integration. "
+        "The Worker API is ready, but client connection is not yet implemented."
+    )
 
-        logging.info("Starting Trio worker...")
-        logging.info("Use the Temporal CLI to start a workflow:")
-        logging.info(
-            "  temporal workflow start "
-            "--type TimerWorkflow "
-            "--task-queue trio-example-queue "
-            "--input '5.0' "
-            "--workflow-id my-timer-workflow"
-        )
-        logging.info("Press Ctrl+C to stop")
+    # Create Trio worker - API matches the standard SDK Worker!
+    # This part is already implemented and ready to use once client is available
+    worker = Worker(
+        client,  # Will be a Trio-native client from Phase 1
+        task_queue="trio-example-queue",
+        workflows=[TimerWorkflow],
+    )
 
-        try:
-            # Run the worker
-            await worker.run()
-        except KeyboardInterrupt:
-            logging.info("Shutting down...")
-            worker.shutdown()
+    logging.info("Starting Trio worker...")
+    logging.info("Use the Temporal CLI to start a workflow:")
+    logging.info(
+        "  temporal workflow start "
+        "--type TimerWorkflow "
+        "--task-queue trio-example-queue "
+        "--input '5.0' "
+        "--workflow-id my-timer-workflow"
+    )
+    logging.info("Press Ctrl+C to stop")
+
+    try:
+        # Run the worker
+        await worker.run()
+    except KeyboardInterrupt:
+        logging.info("Shutting down...")
+        worker.shutdown()
 
 
 def main():

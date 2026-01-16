@@ -15,8 +15,8 @@ import temporalio.bridge.worker
 import temporalio.converter
 import temporalio.workflow
 import trio
-import trio_asyncio
 
+from temporalio_trio._async_bridge import TrioBridgeWrapper
 from temporalio_trio.worker._bridge_types import (
     bridge_to_poc_activation,
     poc_to_bridge_completion,
@@ -44,7 +44,7 @@ class TrioBridgeWorker:
     5. Sends completions back to the bridge
 
     Args:
-        bridge_worker: Bridge worker instance for polling
+        bridge_wrapper: Bridge wrapper instance for async polling
         namespace: Temporal namespace
         task_queue: Task queue name
         workflows: List of workflow classes to register
@@ -53,14 +53,14 @@ class TrioBridgeWorker:
 
     def __init__(
         self,
-        bridge_worker: temporalio.bridge.worker.Worker,
+        bridge_wrapper: TrioBridgeWrapper,
         namespace: str,
         task_queue: str,
         workflows: Sequence[Type],
         data_converter: temporalio.converter.DataConverter | None = None,
     ) -> None:
         """Initialize the Trio bridge worker."""
-        self._bridge_worker = bridge_worker
+        self._bridge = bridge_wrapper
         self._namespace = namespace
         self._task_queue = task_queue
         self._data_converter = data_converter or temporalio.converter.DataConverter()
@@ -86,13 +86,17 @@ class TrioBridgeWorker:
         """Run the worker until shutdown.
 
         This method:
-        1. Continuously polls for workflow activations
-        2. Dispatches them in parallel using a nursery
-        3. Handles shutdown gracefully
+        1. Starts the bridge wrapper
+        2. Continuously polls for workflow activations
+        3. Dispatches them in parallel using a nursery
+        4. Handles shutdown gracefully
         """
         logger.info(
             f"Starting Trio bridge worker on {self._namespace}/{self._task_queue}"
         )
+
+        # Start the bridge wrapper and capture trio token
+        await self._bridge.start()
 
         async with trio.open_nursery() as nursery:
             # Start the polling loop
@@ -110,12 +114,11 @@ class TrioBridgeWorker:
         """Poll for activations until shutdown."""
         try:
             while not self._shutdown_event.is_set():
-                # Poll for activation (this returns a protobuf)
-                # NOTE: Bridge returns asyncio coroutines, so we need trio-asyncio
+                # Poll for activation using the new async bridge
                 try:
-                    bridge_act = await trio_asyncio.run_aio_coroutine(
-                        self._bridge_worker.poll_workflow_activation()
-                    )
+                    bridge_act_bytes = await self._bridge.poll_workflow_activation()
+                    bridge_act = temporalio.bridge.proto.workflow_activation.workflow_activation_pb2.WorkflowActivation()
+                    bridge_act.ParseFromString(bridge_act_bytes)
                 except Exception as e:
                     # Check if it's a PollShutdownError (not exported, check by name)
                     if e.__class__.__name__ == "PollShutdownError":
@@ -162,9 +165,8 @@ class TrioBridgeWorker:
                 comp = temporalio.bridge.proto.workflow_completion.workflow_completion_pb2.WorkflowActivationCompletion()
                 comp.run_id = run_id
                 comp.successful.SetInParent()
-                await trio_asyncio.run_aio_coroutine(
-                    self._bridge_worker.complete_workflow_activation(comp)
-                )
+                comp_bytes = comp.SerializeToString()
+                await self._bridge.complete_workflow_activation(comp_bytes)
                 return
 
             # Convert bridge activation to POC activation
@@ -241,9 +243,8 @@ class TrioBridgeWorker:
             )
 
             # Send completion to bridge
-            await trio_asyncio.run_aio_coroutine(
-                self._bridge_worker.complete_workflow_activation(bridge_comp)
-            )
+            comp_bytes = bridge_comp.SerializeToString()
+            await self._bridge.complete_workflow_activation(comp_bytes)
 
             logger.debug(f"Completed activation for workflow {run_id}")
 
@@ -255,9 +256,8 @@ class TrioBridgeWorker:
             comp.run_id = run_id
             comp.failed.failure.message = f"Workflow activation failed: {err}"
             comp.failed.failure.stack_trace = ""
-            await trio_asyncio.run_aio_coroutine(
-                self._bridge_worker.complete_workflow_activation(comp)
-            )
+            comp_bytes = comp.SerializeToString()
+            await self._bridge.complete_workflow_activation(comp_bytes)
 
     def shutdown(self) -> None:
         """Initiate graceful shutdown of the worker.
@@ -266,7 +266,7 @@ class TrioBridgeWorker:
         """
         logger.info("Initiating worker shutdown")
         self._shutdown_event.set()
-        self._bridge_worker.initiate_shutdown()
+        self._bridge.initiate_shutdown()
 
     async def finalize_shutdown(self) -> None:
         """Finalize shutdown of the bridge worker.
@@ -274,4 +274,4 @@ class TrioBridgeWorker:
         This must be called after run() completes to properly clean up the bridge.
         """
         logger.info("Finalizing worker shutdown")
-        await self._bridge_worker.finalize_shutdown()
+        await self._bridge.finalize_shutdown()

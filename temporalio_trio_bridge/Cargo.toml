@@ -1,0 +1,21 @@
+[package]
+name = "temporalio-trio-bridge"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "temporalio_trio_bridge"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.25", features = ["extension-module", "abi3-py310"] }
+tokio = { version = "1.26", features = ["full"] }
+parking_lot = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

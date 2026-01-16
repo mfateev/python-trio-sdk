@@ -14,8 +14,8 @@ import temporalio.bridge.worker
 import temporalio.client
 import temporalio.converter
 import trio
-import trio_asyncio
 
+from temporalio_trio._async_bridge import TrioBridgeWrapper
 from temporalio_trio.bridge_worker import TrioBridgeWorker
 
 logger = logging.getLogger(__name__)
@@ -162,7 +162,6 @@ class Worker:
         self._max_concurrent_local_activities = max_concurrent_local_activities or 100
 
         # Internal state
-        self._bridge_worker: Optional[temporalio.bridge.worker.Worker] = None
         self._trio_worker: Optional[TrioBridgeWorker] = None
         self._started = False
         self._shutdown_event = trio.Event()
@@ -196,121 +195,131 @@ class Worker:
 
         self._started = True
 
+        # Create async bridge wrapper
+        bridge_wrapper = TrioBridgeWrapper()
+        await bridge_wrapper.start()
+
         try:
-            # Initialize bridge worker inside trio-asyncio context
-            async with trio_asyncio.open_loop():
-                # Get bridge client
-                bridge_client = self._client.service_client._bridge_client
+            # TODO(Phase 1): Initialize bridge with Temporal client
+            # The actual Rust bridge implementation (Phase 1) will handle:
+            # - Connecting to Temporal via the client
+            # - Creating the core worker with WorkerConfig
+            # - Managing the Tokio runtime for async operations
+            #
+            # For now, we're just setting up the wrapper infrastructure.
+            # Once Phase 1 is complete, uncomment and adapt this section:
+            #
+            # # Get bridge client
+            # bridge_client = self._client.service_client._bridge_client
+            #
+            # # Create bridge worker config
+            # from temporalio.bridge.worker import (
+            #     FixedSizeSlotSupplier,
+            #     PollerBehaviorSimpleMaximum,
+            #     TunerHolder,
+            #     WorkerConfig,
+            #     WorkerTaskTypes,
+            #     WorkerVersioningStrategyNone,
+            # )
+            #
+            # config = WorkerConfig(
+            #     namespace=self._namespace,
+            #     task_queue=self._task_queue,
+            #     versioning_strategy=WorkerVersioningStrategyNone(
+            #         build_id_no_versioning=self._build_id or ""
+            #     ),
+            #     identity_override=self._identity,
+            #     max_cached_workflows=self._max_cached_workflows,
+            #     tuner=TunerHolder(
+            #         workflow_slot_supplier=FixedSizeSlotSupplier(
+            #             num_slots=self._max_concurrent_workflow_tasks
+            #         ),
+            #         activity_slot_supplier=FixedSizeSlotSupplier(
+            #             num_slots=self._max_concurrent_activities
+            #         ),
+            #         local_activity_slot_supplier=FixedSizeSlotSupplier(
+            #             num_slots=self._max_concurrent_local_activities
+            #         ),
+            #         nexus_slot_supplier=FixedSizeSlotSupplier(num_slots=100),
+            #     ),
+            #     workflow_task_poller_behavior=PollerBehaviorSimpleMaximum(
+            #         simple_maximum=self._max_concurrent_workflow_task_polls
+            #     ),
+            #     nonsticky_to_sticky_poll_ratio=self._nonsticky_to_sticky_poll_ratio,
+            #     activity_task_poller_behavior=PollerBehaviorSimpleMaximum(
+            #         simple_maximum=self._max_concurrent_activity_task_polls
+            #     ),
+            #     no_remote_activities=self._no_remote_activities,
+            #     task_types=WorkerTaskTypes(
+            #         enable_workflows=True,
+            #         enable_local_activities=False,
+            #         enable_remote_activities=not self._no_remote_activities,
+            #         enable_nexus=False,
+            #     ),
+            #     sticky_queue_schedule_to_start_timeout_millis=int(
+            #         self._sticky_queue_schedule_to_start_timeout.total_seconds()
+            #         * 1000
+            #     ),
+            #     max_heartbeat_throttle_interval_millis=int(
+            #         self._max_heartbeat_throttle_interval.total_seconds() * 1000
+            #     ),
+            #     default_heartbeat_throttle_interval_millis=int(
+            #         self._default_heartbeat_throttle_interval.total_seconds() * 1000
+            #     ),
+            #     max_activities_per_second=self._max_activities_per_second,
+            #     max_task_queue_activities_per_second=self._max_task_queue_activities_per_second,
+            #     graceful_shutdown_period_millis=int(
+            #         self._graceful_shutdown_timeout.total_seconds() * 1000
+            #     ),
+            #     nondeterminism_as_workflow_fail=False,
+            #     nondeterminism_as_workflow_fail_for_types=set(),
+            #     nexus_task_poller_behavior=PollerBehaviorSimpleMaximum(
+            #         simple_maximum=5
+            #     ),
+            #     plugins=[],
+            # )
+            #
+            # # Initialize bridge wrapper with client and config
+            # await bridge_wrapper.initialize_with_client(
+            #     bridge_client, config
+            # )
 
-                # Create bridge worker config
-                from temporalio.bridge.worker import (
-                    FixedSizeSlotSupplier,
-                    PollerBehaviorSimpleMaximum,
-                    TunerHolder,
-                    WorkerConfig,
-                    WorkerTaskTypes,
-                    WorkerVersioningStrategyNone,
-                )
+            # TODO(Phase 1): Validate bridge connection
+            # await bridge_wrapper.validate()
 
-                config = WorkerConfig(
-                    namespace=self._namespace,
-                    task_queue=self._task_queue,
-                    versioning_strategy=WorkerVersioningStrategyNone(
-                        build_id_no_versioning=self._build_id or ""
-                    ),
-                    identity_override=self._identity,
-                    max_cached_workflows=self._max_cached_workflows,
-                    tuner=TunerHolder(
-                        workflow_slot_supplier=FixedSizeSlotSupplier(
-                            num_slots=self._max_concurrent_workflow_tasks
-                        ),
-                        activity_slot_supplier=FixedSizeSlotSupplier(
-                            num_slots=self._max_concurrent_activities
-                        ),
-                        local_activity_slot_supplier=FixedSizeSlotSupplier(
-                            num_slots=self._max_concurrent_local_activities
-                        ),
-                        nexus_slot_supplier=FixedSizeSlotSupplier(num_slots=100),
-                    ),
-                    workflow_task_poller_behavior=PollerBehaviorSimpleMaximum(
-                        simple_maximum=self._max_concurrent_workflow_task_polls
-                    ),
-                    nonsticky_to_sticky_poll_ratio=self._nonsticky_to_sticky_poll_ratio,
-                    activity_task_poller_behavior=PollerBehaviorSimpleMaximum(
-                        simple_maximum=self._max_concurrent_activity_task_polls
-                    ),
-                    no_remote_activities=self._no_remote_activities,
-                    task_types=WorkerTaskTypes(
-                        enable_workflows=True,
-                        enable_local_activities=False,
-                        enable_remote_activities=not self._no_remote_activities,
-                        enable_nexus=False,
-                    ),
-                    sticky_queue_schedule_to_start_timeout_millis=int(
-                        self._sticky_queue_schedule_to_start_timeout.total_seconds()
-                        * 1000
-                    ),
-                    max_heartbeat_throttle_interval_millis=int(
-                        self._max_heartbeat_throttle_interval.total_seconds() * 1000
-                    ),
-                    default_heartbeat_throttle_interval_millis=int(
-                        self._default_heartbeat_throttle_interval.total_seconds() * 1000
-                    ),
-                    max_activities_per_second=self._max_activities_per_second,
-                    max_task_queue_activities_per_second=self._max_task_queue_activities_per_second,
-                    graceful_shutdown_period_millis=int(
-                        self._graceful_shutdown_timeout.total_seconds() * 1000
-                    ),
-                    nondeterminism_as_workflow_fail=False,
-                    nondeterminism_as_workflow_fail_for_types=set(),
-                    nexus_task_poller_behavior=PollerBehaviorSimpleMaximum(
-                        simple_maximum=5
-                    ),
-                    plugins=[],
-                )
+            # Create Trio bridge worker with new wrapper
+            self._trio_worker = TrioBridgeWorker(
+                bridge_wrapper=bridge_wrapper,  # Changed from bridge_worker
+                namespace=self._namespace,
+                task_queue=self._task_queue,
+                workflows=self._workflows,
+                data_converter=self._data_converter,
+            )
 
-                # Create bridge worker
-                self._bridge_worker = temporalio.bridge.worker.Worker.create(
-                    bridge_client, config
-                )
+            logger.info(
+                f"Starting Trio worker on {self._namespace}/{self._task_queue}"
+            )
 
-                # Validate the worker
-                await trio_asyncio.run_aio_coroutine(self._bridge_worker.validate())
+            # Run the worker until shutdown
+            async with trio.open_nursery() as nursery:
+                # Start the worker
+                nursery.start_soon(self._trio_worker.run)
 
-                # Create Trio bridge worker
-                self._trio_worker = TrioBridgeWorker(
-                    bridge_worker=self._bridge_worker,
-                    namespace=self._namespace,
-                    task_queue=self._task_queue,
-                    workflows=self._workflows,
-                    data_converter=self._data_converter,
-                )
+                # Wait for shutdown signal
+                await self._shutdown_event.wait()
 
-                logger.info(
-                    f"Starting Trio worker on {self._namespace}/{self._task_queue}"
-                )
+                # Cancel the nursery to stop the worker
+                nursery.cancel_scope.cancel()
 
-                # Run the worker until shutdown
-                async with trio.open_nursery() as nursery:
-                    # Start the worker
-                    nursery.start_soon(self._trio_worker.run)
+            # Shutdown bridge
+            await bridge_wrapper.shutdown()
 
-                    # Wait for shutdown signal
-                    await self._shutdown_event.wait()
-
-                    # Cancel the nursery to stop the worker
-                    nursery.cancel_scope.cancel()
-
-                # Finalize shutdown
-                if self._bridge_worker:
-                    await trio_asyncio.run_aio_coroutine(
-                        self._bridge_worker.finalize_shutdown()
-                    )
-
-                logger.info("Trio worker stopped")
+            logger.info("Trio worker stopped")
 
         except Exception:
             logger.exception("Worker failed")
+            # Ensure bridge is shut down on error
+            await bridge_wrapper.shutdown()
             raise
 
     def shutdown(self) -> None:

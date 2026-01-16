@@ -1,8 +1,18 @@
 # Running the Trio-based Temporal Worker Example
 
-This guide shows how to run a simple Temporal worker using the trio-based SDK implementation.
+> **NOTE**: This example is currently non-functional and is provided for API reference only. It requires Phase 1 (Rust bridge integration with temporalio-sdk-core) to be completed. See the `NotImplementedError` in `bridge_worker_example.py` for details.
 
-## Prerequisites
+This guide shows the intended API for running a simple Temporal worker using the trio-based SDK implementation.
+
+## Current Status
+
+The Worker API is fully implemented and ready to use, but client connection requires Phase 1 of the Rust bridge integration. The example demonstrates:
+- ✅ Worker class API (matches standard SDK)
+- ✅ Workflow definition API (@workflow.defn, @workflow.run)
+- ✅ Trio-native async execution
+- ❌ Client connection (requires Phase 1 Rust bridge)
+
+## Prerequisites (For Future Use)
 
 1. **Temporal CLI** - Install from: https://docs.temporal.io/cli
    ```bash
