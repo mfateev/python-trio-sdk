@@ -239,21 +239,66 @@ class TestTrioWorkflowInstance:
 
         assert instance._workflow_obj is None
 
-    def test_activate_not_implemented(self) -> None:
-        """Test activate() raises NotImplementedError (skeleton for Phase 2)."""
+    def test_activate_simple_workflow(self) -> None:
+        """Test activate() executes workflow and returns completion."""
+        from temporalio_trio.worker import (
+            CompleteWorkflowCommand,
+            WorkflowActivation,
+            WorkflowStartedJob,
+        )
+
         details = _create_simple_details()
         instance = TrioWorkflowInstance(details)
 
-        with pytest.raises(NotImplementedError, match="Phase 3"):
-            instance.activate(None)  # type: ignore[arg-type]
+        activation = WorkflowActivation(
+            jobs=[WorkflowStartedJob(workflow_type="SimpleWorkflow", args=())],
+            timestamp_ns=0,
+        )
+        completion = instance.activate(activation)
 
-    async def test_workflow_sleep_not_implemented(self) -> None:
-        """Test workflow_sleep() raises NotImplementedError (skeleton for Phase 2)."""
-        details = _create_simple_details()
+        assert len(completion.commands) == 1
+        assert isinstance(completion.commands[0], CompleteWorkflowCommand)
+        assert completion.commands[0].result == "done"
+
+    def test_workflow_sleep_creates_timer(self) -> None:
+        """Test workflow_sleep() creates StartTimerCommand."""
+        from temporalio_trio.worker import (
+            StartTimerCommand,
+            WorkflowActivation,
+            WorkflowStartedJob,
+        )
+
+        @workflow.defn
+        class SleepWorkflow:
+            @workflow.run
+            async def run(self) -> str:
+                await workflow.sleep(5.0)
+                return "slept"
+
+        defn = workflow._Definition.must_from_class(SleepWorkflow)
+        info = workflow.Info(
+            workflow_id="test-wf-sleep",
+            workflow_type=defn.name,
+            run_id="run-1",
+            task_queue="test-queue",
+        )
+        details = WorkflowInstanceDetails(
+            defn=defn,
+            info=info,
+            randomness_seed=12345,
+        )
         instance = TrioWorkflowInstance(details)
 
-        with pytest.raises(NotImplementedError, match="Phase 3"):
-            await instance.workflow_sleep(1.0, None)
+        activation = WorkflowActivation(
+            jobs=[WorkflowStartedJob(workflow_type="SleepWorkflow", args=())],
+            timestamp_ns=0,
+        )
+        completion = instance.activate(activation)
+
+        # Should have a StartTimerCommand (workflow blocked on sleep)
+        assert len(completion.commands) == 1
+        assert isinstance(completion.commands[0], StartTimerCommand)
+        assert completion.commands[0].duration_ms == 5000
 
     def test_can_set_as_current_runtime(self) -> None:
         """Test TrioWorkflowInstance can be set as current runtime."""
