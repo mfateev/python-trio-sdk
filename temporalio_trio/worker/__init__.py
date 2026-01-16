@@ -16,8 +16,10 @@ from temporalio_trio.worker._activation import (
 from temporalio_trio.worker._clock import WorkflowClock
 from temporalio_trio.worker._workflow_instance import (
     TrioWorkflowInstance,
+    TrioWorkflowRunner,
     WorkflowInstance,
     WorkflowInstanceDetails,
+    WorkflowRunner,
 )
 
 __all__ = [
@@ -31,6 +33,9 @@ __all__ = [
     "FailWorkflowCommand",
     # Clock
     "WorkflowClock",
+    # Runner types
+    "WorkflowRunner",
+    "TrioWorkflowRunner",
     # Instance types
     "WorkflowInstanceDetails",
     "WorkflowInstance",

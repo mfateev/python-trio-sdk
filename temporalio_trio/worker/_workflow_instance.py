@@ -25,6 +25,8 @@ from temporalio_trio.worker._clock import WorkflowClock
 from temporalio_trio.workflow import Info, _Definition, _Runtime
 
 __all__ = [
+    "WorkflowRunner",
+    "TrioWorkflowRunner",
     "WorkflowInstanceDetails",
     "WorkflowInstance",
     "TrioWorkflowInstance",
@@ -40,6 +42,109 @@ class _WorkflowYield(BaseException):
     """
 
     pass
+
+
+class WorkflowRunner(ABC):
+    """Abstract runner for workflows.
+
+    Mirrors temporalio.worker.WorkflowRunner from the SDK.
+
+    A workflow runner is responsible for:
+    - Preparing workflow definitions for execution (validation, setup)
+    - Creating workflow instances for each execution
+
+    The runner abstracts the execution environment (Trio, asyncio, etc.)
+    from the rest of the worker infrastructure.
+    """
+
+    @abstractmethod
+    def prepare_workflow(self, defn: _Definition) -> None:
+        """Prepare a workflow definition for execution.
+
+        Called once per workflow type when a worker starts. This is used to
+        validate the workflow and perform any setup needed before instances
+        can be created.
+
+        Args:
+            defn: The workflow definition to prepare.
+
+        Raises:
+            ValueError: If the workflow is invalid or incompatible.
+        """
+        ...
+
+    @abstractmethod
+    def create_instance(self, det: WorkflowInstanceDetails) -> WorkflowInstance:
+        """Create a workflow instance for execution.
+
+        Called for each new workflow execution. The returned instance handles
+        activations and produces completions.
+
+        Args:
+            det: Details for the workflow instance.
+
+        Returns:
+            A new workflow instance.
+
+        Raises:
+            ValueError: If the workflow has not been prepared.
+        """
+        ...
+
+
+class TrioWorkflowRunner(WorkflowRunner):
+    """Workflow runner that uses Trio for async execution.
+
+    This runner creates TrioWorkflowInstance objects that execute workflow
+    code using Trio's deterministic scheduling mode.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the Trio workflow runner."""
+        self._prepared: set[str] = set()
+
+    def prepare_workflow(self, defn: _Definition) -> None:
+        """Prepare a workflow for Trio execution.
+
+        Validates that the workflow is compatible with Trio execution.
+        Note: Basic validation (run method exists, is async) is already done
+        by @workflow.defn, but we re-validate here for safety.
+
+        Args:
+            defn: The workflow definition to prepare.
+
+        Raises:
+            ValueError: If the workflow is invalid.
+        """
+        import inspect
+
+        # Re-validate that run_fn is async (should already be validated by @workflow.defn)
+        if not inspect.iscoroutinefunction(defn.run_fn):
+            raise ValueError(
+                f"Workflow {defn.name} run method must be async "
+                f"(defined with 'async def')"
+            )
+
+        self._prepared.add(defn.name)
+
+    def create_instance(self, det: WorkflowInstanceDetails) -> WorkflowInstance:
+        """Create a Trio-based workflow instance.
+
+        Args:
+            det: Details for the workflow instance.
+
+        Returns:
+            A new TrioWorkflowInstance.
+
+        Raises:
+            ValueError: If the workflow has not been prepared.
+        """
+        if det.defn.name not in self._prepared:
+            raise ValueError(
+                f"Workflow {det.defn.name} not prepared. Call prepare_workflow() first."
+            )
+
+        return TrioWorkflowInstance(det)
 
 
 @dataclass(frozen=True)
@@ -247,6 +352,14 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             Current workflow time in nanoseconds since epoch.
         """
         return self._time_ns
+
+    def workflow_info(self) -> Info:
+        """Get information about the current workflow.
+
+        Returns:
+            Info about the current workflow execution.
+        """
+        return self._info
 
     async def workflow_sleep(self, duration: float, summary: str | None) -> None:
         """Sleep for the given duration.

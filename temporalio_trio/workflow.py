@@ -17,9 +17,11 @@ __all__ = [
     "sleep",
     "time",
     "time_ns",
+    "info",
     "Info",
     "_Runtime",
     "_Definition",
+    "_NotInWorkflowContextError",
 ]
 
 # Type variable for decorator
@@ -112,6 +114,15 @@ class _Runtime(ABC):
         Args:
             duration: Sleep duration in seconds.
             summary: Optional description for debugging.
+        """
+        ...
+
+    @abstractmethod
+    def workflow_info(self) -> Info:
+        """Get information about the current workflow.
+
+        Returns:
+            Info about the current workflow execution.
         """
         ...
 
@@ -339,6 +350,23 @@ def time_ns() -> int:
         _NotInWorkflowContextError: If not in a workflow context.
     """
     return _Runtime.current().workflow_time_ns()
+
+
+def info() -> Info:
+    """Get information about the current workflow.
+
+    Mirrors temporalio.workflow.info from the SDK.
+
+    Returns information about the currently executing workflow, including
+    its ID, type, run ID, and task queue.
+
+    Returns:
+        Information about the current workflow.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    return _Runtime.current().workflow_info()
 
 
 @dataclass

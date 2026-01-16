@@ -175,6 +175,14 @@ class TestRuntimeClass:
             ) -> None:
                 pass
 
+            def workflow_info(self) -> workflow.Info:
+                return workflow.Info(
+                    workflow_id="mock",
+                    workflow_type="MockWorkflow",
+                    run_id="mock-run",
+                    task_queue="mock-queue",
+                )
+
         mock = MockRuntime()
 
         # Initially None
@@ -204,6 +212,14 @@ class TestRuntimeClass:
             ) -> None:
                 pass
 
+            def workflow_info(self) -> workflow.Info:
+                return workflow.Info(
+                    workflow_id="mock",
+                    workflow_type="MockWorkflow",
+                    run_id="mock-run",
+                    task_queue="mock-queue",
+                )
+
         mock1 = MockRuntime("mock1")
         mock2 = MockRuntime("mock2")
 
@@ -227,11 +243,13 @@ class TestRuntimeClass:
 class TestPublicAPI:
     """Tests for public workflow API functions."""
 
+    @pytest.mark.trio
     async def test_sleep_raises_outside_workflow(self) -> None:
         """Test workflow.sleep() raises outside workflow context."""
         with pytest.raises(workflow._NotInWorkflowContextError):
             await workflow.sleep(1.0)
 
+    @pytest.mark.trio
     async def test_sleep_with_mock_runtime(self) -> None:
         """Test workflow.sleep() delegates to runtime."""
         sleep_calls: list[tuple[float, str | None]] = []
@@ -244,6 +262,14 @@ class TestPublicAPI:
                 self, duration: float, summary: str | None
             ) -> None:
                 sleep_calls.append((duration, summary))
+
+            def workflow_info(self) -> workflow.Info:
+                return workflow.Info(
+                    workflow_id="mock",
+                    workflow_type="MockWorkflow",
+                    run_id="mock-run",
+                    task_queue="mock-queue",
+                )
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
@@ -275,6 +301,14 @@ class TestPublicAPI:
                 self, duration: float, summary: str | None
             ) -> None:
                 pass
+
+            def workflow_info(self) -> workflow.Info:
+                return workflow.Info(
+                    workflow_id="mock",
+                    workflow_type="MockWorkflow",
+                    run_id="mock-run",
+                    task_queue="mock-queue",
+                )
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
