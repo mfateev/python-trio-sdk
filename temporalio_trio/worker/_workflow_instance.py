@@ -314,8 +314,8 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 try:
                     trio.run(
                         self._run_workflow,
-                        deterministic=True,
-                        random_seed=self._random.getrandbits(64),
+                        deterministic=True,  # type: ignore[call-arg]
+                        random_seed=self._random.getrandbits(64),  # type: ignore[call-arg]
                         clock=clock,
                     )
                 except _WorkflowYield:
