@@ -13,6 +13,7 @@
  * - Error handling throughout
  */
 
+use crate::core_client::{ClientInitConfig, CoreClientHandle};
 use crate::core_worker::{CoreWorkerHandle, WorkerInitConfig};
 use crate::request::{Request, RequestResult};
 use parking_lot::Mutex;
@@ -47,15 +48,17 @@ impl TrioAsyncBridge {
         let shutdown = Arc::new(Mutex::new(false));
         let shutdown_clone = shutdown.clone();
 
-        // Create Core Worker Handle
+        // Create Core Worker and Client Handles
         let core_worker = Arc::new(CoreWorkerHandle::new());
         let core_worker_clone = core_worker.clone();
+        let core_client = Arc::new(Mutex::new(CoreClientHandle::new()));
+        let core_client_clone = core_client.clone();
 
         // Spawn Rust thread with Tokio runtime
         std::thread::Builder::new()
             .name("RustTokioThread".to_string())
             .spawn(move || {
-                Self::rust_event_loop(rx, shutdown_clone, core_worker_clone);
+                Self::rust_event_loop(rx, shutdown_clone, core_worker_clone, core_client_clone);
             })
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
@@ -144,6 +147,7 @@ impl TrioAsyncBridge {
         mut rx: mpsc::UnboundedReceiver<Request>,
         shutdown: Arc<Mutex<bool>>,
         core_worker: Arc<CoreWorkerHandle>,
+        core_client: Arc<Mutex<CoreClientHandle>>,
     ) {
         // Create Tokio runtime (single-threaded)
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -163,7 +167,8 @@ impl TrioAsyncBridge {
                 // Spawn async task to process request
                 // This allows concurrent processing of multiple requests
                 let core_worker_clone = core_worker.clone();
-                tokio::spawn(Self::process_request_async(request, core_worker_clone));
+                let core_client_clone = core_client.clone();
+                tokio::spawn(Self::process_request_async(request, core_worker_clone, core_client_clone));
             }
         });
     }
@@ -172,9 +177,13 @@ impl TrioAsyncBridge {
     ///
     /// This runs as a Tokio task spawned from the event loop.
     /// Multiple requests can be processed concurrently.
-    async fn process_request_async(request: Request, core_worker: Arc<CoreWorkerHandle>) {
+    async fn process_request_async(
+        request: Request,
+        core_worker: Arc<CoreWorkerHandle>,
+        core_client: Arc<Mutex<CoreClientHandle>>,
+    ) {
         // Process the request (before moving callback)
-        let result = Self::handle_operation(&request, core_worker).await;
+        let result = Self::handle_operation(&request, core_worker, core_client).await;
 
         // Move callback after processing
         let callback = request.callback;
@@ -186,10 +195,11 @@ impl TrioAsyncBridge {
     /// Handle a specific operation
     ///
     /// This is where actual async work happens.
-    /// Routes operations to the appropriate CoreWorkerHandle methods.
+    /// Routes operations to the appropriate CoreWorkerHandle or CoreClientHandle methods.
     async fn handle_operation(
         request: &Request,
         core_worker: Arc<CoreWorkerHandle>,
+        core_client: Arc<Mutex<CoreClientHandle>>,
     ) -> RequestResult {
         match request.operation.as_str() {
             "initialize" => {
@@ -280,6 +290,189 @@ impl TrioAsyncBridge {
                     Err(e) => RequestResult::error(
                         request.request_id.clone(),
                         format!("Shutdown failed: {}", e),
+                    ),
+                }
+            }
+
+            // Client operations
+            "initialize_client" => {
+                let config: ClientInitConfig = match serde_json::from_slice(&request.data) {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to parse client config: {}", e),
+                        );
+                    }
+                };
+
+                let mut client = core_client.lock();
+                match client.initialize(config).await {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Client initialize failed: {}", e),
+                    ),
+                }
+            }
+
+            "start_workflow" => {
+                let client = core_client.lock();
+                match client.start_workflow_execution(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Start workflow failed: {}", e),
+                    ),
+                }
+            }
+
+            "get_workflow_result" => {
+                // Parse workflow_id and run_id from JSON
+                #[derive(serde::Deserialize)]
+                struct GetResultRequest {
+                    workflow_id: String,
+                    run_id: Option<String>,
+                }
+
+                let req: GetResultRequest = match serde_json::from_slice(&request.data) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to parse get result request: {}", e),
+                        );
+                    }
+                };
+
+                let client = core_client.lock();
+                match client.get_workflow_result(req.workflow_id, req.run_id).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Get workflow result failed: {}", e),
+                    ),
+                }
+            }
+
+            "cancel_workflow" => {
+                #[derive(serde::Deserialize)]
+                struct CancelRequest {
+                    workflow_id: String,
+                    run_id: Option<String>,
+                }
+
+                let req: CancelRequest = match serde_json::from_slice(&request.data) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to parse cancel request: {}", e),
+                        );
+                    }
+                };
+
+                let client = core_client.lock();
+                match client.cancel_workflow_execution(req.workflow_id, req.run_id).await {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Cancel workflow failed: {}", e),
+                    ),
+                }
+            }
+
+            "terminate_workflow" => {
+                #[derive(serde::Deserialize)]
+                struct TerminateRequest {
+                    workflow_id: String,
+                    run_id: Option<String>,
+                    reason: String,
+                }
+
+                let req: TerminateRequest = match serde_json::from_slice(&request.data) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to parse terminate request: {}", e),
+                        );
+                    }
+                };
+
+                let client = core_client.lock();
+                match client
+                    .terminate_workflow_execution(req.workflow_id, req.run_id, req.reason)
+                    .await
+                {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Terminate workflow failed: {}", e),
+                    ),
+                }
+            }
+
+            "query_workflow" => {
+                #[derive(serde::Deserialize)]
+                struct QueryRequest {
+                    workflow_id: String,
+                    run_id: Option<String>,
+                    query_type: String,
+                    args_bytes: Vec<u8>,
+                }
+
+                let req: QueryRequest = match serde_json::from_slice(&request.data) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to parse query request: {}", e),
+                        );
+                    }
+                };
+
+                let client = core_client.lock();
+                match client
+                    .query_workflow(req.workflow_id, req.run_id, req.query_type, req.args_bytes)
+                    .await
+                {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Query workflow failed: {}", e),
+                    ),
+                }
+            }
+
+            "signal_workflow" => {
+                #[derive(serde::Deserialize)]
+                struct SignalRequest {
+                    workflow_id: String,
+                    run_id: Option<String>,
+                    signal_name: String,
+                    args_bytes: Vec<u8>,
+                }
+
+                let req: SignalRequest = match serde_json::from_slice(&request.data) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to parse signal request: {}", e),
+                        );
+                    }
+                };
+
+                let client = core_client.lock();
+                match client
+                    .signal_workflow(req.workflow_id, req.run_id, req.signal_name, req.args_bytes)
+                    .await
+                {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Signal workflow failed: {}", e),
                     ),
                 }
             }

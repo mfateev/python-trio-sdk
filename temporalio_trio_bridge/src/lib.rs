@@ -16,10 +16,12 @@
 use pyo3::prelude::*;
 
 mod bridge;
+mod core_client;
 mod core_worker;
 mod request;
 
 pub use bridge::TrioAsyncBridge;
+pub use core_client::CoreClientHandle;
 pub use core_worker::CoreWorkerHandle;
 pub use request::{Request, RequestId, RequestResult};
 
