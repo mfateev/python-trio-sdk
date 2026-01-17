@@ -214,6 +214,51 @@ uv run pytest -v -m temporal_server
 export PATH="/home/sprite/workarea/bin:$PATH"
 ```
 
+### Handling Test Failures (CRITICAL)
+
+**NEVER fix or remove a test to workaround a failure.** Tests exist to catch bugs and regressions. When a test fails:
+
+1. **Investigate the root cause** - Why is the test failing? What changed?
+2. **Fix the underlying issue** in the tested functionality, not the test
+3. **Understand the test's intent** - What behavior is it validating?
+4. **Only modify tests if they are incorrect** - And only after user confirmation
+
+**Process when encountering test failures:**
+
+```bash
+# 1. Run the failing test to understand the failure
+uv run pytest tests/test_file.py::test_name -vv
+
+# 2. Investigate the root cause in the implementation
+# Read the code being tested, understand what changed
+
+# 3. Fix the implementation to make the test pass
+# Make changes to the actual code, not the test
+
+# 4. Verify the fix
+uv run pytest tests/test_file.py::test_name -vv
+
+# 5. Run all tests to ensure no regressions
+uv run pytest
+```
+
+**If you believe a test is incorrect or should be removed:**
+- **Stop and ask the user for confirmation** before modifying or removing it
+- Explain why you think the test is wrong
+- Propose what should change and why
+- Wait for explicit approval before proceeding
+
+**Common scenarios:**
+
+- ❌ Test fails after code change → Remove assertions to make it pass
+- ✅ Test fails after code change → Fix the code change to maintain correct behavior
+- ❌ Test fails in CI → Skip the test with `@pytest.mark.skip`
+- ✅ Test fails in CI → Investigate why it fails and fix the underlying issue
+- ❌ Test is hard to fix → Modify test expectations to match new behavior
+- ✅ Test is hard to fix → Ask user if the new behavior is correct, then either fix code or update test with approval
+
+Tests are the safety net that prevents regressions. Respect them.
+
 ## Development Workflow
 
 ### Making Changes
