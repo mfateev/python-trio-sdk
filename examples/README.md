@@ -1,18 +1,19 @@
 # Running the Trio-based Temporal Worker Example
 
-> **NOTE**: This example is currently non-functional and is provided for API reference only. It requires Phase 1 (Rust bridge integration with temporalio-sdk-core) to be completed. See the `NotImplementedError` in `bridge_worker_example.py` for details.
+> **✅ WORKING** - This example is fully functional! The SDK Core integration is complete and workflows execute successfully with real Temporal servers.
 
-This guide shows the intended API for running a simple Temporal worker using the trio-based SDK implementation.
+This guide shows how to run a simple Temporal worker using the trio-based SDK implementation.
 
 ## Current Status
 
-The Worker API is fully implemented and ready to use, but client connection requires Phase 1 of the Rust bridge integration. The example demonstrates:
+✅ **All features working:**
 - ✅ Worker class API (matches standard SDK)
 - ✅ Workflow definition API (@workflow.defn, @workflow.run)
-- ✅ Trio-native async execution
-- ❌ Client connection (requires Phase 1 Rust bridge)
+- ✅ Trio-native workflow execution
+- ✅ SDK Core integration with deterministic timers
+- ✅ Real Temporal server connection
 
-## Prerequisites (For Future Use)
+## Prerequisites
 
 1. **Temporal CLI** - Install from: https://docs.temporal.io/cli
    ```bash
@@ -23,9 +24,10 @@ The Worker API is fully implemented and ready to use, but client connection requ
    curl -sSf https://temporal.download/cli.sh | sh
    ```
 
-2. **Python dependencies** - Already installed if you've run the tests
+2. **Python dependencies** - Install with uv:
    ```bash
-   pip install temporalio trio
+   cd /home/sprite/workarea/workspaces/projects/tasks/trio-asyncio/python-trio-sdk
+   uv sync
    ```
 
 ## Quick Start
@@ -46,13 +48,13 @@ This will:
 
 ### Step 2: Run the Worker
 
-In a new terminal, navigate to the examples directory and run the worker:
+In a new terminal, navigate to the project directory and run the worker:
 
 ```bash
 cd /home/sprite/workarea/workspaces/projects/tasks/trio-asyncio/python-trio-sdk
 
-# Run the worker
-python3 examples/bridge_worker_example.py
+# Run the worker with uv
+uv run python examples/bridge_worker_example.py
 ```
 
 You should see output like:

@@ -56,26 +56,19 @@ class TimerWorkflow:
 
 async def run_worker():
     """Run the Trio worker."""
-    # TODO(Phase 1): Once the Rust bridge is fully implemented, create a Trio-native
-    # client connection API. For now, this example shows the intended API structure.
-    #
-    # The current temporalio.client.Client.connect() is asyncio-based.
-    # Phase 1 will implement a Trio-native client that connects via our PyO3 bridge:
-    #
-    # from temporalio_trio.client import Client
-    # client = await Client.connect("localhost:7233")
+    import asyncio
 
-    # For now, this example demonstrates the Worker API structure but won't run
-    # until Phase 1 Rust bridge integration is complete.
-    raise NotImplementedError(
-        "Client connection requires Phase 1 Rust bridge integration. "
-        "The Worker API is ready, but client connection is not yet implemented."
-    )
+    # NOTE: Client connection still uses asyncio (standard SDK)
+    # The Trio worker will handle workflow execution using Trio
+    async def connect_client():
+        return await temporalio.client.Client.connect("localhost:7233")
 
-    # Create Trio worker - API matches the standard SDK Worker!
-    # This part is already implemented and ready to use once client is available
+    # Connect to Temporal using asyncio client
+    client = asyncio.run(connect_client())
+
+    # Create Trio worker - uses Trio for workflow execution!
     worker = Worker(
-        client,  # Will be a Trio-native client from Phase 1
+        client,
         task_queue="trio-example-queue",
         workflows=[TimerWorkflow],
     )
