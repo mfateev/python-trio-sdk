@@ -47,22 +47,60 @@ impl Request {
     }
 }
 
-/// Result sent back to Python
-#[derive(Debug, Serialize, Deserialize)]
+/// Result sent back to Python as a PyO3 class
+///
+/// This is exposed as a Python class, allowing direct attribute access
+/// without JSON serialization overhead.
+#[pyclass]
+#[derive(Debug, Clone)]
 pub struct RequestResult {
     /// Request ID this result is for
+    #[pyo3(get)]
     pub request_id: RequestId,
 
     /// Success flag
+    #[pyo3(get)]
     pub success: bool,
 
     /// Result data (if successful)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Vec<u8>>,
+    /// Not directly exposed - use get_data() method instead
+    data: Option<Vec<u8>>,
 
     /// Error message (if failed)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[pyo3(get)]
     pub error: Option<String>,
+}
+
+#[pymethods]
+impl RequestResult {
+    /// Get result data as Python bytes
+    ///
+    /// Returns None if no data is present (error case).
+    /// Returns bytes object if data is present.
+    #[pyo3(name = "get_data")]
+    fn get_data_py(&self, py: Python<'_>) -> PyObject {
+        match &self.data {
+            Some(d) => pyo3::types::PyBytes::new(py, d).into(),
+            None => py.None(),
+        }
+    }
+
+    /// String representation for debugging
+    fn __repr__(&self) -> String {
+        if self.success {
+            format!(
+                "RequestResult(request_id={}, success=True, data_len={})",
+                self.request_id,
+                self.data.as_ref().map_or(0, |d| d.len())
+            )
+        } else {
+            format!(
+                "RequestResult(request_id={}, success=False, error={})",
+                self.request_id,
+                self.error.as_ref().map_or("None", |e| e.as_str())
+            )
+        }
+    }
 }
 
 impl RequestResult {

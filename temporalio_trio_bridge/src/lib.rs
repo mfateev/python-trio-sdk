@@ -21,11 +21,12 @@ mod request;
 
 pub use bridge::TrioAsyncBridge;
 pub use core_worker::CoreWorkerHandle;
-pub use request::{Request, RequestId};
+pub use request::{Request, RequestId, RequestResult};
 
 /// PyO3 module initialization
 #[pymodule]
 fn temporalio_trio_bridge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TrioAsyncBridge>()?;
+    m.add_class::<RequestResult>()?;
     Ok(())
 }

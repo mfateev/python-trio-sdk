@@ -17,7 +17,6 @@ use crate::core_worker::{CoreWorkerHandle, WorkerInitConfig};
 use crate::request::{Request, RequestId, RequestResult};
 use parking_lot::Mutex;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -297,26 +296,26 @@ impl TrioAsyncBridge {
 
     /// Deliver result back to Python via callback
     ///
-    /// Acquires GIL and invokes the Python callback.
+    /// Acquires GIL and invokes the Python callback with the RequestResult struct.
     /// The callback is responsible for using trio.from_thread
     /// to schedule the result in the Trio event loop.
+    ///
+    /// Note: The RequestResult is passed directly as a PyO3 class, eliminating
+    /// JSON serialization overhead.
     fn deliver_result(callback: PyObject, result: RequestResult) {
         Python::with_gil(|py| {
-            // Serialize result to JSON
-            let result_json = match serde_json::to_vec(&result) {
-                Ok(json) => json,
-                Err(e) => {
-                    eprintln!("Failed to serialize result: {}", e);
-                    return;
+            // Convert RequestResult to a Python object using Bound
+            // Create a Bound instance which wraps the #[pyclass] for Python
+            match pyo3::Bound::new(py, result) {
+                Ok(bound_result) => {
+                    // Pass the Bound object to the callback
+                    if let Err(e) = callback.call1(py, (bound_result,)) {
+                        eprintln!("Callback error: {}", e);
+                    }
                 }
-            };
-
-            // Convert to Python bytes
-            let py_bytes = PyBytes::new(py, &result_json);
-
-            // Invoke callback
-            if let Err(e) = callback.call1(py, (py_bytes,)) {
-                eprintln!("Callback error: {}", e);
+                Err(e) => {
+                    eprintln!("Failed to create Bound RequestResult: {}", e);
+                }
             }
         });
     }

@@ -20,6 +20,20 @@ import trio
 from temporalio_trio._async_bridge import BridgeState, TrioBridgeWrapper
 
 
+class MockRequestResult:
+    """Mock RequestResult for testing (mimics the Rust RequestResult class)."""
+
+    def __init__(self, request_id: str, success: bool, data: bytes | None = None, error: str | None = None):
+        self.request_id = request_id
+        self.success = success
+        self._data = data
+        self.error = error
+
+    def get_data(self):
+        """Return data as bytes (mimics Rust RequestResult.get_data())."""
+        return self._data
+
+
 class MockRustBridge:
     """Mock implementation of the Rust bridge for testing.
 
@@ -59,55 +73,55 @@ class MockRustBridge:
         # Simulate async processing by running callback from a thread
         # In real bridge, this happens from Rust thread
         def invoke_callback():
-            # Real bridge returns JSON-wrapped responses
+            # Real bridge returns RequestResult objects (not JSON)
             if operation == "poll_activation":
-                # Return JSON response with mock activation bytes
-                response = {
-                    "request_id": "test-123",
-                    "success": True,
-                    "data": list(b"mock_activation_data")
-                }
-                callback(json.dumps(response).encode())
+                # Return RequestResult with mock activation bytes
+                result = MockRequestResult(
+                    request_id="test-123",
+                    success=True,
+                    data=b"mock_activation_data"
+                )
+                callback(result)
             elif operation == "complete_activation":
-                # Return JSON success response
-                response = {
-                    "request_id": "test-123",
-                    "success": True,
-                    "data": []
-                }
-                callback(json.dumps(response).encode())
+                # Return success RequestResult
+                result = MockRequestResult(
+                    request_id="test-123",
+                    success=True,
+                    data=b""
+                )
+                callback(result)
             elif operation == "initialize":
-                # Return JSON success response
-                response = {
-                    "request_id": "test-123",
-                    "success": True,
-                    "data": []
-                }
-                callback(json.dumps(response).encode())
+                # Return success RequestResult
+                result = MockRequestResult(
+                    request_id="test-123",
+                    success=True,
+                    data=b""
+                )
+                callback(result)
             elif operation == "validate":
-                # Return JSON success response
-                response = {
-                    "request_id": "test-123",
-                    "success": True,
-                    "data": []
-                }
-                callback(json.dumps(response).encode())
+                # Return success RequestResult
+                result = MockRequestResult(
+                    request_id="test-123",
+                    success=True,
+                    data=b""
+                )
+                callback(result)
             elif operation == "finalize_shutdown":
-                # Return JSON success response
-                response = {
-                    "request_id": "test-123",
-                    "success": True,
-                    "data": []
-                }
-                callback(json.dumps(response).encode())
+                # Return success RequestResult
+                result = MockRequestResult(
+                    request_id="test-123",
+                    success=True,
+                    data=b""
+                )
+                callback(result)
             else:
-                # Unknown operation - return JSON error
-                response = {
-                    "request_id": "test-123",
-                    "success": False,
-                    "error": f"Unknown operation: {operation}"
-                }
-                callback(json.dumps(response).encode())
+                # Unknown operation - return error RequestResult
+                result = MockRequestResult(
+                    request_id="test-123",
+                    success=False,
+                    error=f"Unknown operation: {operation}"
+                )
+                callback(result)
 
         # Run callback from a thread to simulate Rust thread behavior
         thread = threading.Thread(target=invoke_callback, daemon=True)
@@ -320,16 +334,21 @@ class TestBridgeOperations:
 
                 def invoke_callback():
                     if operation == "validate":
-                        # Return JSON error response
-                        import json
-                        error_response = {
-                            "request_id": "test-123",
-                            "success": False,
-                            "error": "Validation failed: Connection refused"
-                        }
-                        callback(json.dumps(error_response).encode())
+                        # Return error RequestResult
+                        error_result = MockRequestResult(
+                            request_id="test-123",
+                            success=False,
+                            error="Validation failed: Connection refused"
+                        )
+                        callback(error_result)
                     else:
-                        callback(b"")
+                        # Return success RequestResult
+                        result = MockRequestResult(
+                            request_id="test-123",
+                            success=True,
+                            data=b""
+                        )
+                        callback(result)
 
                 thread = threading.Thread(target=invoke_callback, daemon=True)
                 thread.start()
@@ -412,15 +431,14 @@ class TestErrorHandling:
                 self.requests.append((operation, data, callback))
 
                 def invoke_callback():
-                    # Simulate error by sending JSON error response
+                    # Simulate error by sending error RequestResult
                     # This matches the real Rust bridge error format
-                    import json
-                    error_response = {
-                        "request_id": "test-error",
-                        "success": False,
-                        "error": "Something went wrong"
-                    }
-                    callback(json.dumps(error_response).encode())
+                    error_result = MockRequestResult(
+                        request_id="test-error",
+                        success=False,
+                        error="Something went wrong"
+                    )
+                    callback(error_result)
 
                 thread = threading.Thread(target=invoke_callback, daemon=True)
                 thread.start()

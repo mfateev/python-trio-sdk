@@ -160,12 +160,12 @@ class TrioBridgeWrapper:
         event = trio.Event()
         error_container: list = []
 
-        def deliver_result(result: bytes) -> None:
+        def deliver_result(result) -> None:
             """Callback for initialization result."""
             try:
-                result_data = json.loads(result.decode('utf-8'))
-                if not result_data.get('success'):
-                    error_msg = result_data.get('error', 'Unknown error')
+                # Handle RequestResult struct directly
+                if not result.success:
+                    error_msg = result.error or 'Unknown error'
                     error_container.append(RuntimeError(f"Init failed: {error_msg}"))
             except Exception as e:
                 error_container.append(e)
@@ -233,27 +233,27 @@ class TrioBridgeWrapper:
         result_container: list = []
         error_container: list = []
 
-        def deliver_result(result_bytes: bytes) -> None:
+        def deliver_result(result) -> None:
             """Callback invoked from Rust thread when result is ready.
 
             This is called from the Rust thread and uses trio.from_thread.run_sync
             to safely deliver the result into the Trio context.
 
             Args:
-                result_bytes: JSON response from the Rust bridge
+                result: RequestResult struct from the Rust bridge
             """
             try:
-                # Parse JSON response from Rust bridge
-                import json
-                result_json = json.loads(result_bytes)
-
-                if result_json.get("success"):
-                    # Extract the protobuf bytes from the data field
-                    data_bytes = bytes(result_json.get("data", []))
-                    result_container.append(data_bytes)
+                # Handle RequestResult struct directly - no JSON parsing!
+                if result.success:
+                    # Extract the protobuf bytes from the struct
+                    data_bytes = result.get_data()
+                    if data_bytes is not None:
+                        result_container.append(bytes(data_bytes))
+                    else:
+                        result_container.append(b"")
                 else:
                     # Extract error message
-                    error_msg = result_json.get("error", "Unknown error")
+                    error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(error_msg))
             except Exception as e:
                 error_container.append(e)
@@ -312,16 +312,13 @@ class TrioBridgeWrapper:
         event = trio.Event()
         error_container: list = []
 
-        def deliver_result(result: bytes) -> None:
+        def deliver_result(result) -> None:
             """Callback for completion acknowledgment."""
             try:
-                # Parse JSON response from Rust bridge
-                import json
-                result_json = json.loads(result)
-
-                if not result_json.get("success"):
+                # Handle RequestResult struct directly
+                if not result.success:
                     # Extract error message
-                    error_msg = result_json.get("error", "Unknown error")
+                    error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(f"Complete activation failed: {error_msg}"))
             except Exception as e:
                 error_container.append(e)
@@ -370,16 +367,13 @@ class TrioBridgeWrapper:
         event = trio.Event()
         error_container: list = []
 
-        def deliver_result(result: bytes) -> None:
+        def deliver_result(result) -> None:
             """Callback for validation result."""
             try:
-                # Parse JSON response from Rust bridge
-                import json
-                result_json = json.loads(result)
-
-                if not result_json.get("success"):
+                # Handle RequestResult struct directly
+                if not result.success:
                     # Extract error message
-                    error_msg = result_json.get("error", "Unknown error")
+                    error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(f"Validation failed: {error_msg}"))
             except Exception as e:
                 error_container.append(e)
@@ -449,16 +443,13 @@ class TrioBridgeWrapper:
         event = trio.Event()
         error_container: list = []
 
-        def deliver_result(result: bytes) -> None:
+        def deliver_result(result) -> None:
             """Callback for shutdown completion."""
             try:
-                # Parse JSON response from Rust bridge
-                import json
-                result_json = json.loads(result)
-
-                if not result_json.get("success"):
+                # Handle RequestResult struct directly
+                if not result.success:
                     # Extract error message
-                    error_msg = result_json.get("error", "Unknown error")
+                    error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(f"Shutdown error: {error_msg}"))
             except Exception as e:
                 error_container.append(e)
