@@ -49,73 +49,53 @@ Temporal Server
      - `query_workflow`
      - `signal_workflow`
 
-### 🔧 Needs Fixing - Compilation Errors
+### ✅ Fixed - Compilation Errors (Completed 2026-01-17)
 
-**Error 1: Type mismatch in RetryClient**
-```rust
-error[E0308]: mismatched types
-  --> src/core_client.rs:78:30
-   |
-78 |         *client_guard = Some(retry_client);
-   |                         ---- ^^^^^^^^^^^^ expected `RetryClient<Client>`, found `RetryClient<RetryClient<...>>`
-```
+**All compilation errors have been resolved:**
 
-**Issue**: `connect_no_namespace()` already returns a `RetryClient`, we're double-wrapping it.
+1. **Fixed type definition**: Changed to use correct `ClientType`:
+   ```rust
+   type ClientType = temporalio_sdk_core::RetryClient<
+       temporalio_client::ConfiguredClient<temporalio_client::TemporalServiceClient>
+   >;
+   ```
 
-**Fix**: Change line 71 in `core_client.rs`:
-```rust
-// Current (wrong):
-let retry_client = RetryClient::new(client, Default::default());
+2. **Added tonic imports**: Added `use tonic;` for Request/Response wrappers
 
-// Should be:
-let client_inner = client; // client is already a RetryClient
-```
+3. **Wrapped all requests**: All protobuf requests wrapped in `tonic::Request::new()`
+   ```rust
+   client.start_workflow_execution(tonic::Request::new(request))
+   ```
 
-Actually, looking at worker code, we should store the raw client, not wrap it:
-```rust
-pub struct CoreClientHandle {
-    client: Arc<Mutex<Option<temporalio_client::Client>>>,  // Not RetryClient!
-    // ...
-}
-```
+4. **Fixed response handling**: Extract inner message before encoding
+   ```rust
+   let bytes = response.into_inner().encode_to_vec();
+   ```
 
-**Error 2: Missing trait imports**
-```rust
-error[E0599]: no method named `start_workflow` found for reference `&RetryClient<Client>`
-```
+5. **Fixed mutability**: All methods use `let mut guard` and `guard.as_mut()`
 
-**Fix**: Add trait imports at top of `core_client.rs`:
-```rust
-use temporalio_client::WorkflowClientTrait;
-use temporalio_client::WorkflowService;
-```
-
-**Error 3: Wrong method names**
-- `start_workflow` → `start_workflow_execution`
-- `query_workflow` → `query_workflow_execution`
-- etc.
-
-**Fix**: Use correct method names from traits.
+**Build Status**: ✅ Compiled successfully in release mode (3m 42s)
+**Installation**: ✅ Installed with maturin develop --release
 
 ## Remaining Work
 
-###  1. Fix Rust Compilation (2-3 hours)
-- [ ] Fix `RetryClient` type issue
-- [ ] Add necessary trait imports
-- [ ] Use correct method names
-- [ ] Handle protobuf conversions correctly
-- [ ] Build successfully: `cargo build --release`
-- [ ] Install bridge: `maturin develop --release`
+### ✅ 1. Fix Rust Compilation (Completed)
+- [x] Fix `RetryClient` type issue
+- [x] Add necessary trait imports
+- [x] Use correct method names
+- [x] Handle protobuf conversions correctly
+- [x] Build successfully: `cargo build --release`
+- [x] Install bridge: `maturin develop --release`
 
-### 2. Python Bridge Wrapper (2 hours)
-- [ ] Add client methods to `TrioBridgeWrapper` in `_async_bridge.py`:
-  - `initialize_client_with_config()`
+### ✅ 2. Python Bridge Wrapper (Completed)
+- [x] Add client methods to `TrioBridgeWrapper` in `_async_bridge.py`:
+  - `initialize_client()`
   - `start_workflow_execution()`
   - `get_workflow_result()`
   - `cancel_workflow_execution()`
   - `terminate_workflow_execution()`
-  - `query_workflow_execution()`
-  - `signal_workflow_execution()`
+  - `query_workflow()`
+  - `signal_workflow()`
 
 ### 3. Python Client Implementation (3-4 hours)
 - [ ] Create `temporalio_trio/client/` directory

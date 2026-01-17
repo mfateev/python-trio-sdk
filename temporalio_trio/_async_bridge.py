@@ -188,6 +188,458 @@ class TrioBridgeWrapper:
         if error_container:
             raise error_container[0]
 
+    async def initialize_client(
+        self,
+        target_url: str,
+        namespace: str,
+        identity: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Initialize the bridge client with Temporal configuration.
+
+        Must be called after start() and before calling client operations.
+        This connects to the Temporal server and initializes the SDK Core client.
+
+        Args:
+            target_url: Temporal server URL (e.g., "localhost:7233")
+            namespace: Temporal namespace
+            identity: Client identity (optional, defaults to "trio-client")
+            timeout: Optional timeout in seconds
+
+        Raises:
+            RuntimeError: If bridge is not running or initialization fails
+            trio.TooSlowError: If timeout is exceeded
+
+        Example:
+            bridge = TrioBridgeWrapper()
+            await bridge.start()
+            await bridge.initialize_client(
+                target_url="localhost:7233",
+                namespace="default"
+            )
+        """
+        self._check_running()
+
+        import json
+
+        config = {
+            "target_url": target_url,
+            "namespace": namespace,
+            "identity": identity or "",
+        }
+
+        event = trio.Event()
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for client initialization result."""
+            try:
+                if not result.success:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(
+                        RuntimeError(f"Client init failed: {error_msg}")
+                    )
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "initialize_client", json.dumps(config).encode("utf-8"), deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("initialize_client timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+    async def start_workflow_execution(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        """Start a workflow execution.
+
+        Args:
+            request_bytes: Serialized StartWorkflowExecutionRequest (protobuf)
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Serialized StartWorkflowExecutionResponse (protobuf)
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        event = trio.Event()
+        result_container: list = []
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for start workflow result."""
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is not None:
+                        result_container.append(bytes(data_bytes))
+                    else:
+                        result_container.append(b"")
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "start_workflow", request_bytes, deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("start_workflow_execution timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        return result_container[0]
+
+    async def get_workflow_result(
+        self,
+        workflow_id: str,
+        run_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> bytes:
+        """Get workflow execution result (blocks until workflow completes).
+
+        Args:
+            workflow_id: Workflow ID
+            run_id: Optional run ID
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Serialized GetWorkflowExecutionHistoryResponse (protobuf)
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        import json
+
+        request_data = {"workflow_id": workflow_id, "run_id": run_id}
+
+        event = trio.Event()
+        result_container: list = []
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for get result."""
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is not None:
+                        result_container.append(bytes(data_bytes))
+                    else:
+                        result_container.append(b"")
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "get_workflow_result",
+            json.dumps(request_data).encode("utf-8"),
+            deliver_result,
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("get_workflow_result timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        return result_container[0]
+
+    async def cancel_workflow_execution(
+        self,
+        workflow_id: str,
+        run_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Cancel a workflow execution.
+
+        Args:
+            workflow_id: Workflow ID
+            run_id: Optional run ID
+            timeout: Optional timeout in seconds
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        import json
+
+        request_data = {"workflow_id": workflow_id, "run_id": run_id}
+
+        event = trio.Event()
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for cancel result."""
+            try:
+                if not result.success:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "cancel_workflow", json.dumps(request_data).encode("utf-8"), deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("cancel_workflow_execution timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+    async def terminate_workflow_execution(
+        self,
+        workflow_id: str,
+        run_id: Optional[str] = None,
+        reason: str = "",
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Terminate a workflow execution.
+
+        Args:
+            workflow_id: Workflow ID
+            run_id: Optional run ID
+            reason: Termination reason
+            timeout: Optional timeout in seconds
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        import json
+
+        request_data = {
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "reason": reason,
+        }
+
+        event = trio.Event()
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for terminate result."""
+            try:
+                if not result.success:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "terminate_workflow",
+            json.dumps(request_data).encode("utf-8"),
+            deliver_result,
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("terminate_workflow_execution timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+    async def query_workflow(
+        self,
+        workflow_id: str,
+        run_id: Optional[str],
+        query_type: str,
+        args_bytes: bytes,
+        timeout: Optional[float] = None,
+    ) -> bytes:
+        """Query a workflow execution.
+
+        Args:
+            workflow_id: Workflow ID
+            run_id: Optional run ID
+            query_type: Query type name
+            args_bytes: Serialized query arguments (Payloads protobuf)
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Serialized QueryWorkflowResponse (protobuf)
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        import json
+
+        request_data = {
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "query_type": query_type,
+            "args_bytes": list(args_bytes),  # Convert bytes to list for JSON
+        }
+
+        event = trio.Event()
+        result_container: list = []
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for query result."""
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is not None:
+                        result_container.append(bytes(data_bytes))
+                    else:
+                        result_container.append(b"")
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "query_workflow", json.dumps(request_data).encode("utf-8"), deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("query_workflow timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        return result_container[0]
+
+    async def signal_workflow(
+        self,
+        workflow_id: str,
+        run_id: Optional[str],
+        signal_name: str,
+        args_bytes: bytes,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Signal a workflow execution.
+
+        Args:
+            workflow_id: Workflow ID
+            run_id: Optional run ID
+            signal_name: Signal name
+            args_bytes: Serialized signal arguments (Payloads protobuf)
+            timeout: Optional timeout in seconds
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        import json
+
+        request_data = {
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "signal_name": signal_name,
+            "args_bytes": list(args_bytes),  # Convert bytes to list for JSON
+        }
+
+        event = trio.Event()
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for signal result."""
+            try:
+                if not result.success:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "signal_workflow", json.dumps(request_data).encode("utf-8"), deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("signal_workflow timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
     async def poll_workflow_activation(self, timeout: Optional[float] = None) -> bytes:
         """Poll for a workflow activation.
 

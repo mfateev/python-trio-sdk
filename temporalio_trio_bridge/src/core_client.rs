@@ -2,9 +2,10 @@ use anyhow::{anyhow, Result};
 use prost::Message;
 use std::str::FromStr;
 use std::sync::Arc;
-use temporalio_client::ClientOptions;
-use temporalio_sdk_core::{CoreRuntime, RetryClient};
+use temporalio_client::{ClientOptions, WorkflowService};
+use temporalio_sdk_core::CoreRuntime;
 use tokio::sync::Mutex;
+use tonic;
 use url::Url;
 
 /// Configuration for initializing the Core Client
@@ -16,9 +17,11 @@ pub struct ClientInitConfig {
     pub identity: String,
 }
 
+type ClientType = temporalio_sdk_core::RetryClient<temporalio_client::ConfiguredClient<temporalio_client::TemporalServiceClient>>;
+
 /// Wrapper around the Temporal SDK Core Client that provides thread-safe access
 pub struct CoreClientHandle {
-    client: Arc<Mutex<Option<RetryClient<temporalio_client::Client>>>>,
+    client: Arc<Mutex<Option<ClientType>>>,
     runtime: Arc<Mutex<Option<CoreRuntime>>>,
     namespace: String,
 }
@@ -67,15 +70,13 @@ impl CoreClientHandle {
             .await
             .map_err(|e| anyhow!("Failed to connect to Temporal server: {}", e))?;
 
-        let retry_client = RetryClient::new(client, Default::default());
-
         // Store runtime
         let mut runtime_guard = self.runtime.lock().await;
         *runtime_guard = Some(runtime);
         drop(runtime_guard);
 
         // Store client and namespace
-        *client_guard = Some(retry_client);
+        *client_guard = Some(client);
         self.namespace = config.namespace;
 
         Ok(())
@@ -83,9 +84,9 @@ impl CoreClientHandle {
 
     /// Start a workflow execution
     pub async fn start_workflow_execution(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
-        let guard = self.client.lock().await;
+        let mut guard = self.client.lock().await;
         let client = guard
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| anyhow!("Client not initialized"))?;
 
         // Decode request from protobuf
@@ -95,12 +96,12 @@ impl CoreClientHandle {
 
         // Call the client
         let response = client
-            .start_workflow(request.into())
+            .start_workflow_execution(tonic::Request::new(request))
             .await
             .map_err(|e| anyhow!("Failed to start workflow: {}", e))?;
 
         // Encode response to protobuf bytes
-        let bytes = response.encode_to_vec();
+        let bytes = response.into_inner().encode_to_vec();
         Ok(bytes)
     }
 
@@ -110,9 +111,9 @@ impl CoreClientHandle {
         workflow_id: String,
         run_id: Option<String>,
     ) -> Result<Vec<u8>> {
-        let guard = self.client.lock().await;
+        let mut guard = self.client.lock().await;
         let client = guard
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| anyhow!("Client not initialized"))?;
 
         // Build get_workflow_execution_history request
@@ -132,12 +133,12 @@ impl CoreClientHandle {
 
         // Poll for result (this will block until workflow completes)
         let response = client
-            .get_workflow_execution_history(request)
+            .get_workflow_execution_history(tonic::Request::new(request))
             .await
             .map_err(|e| anyhow!("Failed to get workflow result: {}", e))?;
 
         // Encode response to protobuf bytes
-        let bytes = response.encode_to_vec();
+        let bytes = response.into_inner().encode_to_vec();
         Ok(bytes)
     }
 
@@ -147,9 +148,9 @@ impl CoreClientHandle {
         workflow_id: String,
         run_id: Option<String>,
     ) -> Result<()> {
-        let guard = self.client.lock().await;
+        let mut guard = self.client.lock().await;
         let client = guard
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| anyhow!("Client not initialized"))?;
 
         use temporalio_common::protos::temporal::api::workflowservice::v1::RequestCancelWorkflowExecutionRequest;
@@ -165,7 +166,7 @@ impl CoreClientHandle {
         };
 
         client
-            .request_cancel_workflow_execution(request)
+            .request_cancel_workflow_execution(tonic::Request::new(request))
             .await
             .map_err(|e| anyhow!("Failed to cancel workflow: {}", e))?;
 
@@ -179,9 +180,9 @@ impl CoreClientHandle {
         run_id: Option<String>,
         reason: String,
     ) -> Result<()> {
-        let guard = self.client.lock().await;
+        let mut guard = self.client.lock().await;
         let client = guard
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| anyhow!("Client not initialized"))?;
 
         use temporalio_common::protos::temporal::api::workflowservice::v1::TerminateWorkflowExecutionRequest;
@@ -198,7 +199,7 @@ impl CoreClientHandle {
         };
 
         client
-            .terminate_workflow_execution(request)
+            .terminate_workflow_execution(tonic::Request::new(request))
             .await
             .map_err(|e| anyhow!("Failed to terminate workflow: {}", e))?;
 
@@ -213,9 +214,9 @@ impl CoreClientHandle {
         query_type: String,
         args_bytes: Vec<u8>,
     ) -> Result<Vec<u8>> {
-        let guard = self.client.lock().await;
+        let mut guard = self.client.lock().await;
         let client = guard
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| anyhow!("Client not initialized"))?;
 
         use temporalio_common::protos::temporal::api::workflowservice::v1::QueryWorkflowRequest;
@@ -245,12 +246,12 @@ impl CoreClientHandle {
         };
 
         let response = client
-            .query_workflow(request)
+            .query_workflow(tonic::Request::new(request))
             .await
             .map_err(|e| anyhow!("Failed to query workflow: {}", e))?;
 
         // Encode response to protobuf bytes
-        let bytes = response.encode_to_vec();
+        let bytes = response.into_inner().encode_to_vec();
         Ok(bytes)
     }
 
@@ -262,9 +263,9 @@ impl CoreClientHandle {
         signal_name: String,
         args_bytes: Vec<u8>,
     ) -> Result<()> {
-        let guard = self.client.lock().await;
+        let mut guard = self.client.lock().await;
         let client = guard
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| anyhow!("Client not initialized"))?;
 
         use temporalio_common::protos::temporal::api::workflowservice::v1::SignalWorkflowExecutionRequest;
@@ -290,7 +291,7 @@ impl CoreClientHandle {
         };
 
         client
-            .signal_workflow_execution(request)
+            .signal_workflow_execution(tonic::Request::new(request))
             .await
             .map_err(|e| anyhow!("Failed to signal workflow: {}", e))?;
 
