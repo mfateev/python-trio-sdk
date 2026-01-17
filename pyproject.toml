@@ -9,7 +9,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["temporal", "workflow", "trio", "async"]
 dependencies = [
-    "trio>=0.27.0",
+    "trio @ git+https://github.com/mfateev/trio.git@temporal-deterministic-scheduling",
     "attrs>=23.2.0",
     "outcome>=1.3.0",
     "protobuf>=3.20,<7.0.0",
