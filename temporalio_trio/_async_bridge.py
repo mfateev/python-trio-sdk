@@ -26,8 +26,8 @@ from typing import Optional
 
 import trio
 
-# Import the Rust bridge (will be available after Phase 1 is complete)
-# from temporalio_trio_bridge import TrioAsyncBridge
+# Import the Rust bridge
+from temporalio_trio_bridge import TrioAsyncBridge
 
 
 class BridgeState(enum.Enum):
@@ -71,9 +71,8 @@ class TrioBridgeWrapper:
 
         The bridge is not started automatically. Call start() to begin operation.
         """
-        # This will be uncommented after Phase 1 is complete
-        # self._rust_bridge = TrioAsyncBridge()
-        self._rust_bridge = None  # Placeholder for now
+        # Initialize the Rust bridge
+        self._rust_bridge = TrioAsyncBridge()
         self._trio_token: Optional[trio.lowlevel.TrioToken] = None
         self._state: BridgeState = BridgeState.NOT_STARTED
 
@@ -92,10 +91,8 @@ class TrioBridgeWrapper:
         # Capture Trio token for from_thread callbacks
         self._trio_token = trio.lowlevel.current_trio_token()
 
-        # Start the Rust bridge
-        # This will spawn the Rust thread with Tokio runtime
-        if self._rust_bridge:
-            self._rust_bridge.start()
+        # Note: The Rust bridge starts automatically in its constructor
+        # The Tokio runtime thread is already running
 
         self._state = BridgeState.RUNNING
 
@@ -176,12 +173,11 @@ class TrioBridgeWrapper:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
         # Send initialization request
-        if self._rust_bridge:
-            self._rust_bridge.send_request(
-                "initialize",
-                json.dumps(config).encode('utf-8'),
-                deliver_result
-            )
+        self._rust_bridge.send_request(
+            "initialize",
+            json.dumps(config).encode('utf-8'),
+            deliver_result
+        )
 
         # Await result
         if timeout is not None:
@@ -244,10 +240,21 @@ class TrioBridgeWrapper:
             to safely deliver the result into the Trio context.
 
             Args:
-                result_bytes: The activation bytes from the Rust bridge
+                result_bytes: JSON response from the Rust bridge
             """
             try:
-                result_container.append(result_bytes)
+                # Parse JSON response from Rust bridge
+                import json
+                result_json = json.loads(result_bytes)
+
+                if result_json.get("success"):
+                    # Extract the protobuf bytes from the data field
+                    data_bytes = bytes(result_json.get("data", []))
+                    result_container.append(data_bytes)
+                else:
+                    # Extract error message
+                    error_msg = result_json.get("error", "Unknown error")
+                    error_container.append(RuntimeError(error_msg))
             except Exception as e:
                 error_container.append(e)
             finally:
@@ -259,12 +266,11 @@ class TrioBridgeWrapper:
                 )
 
         # Send request to Rust bridge (non-blocking)
-        if self._rust_bridge:
-            self._rust_bridge.send_request(
-                "poll_activation",
-                b"",
-                deliver_result
-            )
+        self._rust_bridge.send_request(
+            "poll_activation",
+            b"",
+            deliver_result
+        )
 
         # Await result with optional timeout
         if timeout is not None:
@@ -322,12 +328,11 @@ class TrioBridgeWrapper:
                 )
 
         # Send completion request
-        if self._rust_bridge:
-            self._rust_bridge.send_request(
-                "complete_activation",
-                completion_bytes,
-                deliver_result
-            )
+        self._rust_bridge.send_request(
+            "complete_activation",
+            completion_bytes,
+            deliver_result
+        )
 
         # Await acknowledgment
         if timeout is not None:
@@ -379,12 +384,11 @@ class TrioBridgeWrapper:
                     trio_token=self._trio_token
                 )
 
-        if self._rust_bridge:
-            self._rust_bridge.send_request(
-                "validate",
-                b"",
-                deliver_result
-            )
+        self._rust_bridge.send_request(
+            "validate",
+            b"",
+            deliver_result
+        )
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
@@ -414,8 +418,9 @@ class TrioBridgeWrapper:
         if self._state == BridgeState.SHUTDOWN:
             return
 
-        if self._rust_bridge:
-            self._rust_bridge.initiate_shutdown()
+        # Call shutdown on the Rust bridge
+        # Note: The Rust bridge only has shutdown(), not initiate_shutdown()
+        self._rust_bridge.shutdown()
 
         self._state = BridgeState.SHUTDOWN
 
@@ -459,12 +464,11 @@ class TrioBridgeWrapper:
                     # This shouldn't happen, but handle gracefully
                     event.set()
 
-        if self._rust_bridge:
-            self._rust_bridge.send_request(
-                "finalize_shutdown",
-                b"",
-                deliver_result
-            )
+        self._rust_bridge.send_request(
+            "finalize_shutdown",
+            b"",
+            deliver_result
+        )
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:

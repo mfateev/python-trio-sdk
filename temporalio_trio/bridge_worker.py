@@ -95,8 +95,8 @@ class TrioBridgeWorker:
             f"Starting Trio bridge worker on {self._namespace}/{self._task_queue}"
         )
 
-        # Start the bridge wrapper and capture trio token
-        await self._bridge.start()
+        # Note: Bridge wrapper is already started by Worker.run()
+        # No need to start it again here
 
         async with trio.open_nursery() as nursery:
             # Start the polling loop

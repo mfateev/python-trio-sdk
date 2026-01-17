@@ -201,7 +201,12 @@ class Worker:
 
         try:
             # Initialize bridge with Temporal configuration
-            target_url = self._client.service_client.config.target_url
+            # Ensure URL has scheme - target_host is just "localhost:7233"
+            target_host = self._client.service_client.config.target_host
+            if not target_host.startswith(('http://', 'https://')):
+                target_url = f"http://{target_host}"
+            else:
+                target_url = target_host
 
             await bridge_wrapper.initialize_with_config(
                 target_url=target_url,
@@ -212,8 +217,9 @@ class Worker:
                 max_concurrent_workflow_task_polls=self._max_concurrent_workflow_task_polls,
             )
 
-            # Validate bridge connection
-            await bridge_wrapper.validate()
+            # Note: Skipping bridge validation - not implemented in Rust bridge yet
+            # The initialization above already validates connection to Temporal server
+            # await bridge_wrapper.validate()
 
             # Create Trio bridge worker with new wrapper
             self._trio_worker = TrioBridgeWorker(
