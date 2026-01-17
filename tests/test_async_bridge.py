@@ -23,7 +23,13 @@ from temporalio_trio._async_bridge import BridgeState, TrioBridgeWrapper
 class MockRequestResult:
     """Mock RequestResult for testing (mimics the Rust RequestResult class)."""
 
-    def __init__(self, request_id: str, success: bool, data: bytes | None = None, error: str | None = None):
+    def __init__(
+        self,
+        request_id: str,
+        success: bool,
+        data: bytes | None = None,
+        error: str | None = None,
+    ):
         self.request_id = request_id
         self.success = success
         self._data = data
@@ -51,10 +57,7 @@ class MockRustBridge:
         self.shutdown_initiated = True
 
     def send_request(
-        self,
-        operation: str,
-        data: bytes,
-        callback: Callable[[bytes], None]
+        self, operation: str, data: bytes, callback: Callable[[Any], None]
     ) -> None:
         """Send a request to the bridge.
 
@@ -77,41 +80,31 @@ class MockRustBridge:
             if operation == "poll_activation":
                 # Return RequestResult with mock activation bytes
                 result = MockRequestResult(
-                    request_id="test-123",
-                    success=True,
-                    data=b"mock_activation_data"
+                    request_id="test-123", success=True, data=b"mock_activation_data"
                 )
                 callback(result)
             elif operation == "complete_activation":
                 # Return success RequestResult
                 result = MockRequestResult(
-                    request_id="test-123",
-                    success=True,
-                    data=b""
+                    request_id="test-123", success=True, data=b""
                 )
                 callback(result)
             elif operation == "initialize":
                 # Return success RequestResult
                 result = MockRequestResult(
-                    request_id="test-123",
-                    success=True,
-                    data=b""
+                    request_id="test-123", success=True, data=b""
                 )
                 callback(result)
             elif operation == "validate":
                 # Return success RequestResult
                 result = MockRequestResult(
-                    request_id="test-123",
-                    success=True,
-                    data=b""
+                    request_id="test-123", success=True, data=b""
                 )
                 callback(result)
             elif operation == "finalize_shutdown":
                 # Return success RequestResult
                 result = MockRequestResult(
-                    request_id="test-123",
-                    success=True,
-                    data=b""
+                    request_id="test-123", success=True, data=b""
                 )
                 callback(result)
             else:
@@ -119,7 +112,7 @@ class MockRustBridge:
                 result = MockRequestResult(
                     request_id="test-123",
                     success=False,
-                    error=f"Unknown operation: {operation}"
+                    error=f"Unknown operation: {operation}",
                 )
                 callback(result)
 
@@ -263,6 +256,7 @@ class TestBridgeOperations:
     @pytest.mark.trio
     async def test_poll_timeout_exceeded(self, mock_bridge):
         """Test that poll timeout raises TooSlowError."""
+
         # Create a bridge that never responds
         class SlowMockBridge(MockRustBridge):
             def send_request(self, operation, data, callback):
@@ -299,10 +293,7 @@ class TestBridgeOperations:
     @pytest.mark.trio
     async def test_complete_with_timeout(self, started_bridge):
         """Test completing with timeout."""
-        await started_bridge.complete_workflow_activation(
-            b"data",
-            timeout=1.0
-        )
+        await started_bridge.complete_workflow_activation(b"data", timeout=1.0)
 
         # Should complete successfully
 
@@ -338,15 +329,13 @@ class TestBridgeOperations:
                         error_result = MockRequestResult(
                             request_id="test-123",
                             success=False,
-                            error="Validation failed: Connection refused"
+                            error="Validation failed: Connection refused",
                         )
                         callback(error_result)
                     else:
                         # Return success RequestResult
                         result = MockRequestResult(
-                            request_id="test-123",
-                            success=True,
-                            data=b""
+                            request_id="test-123", success=True, data=b""
                         )
                         callback(result)
 
@@ -367,6 +356,7 @@ class TestConcurrentOperations:
     @pytest.mark.trio
     async def test_many_concurrent_polls(self, started_bridge):
         """Test many concurrent polls don't cause issues."""
+
         async def poll_task():
             result = await started_bridge.poll_workflow_activation()
             assert result == b"mock_activation_data"
@@ -381,6 +371,7 @@ class TestConcurrentOperations:
     @pytest.mark.trio
     async def test_interleaved_poll_and_complete(self, started_bridge):
         """Test interleaved polling and completing."""
+
         async def worker():
             for _ in range(5):
                 activation = await started_bridge.poll_workflow_activation()
@@ -436,7 +427,7 @@ class TestErrorHandling:
                     error_result = MockRequestResult(
                         request_id="test-error",
                         success=False,
-                        error="Something went wrong"
+                        error="Something went wrong",
                     )
                     callback(error_result)
 
@@ -461,6 +452,7 @@ class TestErrorHandling:
     @pytest.mark.trio
     async def test_shutdown_timeout_exceeded(self, mock_bridge):
         """Test shutdown timeout exceeded."""
+
         class SlowShutdownBridge(MockRustBridge):
             def send_request(self, operation, data, callback):
                 self.requests.append((operation, data, callback))
@@ -484,6 +476,7 @@ class TestTrioIntegration:
     @pytest.mark.trio
     async def test_cancellation(self, mock_bridge):
         """Test that operations can be cancelled."""
+
         class NeverRespondBridge(MockRustBridge):
             def send_request(self, operation, data, callback):
                 # Never call the callback

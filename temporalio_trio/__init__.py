@@ -7,7 +7,7 @@ Warning:
     This package is experimental and not ready for production use.
 """
 
-from temporalio_trio import workflow, worker
+from temporalio_trio import worker, workflow
 
 __version__ = "0.1.0"
 

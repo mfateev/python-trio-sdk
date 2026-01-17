@@ -253,11 +253,9 @@ def defn(cls: type | None = None, *, name: str | None = None) -> Any:
     """
 
     def decorator(cls: type) -> type:
-        # Find the @workflow.run method
         run_fn: Callable[..., Awaitable[Any]] | None = None
 
         for attr_name in dir(cls):
-            # Skip private/magic attributes
             if attr_name.startswith("_"):
                 continue
 
@@ -278,7 +276,6 @@ def defn(cls: type | None = None, *, name: str | None = None) -> Any:
                 f"Workflow class {cls.__name__} must have a @workflow.run method"
             )
 
-        # Create and attach definition
         definition = _Definition(
             name=name or cls.__name__,
             cls=cls,

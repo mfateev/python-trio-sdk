@@ -23,7 +23,6 @@ from typing import Any, Callable, Dict, Optional
 
 import trio
 
-
 # ============================================================================
 # Simulated Rust Bridge (would be PyO3 in real implementation)
 # ============================================================================
@@ -32,6 +31,7 @@ import trio
 @dataclass
 class Request:
     """Request from Python to Rust."""
+
     request_id: str
     operation: str
     data: Any
@@ -57,9 +57,7 @@ class SimulatedRustBridge:
     def start(self):
         """Start the Rust thread with Tokio runtime."""
         self._rust_thread = threading.Thread(
-            target=self._rust_event_loop,
-            daemon=True,
-            name="RustTokioThread"
+            target=self._rust_event_loop, daemon=True, name="RustTokioThread"
         )
         self._rust_thread.start()
         print("🦀 Rust thread started with Tokio runtime")
@@ -70,7 +68,9 @@ class SimulatedRustBridge:
         self._rust_thread.join(timeout=2.0)
         print("🦀 Rust thread stopped")
 
-    def send_request(self, operation: str, data: Any, callback: Callable[[Any], None]) -> str:
+    def send_request(
+        self, operation: str, data: Any, callback: Callable[[Any], None]
+    ) -> str:
         """
         Send async request to Rust thread.
 
@@ -86,10 +86,7 @@ class SimulatedRustBridge:
         """
         request_id = str(uuid.uuid4())
         request = Request(
-            request_id=request_id,
-            operation=operation,
-            data=data,
-            callback=callback
+            request_id=request_id, operation=operation, data=data, callback=callback
         )
         self._request_queue.put(request)
         return request_id
@@ -122,12 +119,14 @@ class SimulatedRustBridge:
                 target=self._process_request_async,
                 args=(request,),
                 daemon=True,
-                name=f"TokioTask-{request.request_id[:8]}"
+                name=f"TokioTask-{request.request_id[:8]}",
             )
             task_thread.start()
             pending_tasks[request.request_id] = task_thread
 
-            print(f"🦀 Spawned async task for {request.operation} ({request.request_id[:8]})")
+            print(
+                f"🦀 Spawned async task for {request.operation} ({request.request_id[:8]})"
+            )
 
         # Wait for pending tasks to complete
         for task_thread in pending_tasks.values():
@@ -154,7 +153,7 @@ class SimulatedRustBridge:
                 result = {
                     "request_id": request.request_id,
                     "activation": f"workflow_{request.request_id[:8]}",
-                    "timestamp": time.time()
+                    "timestamp": time.time(),
                 }
             elif request.operation == "complete_activation":
                 # Simulate completion
@@ -219,21 +218,16 @@ class TrioBridge:
 
             Uses trio.from_thread.run_sync to deliver into Trio context.
             """
-            # Store result
-            self._results[request_id] = result
+            # Store result (request_id set before callback invoked)
+            self._results[request_id] = result  # type: ignore[index]
 
             # Signal Trio task that result is ready
             # This is the magic: Rust thread → Trio async
-            trio.from_thread.run_sync(
-                event.set,
-                trio_token=self._trio_token
-            )
+            trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
         # Send request to Rust (non-blocking)
         request_id = self._rust_bridge.send_request(
-            operation="poll_activation",
-            data={},
-            callback=deliver_result
+            operation="poll_activation", data={}, callback=deliver_result
         )
 
         print(f"🐍 Trio: Sent request {request_id[:8]}, awaiting result...")
@@ -256,13 +250,14 @@ class TrioBridge:
         request_id = None
 
         def deliver_result(result: Any):
-            self._results[request_id] = result
+            # request_id set before callback invoked
+            self._results[request_id] = result  # type: ignore[index]
             trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
         request_id = self._rust_bridge.send_request(
             operation="complete_activation",
             data={"activation_id": activation_id},
-            callback=deliver_result
+            callback=deliver_result,
         )
 
         await event.wait()
@@ -277,7 +272,7 @@ class TrioBridge:
 async def workflow_task(worker_id: int, bridge: TrioBridge):
     """Simulates a workflow task polling and processing."""
     for i in range(3):
-        print(f"🌊 Worker {worker_id}: Polling for activation (iteration {i+1}/3)")
+        print(f"🌊 Worker {worker_id}: Polling for activation (iteration {i + 1}/3)")
 
         # This is truly async - no thread blocked!
         activation = await bridge.poll_workflow_activation()
@@ -288,7 +283,7 @@ async def workflow_task(worker_id: int, bridge: TrioBridge):
         await trio.sleep(0.2)
 
         # Complete activation
-        result = await bridge.complete_workflow_activation(activation['activation'])
+        result = await bridge.complete_workflow_activation(activation["activation"])
         print(f"🌊 Worker {worker_id}: Completed {result['status']}")
 
 

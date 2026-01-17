@@ -14,7 +14,7 @@
  */
 
 use crate::core_worker::{CoreWorkerHandle, WorkerInitConfig};
-use crate::request::{Request, RequestId, RequestResult};
+use crate::request::{Request, RequestResult};
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -105,15 +105,12 @@ impl TrioAsyncBridge {
         let request = Request::new(request_id.clone(), operation, data, callback);
 
         // Send to Rust thread (non-blocking)
-        self.request_tx
-            .lock()
-            .send(request)
-            .map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                    "Failed to send request: {}",
-                    e
-                ))
-            })?;
+        self.request_tx.lock().send(request).map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                "Failed to send request: {}",
+                e
+            ))
+        })?;
 
         Ok(request_id)
     }

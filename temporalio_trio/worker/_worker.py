@@ -149,9 +149,7 @@ class Worker:
             sticky_queue_schedule_to_start_timeout
         )
         self._max_heartbeat_throttle_interval = max_heartbeat_throttle_interval
-        self._default_heartbeat_throttle_interval = (
-            default_heartbeat_throttle_interval
-        )
+        self._default_heartbeat_throttle_interval = default_heartbeat_throttle_interval
         self._max_activities_per_second = max_activities_per_second
         self._max_task_queue_activities_per_second = (
             max_task_queue_activities_per_second
@@ -195,7 +193,6 @@ class Worker:
 
         self._started = True
 
-        # Create async bridge wrapper
         bridge_wrapper = TrioBridgeWrapper()
         await bridge_wrapper.start()
 
@@ -203,7 +200,7 @@ class Worker:
             # Initialize bridge with Temporal configuration
             # Ensure URL has scheme - target_host is just "localhost:7233"
             target_host = self._client.service_client.config.target_host
-            if not target_host.startswith(('http://', 'https://')):
+            if not target_host.startswith(("http://", "https://")):
                 target_url = f"http://{target_host}"
             else:
                 target_url = target_host
@@ -230,16 +227,12 @@ class Worker:
                 data_converter=self._data_converter,
             )
 
-            logger.info(
-                f"Starting Trio worker on {self._namespace}/{self._task_queue}"
-            )
+            logger.info(f"Starting Trio worker on {self._namespace}/{self._task_queue}")
 
-            # Run the worker until shutdown
             async with trio.open_nursery() as nursery:
                 # Start the worker
                 nursery.start_soon(self._trio_worker.run)
 
-                # Wait for shutdown signal
                 await self._shutdown_event.wait()
 
                 # Cancel the nursery to stop the worker
@@ -276,6 +269,7 @@ class Worker:
         Returns:
             Self, for use in the ``async with`` statement.
         """
+
         # Start the worker in a background task
         async def run_worker():
             try:
@@ -286,9 +280,9 @@ class Worker:
 
         import trio
 
-        nursery_manager = trio.open_nursery()
-        self._context_nursery = await nursery_manager.__aenter__()
-        self._context_nursery.start_soon(run_worker)
+        self._nursery_manager = trio.open_nursery()
+        nursery = await self._nursery_manager.__aenter__()
+        nursery.start_soon(run_worker)
 
         # Give the worker a moment to start
         await trio.sleep(0.1)
@@ -301,5 +295,5 @@ class Worker:
         This will shut down the worker and wait for it to complete.
         """
         self.shutdown()
-        if hasattr(self, "_context_nursery"):
-            await self._context_nursery.__aexit__(exc_type, exc_val, exc_tb)
+        if hasattr(self, "_nursery_manager"):
+            return await self._nursery_manager.__aexit__(exc_type, exc_val, exc_tb)

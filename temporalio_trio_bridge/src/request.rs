@@ -3,7 +3,6 @@
  */
 
 use pyo3::prelude::*;
-use serde::{Deserialize, Serialize};
 
 /// Unique identifier for a request
 pub type RequestId = String;

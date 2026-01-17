@@ -304,10 +304,8 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             # Reset timer sequence for deterministic replay
             self._timer_seq = 0
 
-            # Set runtime context
             token = _Runtime.set_current(self)
             try:
-                # Create clock at current workflow time
                 clock = WorkflowClock(self._time_ns)
 
                 # Run with trio using deterministic scheduling
@@ -376,7 +374,6 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
 
         # Check if this timer has already fired (replay)
         if timer_id in self._fired_timers:
-            # Timer already fired, continue immediately
             return
 
         # Timer hasn't fired yet - create command and yield

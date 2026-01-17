@@ -2,12 +2,9 @@ use anyhow::{anyhow, Result};
 use prost::Message;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 use temporalio_client::ClientOptions;
-use temporalio_common::protos::coresdk::{
-    workflow_activation::WorkflowActivation, workflow_completion::WorkflowActivationCompletion,
-};
 use temporalio_common::errors::PollError;
+use temporalio_common::protos::coresdk::workflow_completion::WorkflowActivationCompletion;
 use temporalio_common::worker::{WorkerTaskTypes, WorkerVersioningStrategy};
 use temporalio_common::Worker as WorkerTrait;
 use temporalio_sdk_core::{init_worker, CoreRuntime, RetryClient, Worker, WorkerConfig};
@@ -64,8 +61,8 @@ impl CoreWorkerHandle {
         let runtime = CoreRuntime::new_assume_tokio(runtime_options)?;
 
         // Parse target URL
-        let target_url = Url::from_str(&config.target_url)
-            .map_err(|e| anyhow!("Invalid target URL: {}", e))?;
+        let target_url =
+            Url::from_str(&config.target_url).map_err(|e| anyhow!("Invalid target URL: {}", e))?;
 
         // Create client options and connect (using bon builder)
         let client_options = ClientOptions::builder()

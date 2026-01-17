@@ -26,12 +26,13 @@ from typing import Optional
 
 import trio
 
-# Import the Rust bridge
-from temporalio_trio_bridge import TrioAsyncBridge
+# Import the Rust bridge (compiled separately, may not be available during type checking)
+from temporalio_trio_bridge import TrioAsyncBridge  # type: ignore[attr-defined]
 
 
 class BridgeState(enum.Enum):
     """Bridge lifecycle states."""
+
     NOT_STARTED = "not_started"
     RUNNING = "running"
     SHUTDOWN = "shutdown"
@@ -71,7 +72,6 @@ class TrioBridgeWrapper:
 
         The bridge is not started automatically. Call start() to begin operation.
         """
-        # Initialize the Rust bridge
         self._rust_bridge = TrioAsyncBridge()
         self._trio_token: Optional[trio.lowlevel.TrioToken] = None
         self._state: BridgeState = BridgeState.NOT_STARTED
@@ -165,21 +165,17 @@ class TrioBridgeWrapper:
             try:
                 # Handle RequestResult struct directly
                 if not result.success:
-                    error_msg = result.error or 'Unknown error'
+                    error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(f"Init failed: {error_msg}"))
             except Exception as e:
                 error_container.append(e)
             finally:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        # Send initialization request
         self._rust_bridge.send_request(
-            "initialize",
-            json.dumps(config).encode('utf-8'),
-            deliver_result
+            "initialize", json.dumps(config).encode("utf-8"), deliver_result
         )
 
-        # Await result
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
                 await event.wait()
@@ -225,7 +221,6 @@ class TrioBridgeWrapper:
         """
         self._check_running()
 
-        # Create Event to wait on
         event = trio.Event()
 
         # Container to store result (or error)
@@ -252,27 +247,17 @@ class TrioBridgeWrapper:
                     else:
                         result_container.append(b"")
                 else:
-                    # Extract error message
                     error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(error_msg))
             except Exception as e:
                 error_container.append(e)
             finally:
-                # Wake up the awaiting Trio task
                 # This is the magic: Rust thread -> Trio async
-                trio.from_thread.run_sync(
-                    event.set,
-                    trio_token=self._trio_token
-                )
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
         # Send request to Rust bridge (non-blocking)
-        self._rust_bridge.send_request(
-            "poll_activation",
-            b"",
-            deliver_result
-        )
+        self._rust_bridge.send_request("poll_activation", b"", deliver_result)
 
-        # Await result with optional timeout
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
                 await event.wait()
@@ -282,17 +267,13 @@ class TrioBridgeWrapper:
         else:
             await event.wait()
 
-        # Check for errors
         if error_container:
             raise error_container[0]
 
-        # Return result
         return result_container[0]
 
     async def complete_workflow_activation(
-        self,
-        completion_bytes: bytes,
-        timeout: Optional[float] = None
+        self, completion_bytes: bytes, timeout: Optional[float] = None
     ) -> None:
         """Complete a workflow activation.
 
@@ -317,25 +298,19 @@ class TrioBridgeWrapper:
             try:
                 # Handle RequestResult struct directly
                 if not result.success:
-                    # Extract error message
                     error_msg = result.error or "Unknown error"
-                    error_container.append(RuntimeError(f"Complete activation failed: {error_msg}"))
+                    error_container.append(
+                        RuntimeError(f"Complete activation failed: {error_msg}")
+                    )
             except Exception as e:
                 error_container.append(e)
             finally:
-                trio.from_thread.run_sync(
-                    event.set,
-                    trio_token=self._trio_token
-                )
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        # Send completion request
         self._rust_bridge.send_request(
-            "complete_activation",
-            completion_bytes,
-            deliver_result
+            "complete_activation", completion_bytes, deliver_result
         )
 
-        # Await acknowledgment
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
                 await event.wait()
@@ -372,22 +347,16 @@ class TrioBridgeWrapper:
             try:
                 # Handle RequestResult struct directly
                 if not result.success:
-                    # Extract error message
                     error_msg = result.error or "Unknown error"
-                    error_container.append(RuntimeError(f"Validation failed: {error_msg}"))
+                    error_container.append(
+                        RuntimeError(f"Validation failed: {error_msg}")
+                    )
             except Exception as e:
                 error_container.append(e)
             finally:
-                trio.from_thread.run_sync(
-                    event.set,
-                    trio_token=self._trio_token
-                )
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        self._rust_bridge.send_request(
-            "validate",
-            b"",
-            deliver_result
-        )
+        self._rust_bridge.send_request("validate", b"", deliver_result)
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
@@ -448,27 +417,19 @@ class TrioBridgeWrapper:
             try:
                 # Handle RequestResult struct directly
                 if not result.success:
-                    # Extract error message
                     error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(f"Shutdown error: {error_msg}"))
             except Exception as e:
                 error_container.append(e)
             finally:
                 if self._trio_token:
-                    trio.from_thread.run_sync(
-                        event.set,
-                        trio_token=self._trio_token
-                    )
+                    trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
                 else:
                     # If trio_token is None, just set the event directly
                     # This shouldn't happen, but handle gracefully
                     event.set()
 
-        self._rust_bridge.send_request(
-            "finalize_shutdown",
-            b"",
-            deliver_result
-        )
+        self._rust_bridge.send_request("finalize_shutdown", b"", deliver_result)
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
@@ -505,8 +466,7 @@ class TrioBridgeWrapper:
         """
         if self._state != BridgeState.RUNNING:
             raise RuntimeError(
-                f"Bridge is not running (state: {self._state}). "
-                "Call start() first."
+                f"Bridge is not running (state: {self._state}). Call start() first."
             )
 
         if self._trio_token is None:

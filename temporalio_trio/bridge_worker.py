@@ -122,8 +122,10 @@ class TrioBridgeWorker:
                 except Exception as e:
                     # Check if it's a PollShutdownError
                     # The Rust bridge returns this as either an exception class or error string
-                    if (e.__class__.__name__ == "PollShutdownError" or
-                        "PollShutdownError" in str(e)):
+                    if (
+                        e.__class__.__name__ == "PollShutdownError"
+                        or "PollShutdownError" in str(e)
+                    ):
                         # Bridge is shutting down
                         logger.info("Bridge worker shutdown signal received")
                         break
@@ -174,7 +176,6 @@ class TrioBridgeWorker:
             # Convert bridge activation to POC activation
             poc_act = bridge_to_poc_activation(bridge_act, self._data_converter)
 
-            # Get or create workflow instance
             instance = self._instances.get(run_id)
             if instance is None:
                 # Find the WorkflowStartedJob to create the instance
@@ -191,7 +192,6 @@ class TrioBridgeWorker:
                         f"No WorkflowStartedJob found for new workflow {run_id}"
                     )
 
-                # Get workflow definition
                 defn = self._workflows.get(started_job.workflow_type)
                 if defn is None:
                     raise RuntimeError(
@@ -216,7 +216,6 @@ class TrioBridgeWorker:
                     task_queue=self._task_queue,
                 )
 
-                # Extract randomness seed
                 randomness_seed = 0
                 for job in bridge_act.jobs:
                     if job.HasField("initialize_workflow"):
@@ -244,7 +243,6 @@ class TrioBridgeWorker:
                 run_id, poc_comp, self._data_converter
             )
 
-            # Send completion to bridge
             comp_bytes = bridge_comp.SerializeToString()
             await self._bridge.complete_workflow_activation(comp_bytes)
 
