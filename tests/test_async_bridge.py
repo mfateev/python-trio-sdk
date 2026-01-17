@@ -27,16 +27,13 @@ class MockRustBridge:
     """
 
     def __init__(self) -> None:
-        self.started = False
+        # Note: Real bridge starts automatically in constructor
+        self.started = True
         self.shutdown_initiated = False
         self.requests: list[tuple[str, bytes, Callable]] = []
 
-    def start(self) -> None:
-        """Start the bridge."""
-        self.started = True
-
-    def initiate_shutdown(self) -> None:
-        """Initiate shutdown."""
+    def shutdown(self) -> None:
+        """Shutdown the bridge."""
         self.shutdown_initiated = True
 
     def send_request(
@@ -51,27 +48,58 @@ class MockRustBridge:
         The callback will use trio.from_thread internally, which is fine
         because this simulates a call from a different thread.
         """
+        import json
         import threading
 
         self.requests.append((operation, data, callback))
 
+        # Note: Real Rust bridge can accept requests even after shutdown()
+        # is called, until the channel is fully closed
+
         # Simulate async processing by running callback from a thread
         # In real bridge, this happens from Rust thread
         def invoke_callback():
+            # Real bridge returns JSON-wrapped responses
             if operation == "poll_activation":
-                # Return mock activation bytes
-                callback(b"mock_activation_data")
+                # Return JSON response with mock activation bytes
+                response = {
+                    "request_id": "test-123",
+                    "success": True,
+                    "data": list(b"mock_activation_data")
+                }
+                callback(json.dumps(response).encode())
             elif operation == "complete_activation":
-                # Return empty acknowledgment
-                callback(b"")
-            elif operation == "validate":
-                # Return empty (success)
-                callback(b"")
+                # Return JSON success response
+                response = {
+                    "request_id": "test-123",
+                    "success": True,
+                    "data": []
+                }
+                callback(json.dumps(response).encode())
+            elif operation == "initialize":
+                # Return JSON success response
+                response = {
+                    "request_id": "test-123",
+                    "success": True,
+                    "data": []
+                }
+                callback(json.dumps(response).encode())
             elif operation == "finalize_shutdown":
-                # Return empty (success)
-                callback(b"")
+                # Return JSON success response
+                response = {
+                    "request_id": "test-123",
+                    "success": True,
+                    "data": []
+                }
+                callback(json.dumps(response).encode())
             else:
-                raise ValueError(f"Unknown operation: {operation}")
+                # Unknown operation - return JSON error
+                response = {
+                    "request_id": "test-123",
+                    "success": False,
+                    "error": f"Unknown operation: {operation}"
+                }
+                callback(json.dumps(response).encode())
 
         # Run callback from a thread to simulate Rust thread behavior
         thread = threading.Thread(target=invoke_callback, daemon=True)
