@@ -13,6 +13,7 @@
  * - Error handling throughout
  */
 
+use crate::core_worker::{CoreWorkerHandle, WorkerInitConfig};
 use crate::request::{Request, RequestId, RequestResult};
 use parking_lot::Mutex;
 use pyo3::prelude::*;
@@ -47,11 +48,15 @@ impl TrioAsyncBridge {
         let shutdown = Arc::new(Mutex::new(false));
         let shutdown_clone = shutdown.clone();
 
+        // Create Core Worker Handle
+        let core_worker = Arc::new(CoreWorkerHandle::new());
+        let core_worker_clone = core_worker.clone();
+
         // Spawn Rust thread with Tokio runtime
         std::thread::Builder::new()
             .name("RustTokioThread".to_string())
             .spawn(move || {
-                Self::rust_event_loop(rx, shutdown_clone);
+                Self::rust_event_loop(rx, shutdown_clone, core_worker_clone);
             })
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
@@ -142,6 +147,7 @@ impl TrioAsyncBridge {
     fn rust_event_loop(
         mut rx: mpsc::UnboundedReceiver<Request>,
         shutdown: Arc<Mutex<bool>>,
+        core_worker: Arc<CoreWorkerHandle>,
     ) {
         // Create Tokio runtime (single-threaded)
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -160,7 +166,8 @@ impl TrioAsyncBridge {
 
                 // Spawn async task to process request
                 // This allows concurrent processing of multiple requests
-                tokio::spawn(Self::process_request_async(request));
+                let core_worker_clone = core_worker.clone();
+                tokio::spawn(Self::process_request_async(request, core_worker_clone));
             }
         });
     }
@@ -169,12 +176,12 @@ impl TrioAsyncBridge {
     ///
     /// This runs as a Tokio task spawned from the event loop.
     /// Multiple requests can be processed concurrently.
-    async fn process_request_async(request: Request) {
-        let request_id = request.request_id.clone();
-        let callback = request.callback.clone();
+    async fn process_request_async(request: Request, core_worker: Arc<CoreWorkerHandle>) {
+        // Process the request (before moving callback)
+        let result = Self::handle_operation(&request, core_worker).await;
 
-        // Process the request
-        let result = Self::handle_operation(&request).await;
+        // Move callback after processing
+        let callback = request.callback;
 
         // Deliver result back to Python via callback
         Self::deliver_result(callback, result);
@@ -183,26 +190,90 @@ impl TrioAsyncBridge {
     /// Handle a specific operation
     ///
     /// This is where actual async work happens.
-    /// Currently just a stub - will be filled in with real
-    /// temporalio-sdk-core operations later.
-    async fn handle_operation(request: &Request) -> RequestResult {
+    /// Routes operations to the appropriate CoreWorkerHandle methods.
+    async fn handle_operation(
+        request: &Request,
+        core_worker: Arc<CoreWorkerHandle>,
+    ) -> RequestResult {
         match request.operation.as_str() {
-            "poll_activation" => {
-                // TODO: Implement real poll_workflow_activation call
-                // For now, simulate async work
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            "initialize" => {
+                // Parse configuration from request data
+                let config: WorkerInitConfig = match serde_json::from_slice(&request.data) {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to parse config: {}", e),
+                        );
+                    }
+                };
 
-                RequestResult::success(
-                    request.request_id.clone(),
-                    b"mock_activation".to_vec(),
-                )
+                // Initialize the worker
+                match core_worker.initialize(config).await {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Initialize failed: {}", e),
+                    ),
+                }
+            }
+
+            "poll_activation" => {
+                // Poll for workflow activation
+                match core_worker.poll_workflow_activation().await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => {
+                        let error_msg = e.to_string();
+                        // Check if this is a shutdown error
+                        if error_msg.contains("Shutdown") || error_msg.contains("shutdown") {
+                            RequestResult::error(
+                                request.request_id.clone(),
+                                "PollShutdownError".to_string(),
+                            )
+                        } else {
+                            RequestResult::error(
+                                request.request_id.clone(),
+                                format!("Poll failed: {}", error_msg),
+                            )
+                        }
+                    }
+                }
             }
 
             "complete_activation" => {
-                // TODO: Implement real complete_workflow_activation call
-                tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+                // Complete workflow activation
+                match core_worker
+                    .complete_workflow_activation(request.data.clone())
+                    .await
+                {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Complete failed: {}", e),
+                    ),
+                }
+            }
 
-                RequestResult::success(request.request_id.clone(), b"completed".to_vec())
+            "initiate_shutdown" => {
+                // Initiate graceful shutdown
+                match core_worker.initiate_shutdown().await {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Shutdown initiation failed: {}", e),
+                    ),
+                }
+            }
+
+            "finalize_shutdown" => {
+                // Finalize shutdown
+                match core_worker.finalize_shutdown().await {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Shutdown failed: {}", e),
+                    ),
+                }
             }
 
             _ => RequestResult::error(
@@ -229,7 +300,7 @@ impl TrioAsyncBridge {
             };
 
             // Convert to Python bytes
-            let py_bytes = PyBytes::new_bound(py, &result_json);
+            let py_bytes = PyBytes::new(py, &result_json);
 
             // Invoke callback
             if let Err(e) = callback.call1(py, (py_bytes,)) {

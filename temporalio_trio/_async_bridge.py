@@ -110,6 +110,92 @@ class TrioBridgeWrapper:
         """
         self._trio_token = token
 
+    async def initialize_with_config(
+        self,
+        target_url: str,
+        namespace: str,
+        task_queue: str,
+        identity: Optional[str] = None,
+        max_cached_workflows: int = 1000,
+        max_concurrent_workflow_task_polls: int = 5,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Initialize the bridge worker with Temporal configuration.
+
+        Must be called after start() and before poll_workflow_activation().
+        This connects to the Temporal server and initializes the SDK Core worker.
+
+        Args:
+            target_url: Temporal server URL (e.g., "localhost:7233")
+            namespace: Temporal namespace
+            task_queue: Task queue name
+            identity: Worker identity (optional, defaults to "trio-worker")
+            max_cached_workflows: Maximum cached workflows (default: 1000)
+            max_concurrent_workflow_task_polls: Max concurrent polls (default: 5)
+            timeout: Optional timeout in seconds
+
+        Raises:
+            RuntimeError: If bridge is not running or initialization fails
+            trio.TooSlowError: If timeout is exceeded
+
+        Example:
+            bridge = TrioBridgeWrapper()
+            await bridge.start()
+            await bridge.initialize_with_config(
+                target_url="localhost:7233",
+                namespace="default",
+                task_queue="my-task-queue"
+            )
+        """
+        self._check_running()
+
+        import json
+
+        config = {
+            "target_url": target_url,
+            "namespace": namespace,
+            "task_queue": task_queue,
+            "identity": identity or "",
+            "max_cached_workflows": max_cached_workflows,
+            "max_concurrent_workflow_task_polls": max_concurrent_workflow_task_polls,
+        }
+
+        event = trio.Event()
+        error_container: list = []
+
+        def deliver_result(result: bytes) -> None:
+            """Callback for initialization result."""
+            try:
+                result_data = json.loads(result.decode('utf-8'))
+                if not result_data.get('success'):
+                    error_msg = result_data.get('error', 'Unknown error')
+                    error_container.append(RuntimeError(f"Init failed: {error_msg}"))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        # Send initialization request
+        if self._rust_bridge:
+            self._rust_bridge.send_request(
+                "initialize",
+                json.dumps(config).encode('utf-8'),
+                deliver_result
+            )
+
+        # Await result
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("initialize_with_config timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
     async def poll_workflow_activation(self, timeout: Optional[float] = None) -> bytes:
         """Poll for a workflow activation.
 

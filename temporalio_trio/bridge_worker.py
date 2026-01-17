@@ -120,8 +120,10 @@ class TrioBridgeWorker:
                     bridge_act = temporalio.bridge.proto.workflow_activation.workflow_activation_pb2.WorkflowActivation()
                     bridge_act.ParseFromString(bridge_act_bytes)
                 except Exception as e:
-                    # Check if it's a PollShutdownError (not exported, check by name)
-                    if e.__class__.__name__ == "PollShutdownError":
+                    # Check if it's a PollShutdownError
+                    # The Rust bridge returns this as either an exception class or error string
+                    if (e.__class__.__name__ == "PollShutdownError" or
+                        "PollShutdownError" in str(e)):
                         # Bridge is shutting down
                         logger.info("Bridge worker shutdown signal received")
                         break
