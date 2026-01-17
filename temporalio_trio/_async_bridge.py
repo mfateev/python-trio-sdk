@@ -314,11 +314,15 @@ class TrioBridgeWrapper:
 
         def deliver_result(result: bytes) -> None:
             """Callback for completion acknowledgment."""
-            # Result is typically empty for completions, but we check for errors
-            # that might be encoded in the response
             try:
-                # Process result if needed
-                pass
+                # Parse JSON response from Rust bridge
+                import json
+                result_json = json.loads(result)
+
+                if not result_json.get("success"):
+                    # Extract error message
+                    error_msg = result_json.get("error", "Unknown error")
+                    error_container.append(RuntimeError(f"Complete activation failed: {error_msg}"))
             except Exception as e:
                 error_container.append(e)
             finally:
@@ -369,13 +373,14 @@ class TrioBridgeWrapper:
         def deliver_result(result: bytes) -> None:
             """Callback for validation result."""
             try:
-                # Check if validation succeeded
-                # The Rust bridge will send error bytes if validation fails
-                if result:
-                    # Decode error if present
-                    error_msg = result.decode('utf-8')
-                    if error_msg:
-                        error_container.append(RuntimeError(f"Validation failed: {error_msg}"))
+                # Parse JSON response from Rust bridge
+                import json
+                result_json = json.loads(result)
+
+                if not result_json.get("success"):
+                    # Extract error message
+                    error_msg = result_json.get("error", "Unknown error")
+                    error_container.append(RuntimeError(f"Validation failed: {error_msg}"))
             except Exception as e:
                 error_container.append(e)
             finally:
@@ -447,10 +452,14 @@ class TrioBridgeWrapper:
         def deliver_result(result: bytes) -> None:
             """Callback for shutdown completion."""
             try:
-                if result:
-                    error_msg = result.decode('utf-8')
-                    if error_msg:
-                        error_container.append(RuntimeError(f"Shutdown error: {error_msg}"))
+                # Parse JSON response from Rust bridge
+                import json
+                result_json = json.loads(result)
+
+                if not result_json.get("success"):
+                    # Extract error message
+                    error_msg = result_json.get("error", "Unknown error")
+                    error_container.append(RuntimeError(f"Shutdown error: {error_msg}"))
             except Exception as e:
                 error_container.append(e)
             finally:

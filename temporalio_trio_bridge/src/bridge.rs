@@ -218,6 +218,18 @@ impl TrioAsyncBridge {
                 }
             }
 
+            "validate" => {
+                // Validate that the worker is initialized and ready
+                // This is a simple check - if we can get the worker guard, it's valid
+                match core_worker.validate().await {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Validation failed: {}", e),
+                    ),
+                }
+            }
+
             "poll_activation" => {
                 // Poll for workflow activation
                 match core_worker.poll_workflow_activation().await {

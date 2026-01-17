@@ -161,6 +161,16 @@ impl CoreWorkerHandle {
         Ok(())
     }
 
+    /// Validate that the worker is initialized and ready
+    pub async fn validate(&self) -> Result<()> {
+        let guard = self.worker.lock().await;
+        if guard.is_some() {
+            Ok(())
+        } else {
+            Err(anyhow!("Worker not initialized"))
+        }
+    }
+
     /// Initiate graceful shutdown of the worker
     pub async fn initiate_shutdown(&self) -> Result<()> {
         let guard = self.worker.lock().await;

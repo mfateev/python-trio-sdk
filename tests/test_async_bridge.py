@@ -84,6 +84,14 @@ class MockRustBridge:
                     "data": []
                 }
                 callback(json.dumps(response).encode())
+            elif operation == "validate":
+                # Return JSON success response
+                response = {
+                    "request_id": "test-123",
+                    "success": True,
+                    "data": []
+                }
+                callback(json.dumps(response).encode())
             elif operation == "finalize_shutdown":
                 # Return JSON success response
                 response = {
@@ -312,7 +320,14 @@ class TestBridgeOperations:
 
                 def invoke_callback():
                     if operation == "validate":
-                        callback(b"Validation failed: Connection refused")
+                        # Return JSON error response
+                        import json
+                        error_response = {
+                            "request_id": "test-123",
+                            "success": False,
+                            "error": "Validation failed: Connection refused"
+                        }
+                        callback(json.dumps(error_response).encode())
                     else:
                         callback(b"")
 
@@ -397,9 +412,15 @@ class TestErrorHandling:
                 self.requests.append((operation, data, callback))
 
                 def invoke_callback():
-                    # Simulate error by sending error bytes
-                    # In real implementation, Rust would send error bytes
-                    callback(b"Error: Something went wrong")
+                    # Simulate error by sending JSON error response
+                    # This matches the real Rust bridge error format
+                    import json
+                    error_response = {
+                        "request_id": "test-error",
+                        "success": False,
+                        "error": "Something went wrong"
+                    }
+                    callback(json.dumps(error_response).encode())
 
                 thread = threading.Thread(target=invoke_callback, daemon=True)
                 thread.start()
@@ -408,10 +429,9 @@ class TestErrorHandling:
         bridge._rust_bridge = ErrorMockBridge()
         await bridge.start()
 
-        # This should work since we just return the bytes
-        # Error handling would happen at a higher level
-        result = await bridge.poll_workflow_activation()
-        assert b"Error" in result
+        # Should raise RuntimeError with the error message
+        with pytest.raises(RuntimeError, match="Something went wrong"):
+            await bridge.poll_workflow_activation()
 
     @pytest.mark.trio
     async def test_shutdown_with_timeout(self, started_bridge):
