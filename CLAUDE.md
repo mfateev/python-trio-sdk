@@ -268,6 +268,42 @@ uv run pytest
 
 Tests are the safety net that prevents regressions. Respect them.
 
+### Known Issue: E2E Shutdown Race Condition (MUST FIX)
+
+**DO NOT IGNORE THIS ISSUE.** The E2E tests have a known race condition during worker shutdown that causes intermittent failures with errors like:
+
+```
+RuntimeError: Bridge is not running (state: BridgeState.SHUTDOWN). Call start() first.
+```
+
+**What happens:**
+1. Workflow completes successfully
+2. An eviction activation arrives from the server
+3. Worker shutdown begins (triggered by test completion)
+4. The eviction handler tries to call `complete_workflow_activation()` but the bridge is already in SHUTDOWN state
+
+**This is a real bug, not test flakiness.** The shutdown logic in `bridge_worker.py` and `_worker.py` does not properly handle in-flight activations during shutdown.
+
+**Required behavior:**
+- ❌ **NEVER** dismiss this as "flaky tests" and move on
+- ❌ **NEVER** skip, disable, or modify E2E tests to hide this issue
+- ❌ **NEVER** add retry logic to tests to mask the race condition
+- ✅ **FIX** the shutdown logic to gracefully handle in-flight activations
+- ✅ **FIX** the bridge to allow completing activations that started before shutdown
+- ✅ **ENSURE** all E2E tests pass reliably before considering work complete
+
+**Files involved:**
+- `temporalio_trio/bridge_worker.py` - `_poll_loop()`, `_handle_activation()`, shutdown logic
+- `temporalio_trio/worker/_worker.py` - Worker shutdown coordination
+- `temporalio_trio/_async_bridge.py` - Bridge state management, `_check_running()`
+
+**When you encounter this failure:**
+1. Stop what you're doing
+2. Investigate the shutdown race condition
+3. Implement a proper fix (e.g., drain in-flight activations before shutdown, or allow completions for already-started activations)
+4. Verify ALL E2E tests pass multiple times in a row
+5. Only then continue with other work
+
 ## Development Workflow
 
 ### Making Changes
