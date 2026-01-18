@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
-from typing import Optional, Sequence, Type
+from typing import TYPE_CHECKING, Optional, Sequence, Type
 
 import temporalio.bridge.worker
-import temporalio.client
 import temporalio.converter
 import trio
 
 from temporalio_trio._async_bridge import TrioBridgeWrapper
 from temporalio_trio.bridge_worker import TrioBridgeWorker
+
+if TYPE_CHECKING:
+    from temporalio_trio.client import Client
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,7 @@ class Worker:
 
     Example:
         ```python
-        from temporalio.client import Client
+        from temporalio_trio.client import Client
         from temporalio_trio.worker import Worker
 
         client = await Client.connect("localhost:7233")
@@ -51,7 +53,7 @@ class Worker:
 
     def __init__(
         self,
-        client: temporalio.client.Client,
+        client: "Client",
         *,
         task_queue: str,
         workflows: Sequence[Type] = [],
@@ -78,7 +80,7 @@ class Worker:
 
         Args:
             client: Client to use for this worker. Must be a connected
-                :py:class:`temporalio.client.Client` instance.
+                :py:class:`temporalio_trio.client.Client` instance.
             task_queue: Required task queue for this worker.
             workflows: Set of workflow classes decorated with
                 :py:func:`@workflow.defn<temporalio_trio.workflow.defn>`.
@@ -198,12 +200,10 @@ class Worker:
 
         try:
             # Initialize bridge with Temporal configuration
-            # Ensure URL has scheme - target_host is just "localhost:7233"
-            target_host = self._client.service_client.config.target_host
-            if not target_host.startswith(("http://", "https://")):
-                target_url = f"http://{target_host}"
-            else:
-                target_url = target_host
+            # Extract target_url from client config
+            target_url = self._client._config.target_url
+            if not target_url.startswith(("http://", "https://")):
+                target_url = f"http://{target_url}"
 
             await bridge_wrapper.initialize_with_config(
                 target_url=target_url,

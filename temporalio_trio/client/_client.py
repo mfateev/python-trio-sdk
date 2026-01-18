@@ -92,6 +92,10 @@ class Client:
         Example:
             client = await Client.connect("localhost:7233", namespace="default")
         """
+        # Ensure URL has scheme - target_url might be just "localhost:7233"
+        if not target_url.startswith(("http://", "https://")):
+            target_url = f"http://{target_url}"
+
         config = ClientConfig(
             target_url=target_url,
             namespace=namespace,

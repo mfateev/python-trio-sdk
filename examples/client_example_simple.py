@@ -8,6 +8,7 @@ This example demonstrates how to:
 """
 
 import trio
+
 from temporalio_trio.client import Client
 
 

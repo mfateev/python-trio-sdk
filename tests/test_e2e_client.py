@@ -11,7 +11,6 @@ Prerequisites:
     - Worker running to process workflows
 """
 
-import asyncio
 import time
 
 import pytest
@@ -43,23 +42,8 @@ class LongRunningWorkflow:
         return f"Completed after {duration} seconds"
 
 
-@pytest.fixture(scope="session")
-def asyncio_client():
-    """Create an asyncio Temporal client for the worker (session-scoped).
-
-    This uses the asyncio SDK client which the Worker needs.
-    """
-    from temporalio.client import Client as AsyncioClient
-
-    async def create_client():
-        return await AsyncioClient.connect("localhost:7233", namespace="default")
-
-    client = asyncio.run(create_client())
-    yield client
-
-
 @pytest.fixture
-async def trio_client():
+async def client():
     """Create a Trio client for testing."""
     client = await Client.connect("localhost:7233", namespace="default")
     yield client
@@ -67,7 +51,7 @@ async def trio_client():
 
 
 @pytest.fixture
-async def worker_with_workflows(asyncio_client):
+async def worker_with_workflows(client):
     """Start a worker with test workflows.
 
     Returns the task queue name that the worker is listening on.
@@ -75,7 +59,7 @@ async def worker_with_workflows(asyncio_client):
     task_queue = f"trio-client-test-{int(time.time())}"
 
     worker = Worker(
-        client=asyncio_client,  # Worker needs asyncio client
+        client=client,
         task_queue=task_queue,
         workflows=[GreetingWorkflow, LongRunningWorkflow],
     )
@@ -107,13 +91,13 @@ async def test_client_connect():
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_start_workflow(trio_client, worker_with_workflows):
+async def test_start_workflow(client, worker_with_workflows):
     """Test starting a workflow."""
     task_queue = worker_with_workflows
     workflow_id = f"greeting-{int(time.time())}"
 
     # Start workflow
-    handle = await trio_client.start_workflow(
+    handle = await client.start_workflow(
         GreetingWorkflow,
         "World",
         id=workflow_id,
@@ -131,13 +115,13 @@ async def test_start_workflow(trio_client, worker_with_workflows):
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_execute_workflow(trio_client, worker_with_workflows):
+async def test_execute_workflow(client, worker_with_workflows):
     """Test executing a workflow (start + wait)."""
     task_queue = worker_with_workflows
     workflow_id = f"greeting-execute-{int(time.time())}"
 
     # Execute workflow
-    result = await trio_client.execute_workflow(
+    result = await client.execute_workflow(
         GreetingWorkflow,
         "Alice",
         id=workflow_id,
@@ -149,13 +133,13 @@ async def test_execute_workflow(trio_client, worker_with_workflows):
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_get_workflow_handle(trio_client, worker_with_workflows):
+async def test_get_workflow_handle(client, worker_with_workflows):
     """Test getting handle to existing workflow."""
     task_queue = worker_with_workflows
     workflow_id = f"greeting-handle-{int(time.time())}"
 
     # Start workflow
-    handle1 = await trio_client.start_workflow(
+    handle1 = await client.start_workflow(
         GreetingWorkflow,
         "Bob",
         id=workflow_id,
@@ -163,7 +147,7 @@ async def test_get_workflow_handle(trio_client, worker_with_workflows):
     )
 
     # Get handle to same workflow
-    handle2 = trio_client.get_workflow_handle(workflow_id)
+    handle2 = client.get_workflow_handle(workflow_id)
 
     assert handle2.workflow_id == workflow_id
 
@@ -174,13 +158,13 @@ async def test_get_workflow_handle(trio_client, worker_with_workflows):
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_workflow_cancel(trio_client, worker_with_workflows):
+async def test_workflow_cancel(client, worker_with_workflows):
     """Test canceling a workflow."""
     task_queue = worker_with_workflows
     workflow_id = f"long-running-cancel-{int(time.time())}"
 
     # Start long-running workflow (runs for 10 seconds)
-    handle = await trio_client.start_workflow(
+    handle = await client.start_workflow(
         LongRunningWorkflow,
         10.0,  # duration
         id=workflow_id,
@@ -203,13 +187,13 @@ async def test_workflow_cancel(trio_client, worker_with_workflows):
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_workflow_terminate(trio_client, worker_with_workflows):
+async def test_workflow_terminate(client, worker_with_workflows):
     """Test terminating a workflow."""
     task_queue = worker_with_workflows
     workflow_id = f"long-running-terminate-{int(time.time())}"
 
     # Start long-running workflow
-    handle = await trio_client.start_workflow(
+    handle = await client.start_workflow(
         LongRunningWorkflow,
         10.0,  # duration
         id=workflow_id,
@@ -232,7 +216,7 @@ async def test_workflow_terminate(trio_client, worker_with_workflows):
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_multiple_workflows_parallel(trio_client, worker_with_workflows):
+async def test_multiple_workflows_parallel(client, worker_with_workflows):
     """Test executing multiple workflows in parallel."""
     task_queue = worker_with_workflows
     names = ["Alice", "Bob", "Charlie", "Diana", "Eve"]
@@ -245,7 +229,7 @@ async def test_multiple_workflows_parallel(trio_client, worker_with_workflows):
             workflow_id = f"greeting-parallel-{name}-{int(time.time())}"
 
             async def start_workflow(name, workflow_id):
-                handle = await trio_client.start_workflow(
+                handle = await client.start_workflow(
                     GreetingWorkflow,
                     name,
                     id=workflow_id,
@@ -273,13 +257,13 @@ async def test_multiple_workflows_parallel(trio_client, worker_with_workflows):
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_workflow_with_timeout(trio_client, worker_with_workflows):
+async def test_workflow_with_timeout(client, worker_with_workflows):
     """Test workflow execution timeout."""
     task_queue = worker_with_workflows
     workflow_id = f"greeting-timeout-{int(time.time())}"
 
     # Execute workflow with short timeout
-    result = await trio_client.execute_workflow(
+    result = await client.execute_workflow(
         GreetingWorkflow,
         "Timeout Test",
         id=workflow_id,

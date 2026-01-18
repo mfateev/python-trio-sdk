@@ -300,9 +300,7 @@ class TrioBridgeWrapper:
             finally:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        self._rust_bridge.send_request(
-            "start_workflow", request_bytes, deliver_result
-        )
+        self._rust_bridge.send_request("start_workflow", request_bytes, deliver_result)
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
