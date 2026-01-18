@@ -38,7 +38,7 @@ async def test_client_connect(mock_bridge):
     # Verify bridge was initialized
     mock_bridge.start.assert_called_once()
     mock_bridge.initialize_client.assert_called_once_with(
-        target_url="localhost:7233",
+        target_url="http://localhost:7233",
         namespace="test-namespace",
         identity="test-client",
     )
