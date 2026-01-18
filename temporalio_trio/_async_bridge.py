@@ -897,16 +897,19 @@ class TrioBridgeWrapper:
 
         Sends the completion back to the Rust bridge for delivery to Temporal.
 
+        Note: This method allows completions during SHUTDOWN state to support
+        draining in-flight activations during graceful shutdown.
+
         Args:
             completion_bytes: Serialized workflow activation completion (protobuf)
             timeout: Optional timeout in seconds
 
         Raises:
-            RuntimeError: If bridge is not running or trio_token not set
+            RuntimeError: If bridge is not started or trio_token not set
             trio.TooSlowError: If timeout is exceeded
             Exception: Any error from the Rust bridge
         """
-        self._check_running()
+        self._check_can_complete()
 
         event = trio.Event()
         error_container: list = []
@@ -1101,6 +1104,26 @@ class TrioBridgeWrapper:
         if self._state != BridgeState.RUNNING:
             raise RuntimeError(
                 f"Bridge is not running (state: {self._state}). Call start() first."
+            )
+
+        if self._trio_token is None:
+            raise RuntimeError(
+                "Trio token not set. This should not happen if start() was called."
+            )
+
+    def _check_can_complete(self) -> None:
+        """Check that the bridge can accept completions.
+
+        Completions are allowed during both RUNNING and SHUTDOWN states.
+        This is necessary because in-flight activations may need to complete
+        after shutdown has been initiated.
+
+        Raises:
+            RuntimeError: If bridge is not started or trio_token not set
+        """
+        if self._state == BridgeState.NOT_STARTED:
+            raise RuntimeError(
+                f"Bridge is not started (state: {self._state}). Call start() first."
             )
 
         if self._trio_token is None:

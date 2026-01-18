@@ -287,7 +287,7 @@ class TestBridgeOperations:
         bridge = TrioBridgeWrapper()
         bridge._rust_bridge = mock_bridge
 
-        with pytest.raises(RuntimeError, match="not running"):
+        with pytest.raises(RuntimeError, match="not started"):
             await bridge.complete_workflow_activation(b"data")
 
     @pytest.mark.trio
@@ -526,14 +526,19 @@ class TestStateManagement:
 
     @pytest.mark.trio
     async def test_operations_after_shutdown_raise(self, started_bridge):
-        """Test that operations after shutdown raise errors."""
+        """Test that operations after shutdown raise errors.
+
+        Note: complete_workflow_activation is intentionally allowed during
+        shutdown to support draining in-flight activations.
+        """
         started_bridge.initiate_shutdown()
 
         with pytest.raises(RuntimeError, match="not running"):
             await started_bridge.poll_workflow_activation()
 
-        with pytest.raises(RuntimeError, match="not running"):
-            await started_bridge.complete_workflow_activation(b"data")
+        # complete_workflow_activation is allowed during shutdown
+        # to drain in-flight activations gracefully
+        await started_bridge.complete_workflow_activation(b"data")
 
         with pytest.raises(RuntimeError, match="not running"):
             await started_bridge.validate()
