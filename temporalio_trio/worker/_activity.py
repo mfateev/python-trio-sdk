@@ -399,10 +399,12 @@ class TrioActivityWorker:
         completion = temporalio.bridge.proto.ActivityTaskCompletion()
         completion.task_token = task_token
 
-        # Encode result
+        # Encode result - encode returns a list of Payload objects
         if result is not None:
             payloads = await self._data_converter.encode([result])
-            completion.result.completed.result.CopyFrom(payloads)
+            if payloads:
+                # CopyFrom the first (and only) payload
+                completion.result.completed.result.CopyFrom(payloads[0])
         else:
             completion.result.completed.SetInParent()
 
@@ -511,11 +513,15 @@ class TrioActivityWorker:
 
     async def _decode_args(
         self,
-        input_payloads: Any,  # Protobuf payloads
+        input_payloads: Any,  # Protobuf payloads (RepeatedCompositeContainer)
         defn: activity._Definition,
     ) -> tuple[Any, ...]:
-        """Decode activity arguments from payloads."""
-        if not input_payloads or not input_payloads.payloads:
+        """Decode activity arguments from payloads.
+
+        Note: input_payloads is a RepeatedCompositeContainer (list-like),
+        not an object with a .payloads attribute.
+        """
+        if not input_payloads or len(input_payloads) == 0:
             return ()
 
         # Get type hints for the activity
@@ -523,7 +529,7 @@ class TrioActivityWorker:
 
         # Decode each payload
         args = []
-        for i, payload in enumerate(input_payloads.payloads):
+        for i, payload in enumerate(input_payloads):
             type_hint = type_hints[i] if i < len(type_hints) else None
             type_hint_list: list[type] = [type_hint] if type_hint is not None else []
             value = await self._data_converter.decode([payload], type_hint_list)

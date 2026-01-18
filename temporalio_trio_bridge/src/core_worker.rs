@@ -5,6 +5,7 @@ use std::sync::Arc;
 use temporalio_client::ClientOptions;
 use temporalio_common::errors::PollError;
 use temporalio_common::protos::coresdk::workflow_completion::WorkflowActivationCompletion;
+use temporalio_common::protos::coresdk::{ActivityHeartbeat, ActivityTaskCompletion};
 use temporalio_common::worker::{WorkerTaskTypes, WorkerVersioningStrategy};
 use temporalio_common::Worker as WorkerTrait;
 use temporalio_sdk_core::{init_worker, CoreRuntime, RetryClient, Worker, WorkerConfig};
@@ -95,7 +96,7 @@ impl CoreWorkerHandle {
             .task_types(WorkerTaskTypes {
                 enable_workflows: true,
                 enable_local_activities: false,
-                enable_remote_activities: false,
+                enable_remote_activities: true,
                 enable_nexus: false,
             })
             .build()
@@ -154,6 +155,66 @@ impl CoreWorkerHandle {
             .complete_workflow_activation(completion)
             .await
             .map_err(|e| anyhow!("Complete failed: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Poll for an activity task
+    pub async fn poll_activity_task(&self) -> Result<Vec<u8>> {
+        let guard = self.worker.lock().await;
+        let worker = guard
+            .as_ref()
+            .ok_or_else(|| anyhow!("Worker not initialized"))?;
+
+        // Poll for activity task
+        let task = match worker.poll_activity_task().await {
+            Ok(task) => task,
+            Err(PollError::ShutDown) => {
+                return Err(anyhow!("PollShutdownError"));
+            }
+            Err(err) => {
+                return Err(anyhow!("Poll activity failed: {}", err));
+            }
+        };
+
+        // Encode to protobuf bytes
+        let bytes = task.encode_to_vec();
+        Ok(bytes)
+    }
+
+    /// Complete an activity task
+    pub async fn complete_activity_task(&self, completion_bytes: Vec<u8>) -> Result<()> {
+        let guard = self.worker.lock().await;
+        let worker = guard
+            .as_ref()
+            .ok_or_else(|| anyhow!("Worker not initialized"))?;
+
+        // Decode completion from protobuf bytes
+        let completion = ActivityTaskCompletion::decode(&completion_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode activity completion: {}", e))?;
+
+        // Complete the activity task
+        worker
+            .complete_activity_task(completion)
+            .await
+            .map_err(|e| anyhow!("Complete activity failed: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Record an activity heartbeat
+    pub async fn record_activity_heartbeat(&self, heartbeat_bytes: Vec<u8>) -> Result<()> {
+        let guard = self.worker.lock().await;
+        let worker = guard
+            .as_ref()
+            .ok_or_else(|| anyhow!("Worker not initialized"))?;
+
+        // Decode heartbeat from protobuf bytes
+        let heartbeat = ActivityHeartbeat::decode(&heartbeat_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode activity heartbeat: {}", e))?;
+
+        // Record the heartbeat (fire and forget internally by SDK Core)
+        worker.record_activity_heartbeat(heartbeat);
 
         Ok(())
     }

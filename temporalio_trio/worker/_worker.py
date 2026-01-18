@@ -194,6 +194,49 @@ class Worker:
         """Whether the worker is running."""
         return self._started and not self._shutdown_event.is_set()
 
+    def _get_target_url(self) -> str:
+        """Extract target URL from client, supporting both Trio and official SDK clients.
+
+        Returns:
+            Target URL with http/https scheme.
+
+        Raises:
+            RuntimeError: If target URL cannot be extracted from client.
+        """
+        # Try our Trio client's ClientConfig (dataclass with target_url attribute)
+        if hasattr(self._client, "_config"):
+            config = self._client._config
+            # Our temporalio_trio.client.Client uses a ClientConfig dataclass
+            if hasattr(config, "target_url"):
+                target_url = config.target_url
+            # Official temporalio.client.Client uses a dict with service_client
+            elif isinstance(config, dict) and "service_client" in config:
+                service_client = config["service_client"]
+                if hasattr(service_client, "config") and hasattr(
+                    service_client.config, "target_host"
+                ):
+                    target_url = service_client.config.target_host
+                else:
+                    raise RuntimeError(
+                        f"Cannot extract target_url from client: "
+                        f"service_client.config.target_host not found"
+                    )
+            else:
+                raise RuntimeError(
+                    f"Cannot extract target_url from client: "
+                    f"unsupported _config type {type(config)}"
+                )
+        else:
+            raise RuntimeError(
+                f"Cannot extract target_url from client: no _config attribute"
+            )
+
+        # Ensure URL has scheme
+        if not target_url.startswith(("http://", "https://")):
+            target_url = f"http://{target_url}"
+
+        return target_url
+
     async def run(self) -> None:
         """Run the worker and wait on it to be shut down.
 
@@ -213,10 +256,8 @@ class Worker:
 
         try:
             # Initialize bridge with Temporal configuration
-            # Extract target_url from client config
-            target_url = self._client._config.target_url
-            if not target_url.startswith(("http://", "https://")):
-                target_url = f"http://{target_url}"
+            # Extract target_url from client config (supports both Trio and official SDK clients)
+            target_url = self._get_target_url()
 
             await bridge_wrapper.initialize_with_config(
                 target_url=target_url,

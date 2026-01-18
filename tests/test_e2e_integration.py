@@ -10,7 +10,6 @@ Or skip them with:
     pytest -v -m "not temporal_server"
 """
 
-import asyncio
 import json
 import subprocess
 import time
@@ -20,29 +19,24 @@ import pytest
 import trio
 
 from temporalio_trio import workflow
+from temporalio_trio.client import Client
 from temporalio_trio.worker import Worker
 
 TEMPORAL_CLI_PATH = "/home/sprite/workarea/bin/temporal"
 
 
-@pytest.fixture(scope="session")
-def temporal_client():
-    """Create a Temporal client using asyncio (runs once per test session).
+@pytest.fixture
+async def trio_client():
+    """Create a Trio-based Temporal client.
 
-    This fixture creates the client outside of Trio context to avoid
-    event loop conflicts. The client is reused across all tests.
+    This fixture creates the client within Trio context using the
+    native temporalio_trio.client.Client.
     """
-    from temporalio.client import Client
-
-    async def create_client():
-        return await Client.connect("localhost:7233", namespace="default")
-
-    # Create client in asyncio context
-    client = asyncio.run(create_client())
+    client = await Client.connect("localhost:7233", namespace="default")
 
     yield client
 
-    # Cleanup is handled by client's finalizer
+    await client.close()
 
 
 @workflow.defn
@@ -69,7 +63,7 @@ class SimpleTimerWorkflow:
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_e2e_workflow_execution(temporal_client):
+async def test_e2e_workflow_execution(trio_client):
     """Test end-to-end workflow execution with real Temporal server.
 
     This test:
@@ -88,9 +82,9 @@ async def test_e2e_workflow_execution(temporal_client):
     workflow_id = f"test-workflow-{int(time.time())}"
     sleep_duration = 2.0
 
-    # Create worker with the client from fixture
+    # Create worker with the Trio client from fixture
     worker = Worker(
-        client=temporal_client,
+        client=trio_client,
         task_queue=task_queue,
         workflows=[SimpleTimerWorkflow],
     )
@@ -152,7 +146,7 @@ async def test_e2e_workflow_execution(temporal_client):
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_e2e_worker_connection(temporal_client):
+async def test_e2e_worker_connection(trio_client):
     """Test that worker can successfully start and shutdown.
 
     This is a minimal test that validates:
@@ -164,12 +158,11 @@ async def test_e2e_worker_connection(temporal_client):
     and process workflow tasks, as that requires the Rust bridge implementation
     (TrioAsyncBridge) which is not yet complete.
     """
-    namespace = "default"
     task_queue = "trio-e2e-connection-test"
 
-    # Create worker
+    # Create worker with the Trio client
     worker = Worker(
-        client=temporal_client,
+        client=trio_client,
         task_queue=task_queue,
         workflows=[SimpleTimerWorkflow],
     )
@@ -289,18 +282,12 @@ def _query_workflow_via_cli(workflow_id: str, namespace: str) -> dict[str, Any]:
         workflow_info = data.get("workflowExecutionInfo", {})
         status_str = workflow_info.get("status", "UNKNOWN")
 
-        # Get result if workflow completed
-        result_payloads = workflow_info.get("result", {}).get("payloads", [])
-        result_value = None
-        if result_payloads:
-            # Decode first payload (simplified - assumes string result)
-            payload = result_payloads[0]
-            if "data" in payload:
-                import base64
+        # Normalize status string (e.g., "WORKFLOW_EXECUTION_STATUS_COMPLETED" -> "COMPLETED")
+        if status_str.startswith("WORKFLOW_EXECUTION_STATUS_"):
+            status_str = status_str.replace("WORKFLOW_EXECUTION_STATUS_", "")
 
-                decoded = base64.b64decode(payload["data"])
-                # Remove JSON encoding artifacts
-                result_value = decoded.decode("utf-8").strip('"')
+        # Get result if workflow completed - CLI outputs result directly as a string
+        result_value = data.get("result")
 
         return {
             "status": status_str,

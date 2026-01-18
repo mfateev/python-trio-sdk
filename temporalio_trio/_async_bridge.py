@@ -75,6 +75,7 @@ class TrioBridgeWrapper:
         self._rust_bridge = TrioAsyncBridge()
         self._trio_token: Optional[trio.lowlevel.TrioToken] = None
         self._state: BridgeState = BridgeState.NOT_STARTED
+        self._shutdown_finalized: bool = False
 
     async def start(self) -> None:
         """Start the bridge and capture the Trio token.
@@ -1015,6 +1016,9 @@ class TrioBridgeWrapper:
         Waits for all in-flight operations to complete and cleans up resources.
         This should be called after initiate_shutdown().
 
+        This method is idempotent - calling it multiple times after the first
+        successful call will return immediately without error.
+
         Args:
             timeout: Optional timeout in seconds
 
@@ -1022,6 +1026,10 @@ class TrioBridgeWrapper:
             trio.TooSlowError: If timeout is exceeded
             Exception: Any errors during shutdown
         """
+        # Return early if already finalized (idempotent)
+        if self._shutdown_finalized:
+            return
+
         if self._state != BridgeState.SHUTDOWN:
             # Initiate if not already done
             self.initiate_shutdown()
@@ -1046,7 +1054,14 @@ class TrioBridgeWrapper:
                     # This shouldn't happen, but handle gracefully
                     event.set()
 
-        self._rust_bridge.send_request("finalize_shutdown", b"", deliver_result)
+        try:
+            self._rust_bridge.send_request("finalize_shutdown", b"", deliver_result)
+        except RuntimeError as e:
+            # Handle case where bridge is already fully shutdown
+            if "shutdown" in str(e).lower():
+                self._shutdown_finalized = True
+                return
+            raise
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
@@ -1056,6 +1071,8 @@ class TrioBridgeWrapper:
                 raise trio.TooSlowError("finalize_shutdown timed out")
         else:
             await event.wait()
+
+        self._shutdown_finalized = True
 
         if error_container:
             raise error_container[0]

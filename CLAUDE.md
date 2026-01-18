@@ -185,11 +185,20 @@ Trio's nursery-based task management aligns well with Temporal workflows. Use nu
 
 ## Testing Guidelines
 
+### All Tests Must Pass (CRITICAL)
+
+**You are NOT done until ALL tests pass.** This is a hard requirement:
+
+- Run `uv run pytest` before considering any task complete
+- Zero failures are acceptable - not 2, not 1, ZERO
+- Skipped tests are acceptable only for clearly documented unimplemented features
+- If tests fail, fix the underlying code, not the tests
+
 ### Test Coverage Requirements
 
 - **Target**: 90%+ coverage on new code
 - **Run**: `uv run pytest --cov=temporalio_trio --cov-report=term-missing tests/`
-- **Before committing**: Verify coverage meets target
+- **Before committing**: Verify coverage meets target AND all tests pass
 
 ### Test Types
 

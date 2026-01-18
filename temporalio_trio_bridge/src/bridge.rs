@@ -272,6 +272,56 @@ impl TrioAsyncBridge {
                 }
             }
 
+            "poll_activity_task" => {
+                // Poll for activity task
+                match core_worker.poll_activity_task().await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => {
+                        let error_msg = e.to_string();
+                        // Check if this is a shutdown error
+                        if error_msg.contains("Shutdown") || error_msg.contains("shutdown") {
+                            RequestResult::error(
+                                request.request_id.clone(),
+                                "PollShutdownError".to_string(),
+                            )
+                        } else {
+                            RequestResult::error(
+                                request.request_id.clone(),
+                                format!("Poll activity failed: {}", error_msg),
+                            )
+                        }
+                    }
+                }
+            }
+
+            "complete_activity_task" => {
+                // Complete activity task
+                match core_worker
+                    .complete_activity_task(request.data.clone())
+                    .await
+                {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Complete activity failed: {}", e),
+                    ),
+                }
+            }
+
+            "record_activity_heartbeat" => {
+                // Record activity heartbeat
+                match core_worker
+                    .record_activity_heartbeat(request.data.clone())
+                    .await
+                {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Record heartbeat failed: {}", e),
+                    ),
+                }
+            }
+
             "initiate_shutdown" => {
                 // Initiate graceful shutdown
                 match core_worker.initiate_shutdown().await {
