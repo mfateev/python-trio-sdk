@@ -7,6 +7,7 @@ Worker interface, but uses Trio for async operations instead of asyncio.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Optional, Sequence, Type
 
@@ -57,6 +58,7 @@ class Worker:
         *,
         task_queue: str,
         workflows: Sequence[Type] = [],
+        activities: Sequence[Callable] = [],
         data_converter: Optional[temporalio.converter.DataConverter] = None,
         namespace: Optional[str] = None,
         build_id: Optional[str] = None,
@@ -65,7 +67,7 @@ class Worker:
         max_concurrent_workflow_task_polls: int = 5,
         nonsticky_to_sticky_poll_ratio: float = 0.2,
         max_concurrent_activity_task_polls: int = 5,
-        no_remote_activities: bool = True,
+        no_remote_activities: bool = False,
         sticky_queue_schedule_to_start_timeout: timedelta = timedelta(seconds=10),
         max_heartbeat_throttle_interval: timedelta = timedelta(seconds=60),
         default_heartbeat_throttle_interval: timedelta = timedelta(seconds=30),
@@ -76,7 +78,7 @@ class Worker:
         max_concurrent_activities: Optional[int] = None,
         max_concurrent_local_activities: Optional[int] = None,
     ) -> None:
-        """Create a worker to process Trio-based workflows.
+        """Create a worker to process Trio-based workflows and activities.
 
         Args:
             client: Client to use for this worker. Must be a connected
@@ -84,6 +86,9 @@ class Worker:
             task_queue: Required task queue for this worker.
             workflows: Set of workflow classes decorated with
                 :py:func:`@workflow.defn<temporalio_trio.workflow.defn>`.
+            activities: Set of activity functions decorated with
+                :py:func:`@activity.defn<temporalio_trio.activity.defn>`.
+                All activities must be async (defined with `async def`).
             data_converter: Data converter for payload serialization. If not
                 provided, the default converter is used.
             namespace: Namespace for this worker. If not provided, uses the
@@ -130,14 +135,21 @@ class Worker:
                 set, defaults to 100.
 
         Raises:
-            ValueError: If no workflows are provided.
+            ValueError: If no workflows or activities are provided, or if
+                activities are provided with no_remote_activities=True.
         """
-        if not workflows:
-            raise ValueError("At least one workflow must be specified")
+        if not workflows and not activities:
+            raise ValueError("At least one workflow or activity must be specified")
+        if activities and no_remote_activities:
+            raise ValueError(
+                "Activities provided but no_remote_activities is True. "
+                "Set no_remote_activities=False to enable activity execution."
+            )
 
         self._client = client
         self._task_queue = task_queue
         self._workflows = list(workflows)
+        self._activities = list(activities)
         self._data_converter = data_converter
         self._namespace = namespace or "default"
         self._build_id = build_id
@@ -163,6 +175,7 @@ class Worker:
 
         # Internal state
         self._trio_worker: Optional[TrioBridgeWorker] = None
+        self._activity_worker = None  # TrioActivityWorker when activities are provided
         self._started = False
         self._shutdown_event = trio.Event()
 
@@ -218,24 +231,51 @@ class Worker:
             # The initialization above already validates connection to Temporal server
             # await bridge_wrapper.validate()
 
-            # Create Trio bridge worker with new wrapper
-            self._trio_worker = TrioBridgeWorker(
-                bridge_wrapper=bridge_wrapper,  # Changed from bridge_worker
-                namespace=self._namespace,
-                task_queue=self._task_queue,
-                workflows=self._workflows,
-                data_converter=self._data_converter,
-            )
+            # Create Trio workflow worker if workflows provided
+            self._trio_worker = None
+            if self._workflows:
+                self._trio_worker = TrioBridgeWorker(
+                    bridge_wrapper=bridge_wrapper,
+                    namespace=self._namespace,
+                    task_queue=self._task_queue,
+                    workflows=self._workflows,
+                    data_converter=self._data_converter,
+                )
+
+            # Create Trio activity worker if activities provided
+            self._activity_worker = None
+            if self._activities and not self._no_remote_activities:
+                from temporalio_trio.worker._activity import TrioActivityWorker
+
+                self._activity_worker = TrioActivityWorker(
+                    bridge_wrapper=bridge_wrapper,
+                    task_queue=self._task_queue,
+                    activities=self._activities,
+                    data_converter=self._data_converter,
+                    max_heartbeat_throttle_interval=self._max_heartbeat_throttle_interval,
+                    default_heartbeat_throttle_interval=self._default_heartbeat_throttle_interval,
+                )
 
             logger.info(f"Starting Trio worker on {self._namespace}/{self._task_queue}")
+            if self._workflows:
+                logger.info(f"  Workflows: {[w.__name__ for w in self._workflows]}")
+            if self._activities:
+                logger.info(
+                    f"  Activities: {[getattr(a, '__name__', str(a)) for a in self._activities]}"
+                )
 
             async with trio.open_nursery() as nursery:
-                # Start the worker
-                nursery.start_soon(self._trio_worker.run)
+                # Start workflow worker
+                if self._trio_worker:
+                    nursery.start_soon(self._trio_worker.run)
+
+                # Start activity worker
+                if self._activity_worker:
+                    nursery.start_soon(self._activity_worker.run)
 
                 await self._shutdown_event.wait()
 
-                # Cancel the nursery to stop the worker
+                # Cancel the nursery to stop workers
                 nursery.cancel_scope.cancel()
 
             # Shutdown bridge
@@ -259,6 +299,8 @@ class Worker:
         self._shutdown_event.set()
         if self._trio_worker:
             self._trio_worker.shutdown()
+        if self._activity_worker:
+            self._activity_worker.shutdown()
 
     async def __aenter__(self) -> Worker:
         """Start the worker and return self for use by ``async with``.

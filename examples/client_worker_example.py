@@ -20,7 +20,6 @@ from temporalio_trio import workflow
 from temporalio_trio.client import Client
 from temporalio_trio.worker import Worker
 
-
 # ============================================================================
 # Workflow Definitions
 # ============================================================================

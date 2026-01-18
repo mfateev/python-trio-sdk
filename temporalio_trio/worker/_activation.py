@@ -9,17 +9,28 @@ designed for the POC to demonstrate the activation/completion pattern.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
+import temporalio.common
+
 __all__ = [
+    # Workflow jobs
     "WorkflowStartedJob",
     "TimerFiredJob",
     "WorkflowActivation",
+    # Workflow commands
     "StartTimerCommand",
     "CompleteWorkflowCommand",
     "FailWorkflowCommand",
     "WorkflowActivationCompletion",
+    # Activity jobs (for workflow-activity integration)
+    "ActivityResolvedJob",
+    "ActivityCancelledJob",
+    # Activity commands (for workflow-activity integration)
+    "ScheduleActivityCommand",
+    "RequestCancelActivityCommand",
 ]
 
 
@@ -157,3 +168,118 @@ class WorkflowActivationCompletion:
 
     commands: list[StartTimerCommand | CompleteWorkflowCommand | FailWorkflowCommand]
     """List of commands to send to the server."""
+
+
+# =============================================================================
+# Activity Jobs (for workflow-activity integration - Phase 2)
+# =============================================================================
+
+
+@dataclass
+class ActivityResolvedJob:
+    """Job indicating an activity has completed (success or failure).
+
+    This job is sent when a previously scheduled activity finishes execution.
+    The workflow can then access the result or handle the failure.
+
+    Attributes:
+        seq: Sequence number matching ScheduleActivityCommand.
+        result: Activity result value (if successful).
+        failure: Exception if activity failed (mutually exclusive with result).
+    """
+
+    seq: int
+    """Sequence number matching the ScheduleActivityCommand."""
+
+    result: Any | None = None
+    """Activity result value (if successful)."""
+
+    failure: BaseException | None = None
+    """Exception if activity failed."""
+
+
+@dataclass
+class ActivityCancelledJob:
+    """Job indicating an activity cancellation was acknowledged.
+
+    This job is sent when a previously requested activity cancellation
+    has been acknowledged by the server.
+
+    Attributes:
+        seq: Sequence number matching ScheduleActivityCommand.
+    """
+
+    seq: int
+    """Sequence number matching the ScheduleActivityCommand."""
+
+
+# =============================================================================
+# Activity Commands (for workflow-activity integration - Phase 2)
+# =============================================================================
+
+
+@dataclass
+class ScheduleActivityCommand:
+    """Command to schedule an activity for execution.
+
+    This command requests the Temporal server to schedule an activity.
+    When the activity completes, the server will send an ActivityResolvedJob.
+
+    Attributes:
+        seq: Unique sequence number for this command.
+        activity_id: User-provided activity ID (or auto-generated).
+        activity_type: Name of the activity to execute.
+        args: Arguments to pass to the activity.
+        task_queue: Task queue to run activity on (defaults to workflow's).
+        schedule_to_close_timeout: Max total time for activity.
+        schedule_to_start_timeout: Max time to wait for worker to pick up.
+        start_to_close_timeout: Max time for activity execution.
+        heartbeat_timeout: Max time between heartbeats.
+        retry_policy: Retry policy for the activity.
+    """
+
+    seq: int
+    """Unique sequence number for this command."""
+
+    activity_id: str
+    """User-provided activity ID."""
+
+    activity_type: str
+    """Name of the activity to execute."""
+
+    args: tuple[Any, ...] = field(default_factory=tuple)
+    """Arguments to pass to the activity."""
+
+    task_queue: str | None = None
+    """Task queue to run activity on (defaults to workflow's)."""
+
+    schedule_to_close_timeout: timedelta | None = None
+    """Max total time for activity (schedule to completion)."""
+
+    schedule_to_start_timeout: timedelta | None = None
+    """Max time to wait for a worker to pick up the activity."""
+
+    start_to_close_timeout: timedelta | None = None
+    """Max time for activity execution (from start to completion)."""
+
+    heartbeat_timeout: timedelta | None = None
+    """Max time between heartbeats. Activity must heartbeat or be considered dead."""
+
+    retry_policy: temporalio.common.RetryPolicy | None = None
+    """Retry policy for the activity."""
+
+
+@dataclass
+class RequestCancelActivityCommand:
+    """Command to request cancellation of a scheduled activity.
+
+    This command requests cancellation of a previously scheduled activity.
+    The activity will receive a cancellation request and should clean up
+    and exit gracefully.
+
+    Attributes:
+        seq: Sequence number of the activity to cancel.
+    """
+
+    seq: int
+    """Sequence number of the activity to cancel."""

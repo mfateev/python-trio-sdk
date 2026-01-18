@@ -638,6 +638,173 @@ class TrioBridgeWrapper:
         if error_container:
             raise error_container[0]
 
+    async def poll_activity_task(self, timeout: Optional[float] = None) -> bytes:
+        """Poll for an activity task.
+
+        This is a fully async operation that polls for activity tasks from
+        the Temporal server via the Rust bridge.
+
+        Args:
+            timeout: Optional timeout in seconds.
+
+        Returns:
+            Serialized activity task bytes (protobuf)
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        event = trio.Event()
+        result_container: list = []
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for activity task result."""
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is not None:
+                        result_container.append(bytes(data_bytes))
+                    else:
+                        result_container.append(b"")
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request("poll_activity_task", b"", deliver_result)
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("poll_activity_task timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        return result_container[0]
+
+    async def complete_activity_task(
+        self, completion_bytes: bytes, timeout: Optional[float] = None
+    ) -> None:
+        """Complete an activity task.
+
+        Sends the activity completion back to the Rust bridge for delivery to Temporal.
+
+        Args:
+            completion_bytes: Serialized activity task completion (protobuf)
+            timeout: Optional timeout in seconds
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        event = trio.Event()
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for activity completion acknowledgment."""
+            try:
+                if not result.success:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(
+                        RuntimeError(f"Complete activity task failed: {error_msg}")
+                    )
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "complete_activity_task", completion_bytes, deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("complete_activity_task timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+    async def record_activity_heartbeat(
+        self, heartbeat_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        """Record an activity heartbeat.
+
+        Sends heartbeat to the server. Returns any cancellation details if the
+        activity was cancelled.
+
+        Args:
+            heartbeat_bytes: Serialized heartbeat data (protobuf)
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Serialized heartbeat response (may contain cancellation info)
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        event = trio.Event()
+        result_container: list = []
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for heartbeat result."""
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is not None:
+                        result_container.append(bytes(data_bytes))
+                    else:
+                        result_container.append(b"")
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "record_activity_heartbeat", heartbeat_bytes, deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("record_activity_heartbeat timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        return result_container[0]
+
     async def poll_workflow_activation(self, timeout: Optional[float] = None) -> bytes:
         """Poll for a workflow activation.
 
