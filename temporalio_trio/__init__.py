@@ -7,12 +7,13 @@ Warning:
     This package is experimental and not ready for production use.
 """
 
-from temporalio_trio import worker, workflow
+from temporalio_trio import client, worker, workflow
 
 __version__ = "0.1.0"
 
 __all__ = [
     "__version__",
+    "client",
     "workflow",
     "worker",
 ]
