@@ -8,15 +8,19 @@ from __future__ import annotations
 import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from datetime import timedelta
+from typing import Any, Callable
 
+import temporalio.common
 import trio
 
 from temporalio_trio.worker._activation import (
+    ActivityResolvedJob,
     CancelWorkflowCommand,
     CancelWorkflowJob,
     CompleteWorkflowCommand,
     FailWorkflowCommand,
+    ScheduleActivityCommand,
     StartTimerCommand,
     TimerFiredJob,
     WorkflowActivation,
@@ -254,11 +258,19 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         self._random = random.Random(det.randomness_seed)
         self._time_ns: int = 0
         self._timer_seq: int = 0
+        self._activity_seq: int = 0
         self._workflow_obj: object | None = None
         self._fired_timers: set[int] = set()
         self._pending_timer_id: int | None = None
+        # Track resolved activities: seq -> (result, failure)
+        self._resolved_activities: dict[int, tuple[Any, BaseException | None]] = {}
+        self._pending_activity_seq: int | None = None
         self._commands: list[
-            StartTimerCommand | CompleteWorkflowCommand | FailWorkflowCommand | CancelWorkflowCommand
+            StartTimerCommand
+            | CompleteWorkflowCommand
+            | FailWorkflowCommand
+            | CancelWorkflowCommand
+            | ScheduleActivityCommand
         ] = []
         self._start_args: tuple[Any, ...] | None = None
         self._cancel_requested: bool = False
@@ -311,13 +323,19 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 self._fired_timers.add(job.timer_id)
                 if self._pending_timer_id == job.timer_id:
                     self._pending_timer_id = None
+            elif isinstance(job, ActivityResolvedJob):
+                # Store activity result for replay
+                self._resolved_activities[job.seq] = (job.result, job.failure)
+                if self._pending_activity_seq == job.seq:
+                    self._pending_activity_seq = None
             elif isinstance(job, CancelWorkflowJob):
                 self._cancel_requested = True
 
         # If we have start args (either new or from previous activation), run workflow
         if self._start_args is not None:
-            # Reset timer sequence for deterministic replay
+            # Reset sequences for deterministic replay
             self._timer_seq = 0
+            self._activity_seq = 0
 
             token = _Runtime.set_current(self)
             try:
@@ -423,3 +441,96 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         if self._pending_timer_id is not None:
             return {self._pending_timer_id: None}
         return {}
+
+    async def workflow_execute_activity(
+        self,
+        activity: str | Callable[..., Any],
+        *args: Any,
+        task_queue: str | None = None,
+        schedule_to_close_timeout: timedelta | None = None,
+        schedule_to_start_timeout: timedelta | None = None,
+        start_to_close_timeout: timedelta | None = None,
+        heartbeat_timeout: timedelta | None = None,
+        retry_policy: temporalio.common.RetryPolicy | None = None,
+        activity_id: str | None = None,
+    ) -> Any:
+        """Execute an activity and wait for its result.
+
+        If this activity has already resolved (during replay), returns immediately.
+        Otherwise, creates a schedule activity command and yields back to the
+        activation loop.
+
+        Args:
+            activity: Activity name or function reference.
+            *args: Arguments to pass to the activity.
+            task_queue: Task queue to run the activity on. Defaults to workflow's queue.
+            schedule_to_close_timeout: Max time for activity from schedule to completion.
+            schedule_to_start_timeout: Max time waiting for worker to pick up activity.
+            start_to_close_timeout: Max time for activity execution.
+            heartbeat_timeout: Max time between heartbeats.
+            retry_policy: Retry policy for the activity.
+            activity_id: Optional unique identifier for the activity.
+
+        Returns:
+            The activity result.
+
+        Raises:
+            RuntimeError: If the activity fails or is cancelled.
+        """
+        # Validate that at least one timeout is set
+        if schedule_to_close_timeout is None and start_to_close_timeout is None:
+            raise ValueError(
+                "At least one of schedule_to_close_timeout or start_to_close_timeout "
+                "must be set for activity execution"
+            )
+
+        # Get activity name from string or callable
+        if isinstance(activity, str):
+            activity_type = activity
+        else:
+            # Try to get name from activity definition
+            defn = getattr(activity, "__temporal_activity_definition", None)
+            if defn is not None:
+                activity_type = defn.name
+            else:
+                # Fallback to function name
+                activity_type = getattr(activity, "__name__", str(activity))
+
+        # Get sequence number for this activity
+        seq = self._activity_seq
+        self._activity_seq += 1
+
+        # Check if this activity has already resolved (replay)
+        if seq in self._resolved_activities:
+            result, failure = self._resolved_activities[seq]
+            if failure is not None:
+                raise failure
+            return result
+
+        # Check for cancellation before scheduling activity
+        if self._cancel_requested:
+            raise _WorkflowCancelled()
+
+        # Generate activity ID if not provided
+        if activity_id is None:
+            activity_id = str(seq)
+
+        # Activity hasn't resolved yet - create command and yield
+        self._commands.append(
+            ScheduleActivityCommand(
+                seq=seq,
+                activity_id=activity_id,
+                activity_type=activity_type,
+                args=tuple(args),
+                task_queue=task_queue,
+                schedule_to_close_timeout=schedule_to_close_timeout,
+                schedule_to_start_timeout=schedule_to_start_timeout,
+                start_to_close_timeout=start_to_close_timeout,
+                heartbeat_timeout=heartbeat_timeout,
+                retry_policy=retry_policy,
+            )
+        )
+        self._pending_activity_seq = seq
+
+        # Yield control - workflow will re-run when activity resolves
+        raise _WorkflowYield()

@@ -1,6 +1,10 @@
 """Tests for workflow definition and decorators (Phase 1)."""
 
+from datetime import timedelta
+from typing import Any, Callable
+
 import pytest
+import temporalio.common
 
 from temporalio_trio import workflow
 
@@ -183,6 +187,20 @@ class TestRuntimeClass:
                     task_queue="mock-queue",
                 )
 
+            async def workflow_execute_activity(
+                self,
+                activity: str | Callable[..., Any],
+                *args: Any,
+                task_queue: str | None = None,
+                schedule_to_close_timeout: timedelta | None = None,
+                schedule_to_start_timeout: timedelta | None = None,
+                start_to_close_timeout: timedelta | None = None,
+                heartbeat_timeout: timedelta | None = None,
+                retry_policy: temporalio.common.RetryPolicy | None = None,
+                activity_id: str | None = None,
+            ) -> Any:
+                pass
+
         mock = MockRuntime()
 
         # Initially None
@@ -219,6 +237,20 @@ class TestRuntimeClass:
                     run_id="mock-run",
                     task_queue="mock-queue",
                 )
+
+            async def workflow_execute_activity(
+                self,
+                activity: str | Callable[..., Any],
+                *args: Any,
+                task_queue: str | None = None,
+                schedule_to_close_timeout: timedelta | None = None,
+                schedule_to_start_timeout: timedelta | None = None,
+                start_to_close_timeout: timedelta | None = None,
+                heartbeat_timeout: timedelta | None = None,
+                retry_policy: temporalio.common.RetryPolicy | None = None,
+                activity_id: str | None = None,
+            ) -> Any:
+                pass
 
         mock1 = MockRuntime("mock1")
         mock2 = MockRuntime("mock2")
@@ -271,6 +303,20 @@ class TestPublicAPI:
                     task_queue="mock-queue",
                 )
 
+            async def workflow_execute_activity(
+                self,
+                activity: str | Callable[..., Any],
+                *args: Any,
+                task_queue: str | None = None,
+                schedule_to_close_timeout: timedelta | None = None,
+                schedule_to_start_timeout: timedelta | None = None,
+                start_to_close_timeout: timedelta | None = None,
+                heartbeat_timeout: timedelta | None = None,
+                retry_policy: temporalio.common.RetryPolicy | None = None,
+                activity_id: str | None = None,
+            ) -> Any:
+                pass
+
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
         try:
@@ -309,6 +355,20 @@ class TestPublicAPI:
                     run_id="mock-run",
                     task_queue="mock-queue",
                 )
+
+            async def workflow_execute_activity(
+                self,
+                activity: str | Callable[..., Any],
+                *args: Any,
+                task_queue: str | None = None,
+                schedule_to_close_timeout: timedelta | None = None,
+                schedule_to_start_timeout: timedelta | None = None,
+                start_to_close_timeout: timedelta | None = None,
+                heartbeat_timeout: timedelta | None = None,
+                retry_policy: temporalio.common.RetryPolicy | None = None,
+                activity_id: str | None = None,
+            ) -> Any:
+                pass
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)

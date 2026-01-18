@@ -381,16 +381,16 @@ class TrioActivityWorker:
                 heartbeat.SerializeToString()
             )
 
-            # Check response for cancellation
-            if response_bytes:
-                # Parse response to check for cancellation
-                # If cancelled, set the event
-                # (Response format depends on bridge implementation)
-                pass
+            # Note: Cancellation info comes via poll_activity_task (Cancel task type),
+            # not from heartbeat response. The response is empty on success.
+            # SDK Core handles heartbeat delivery internally.
 
         except Exception as e:
-            logger.warning(f"Heartbeat failed: {e}")
-            # Don't propagate - heartbeat failures shouldn't fail the activity
+            # Heartbeat failure should cancel the activity (matches SDK behavior)
+            logger.warning(f"Heartbeat failed, cancelling activity: {e}")
+            running.cancelled_event.set()
+            if running.cancel_scope is not None:
+                running.cancel_scope.cancel()
 
     async def _send_success(
         self, task_token: bytes, result: Any, defn: activity._Definition
@@ -450,15 +450,17 @@ class TrioActivityWorker:
                 return datetime.now(timezone.utc)
             return datetime.fromtimestamp(ts.seconds + ts.nanos / 1e9, tz=timezone.utc)
 
-        # Decode heartbeat details from previous attempt
+        # Decode heartbeat details from previous attempt (for retries)
         heartbeat_details: list[Any] = []
         if start.heartbeat_details and len(start.heartbeat_details.payloads) > 0:
             try:
-                # Use sync decode for simplicity
-                # In production, would want async
-                pass  # TODO: decode heartbeat details
-            except Exception:
-                pass
+                # Decode heartbeat details synchronously
+                # These are details from the previous attempt's last heartbeat
+                for payload in start.heartbeat_details.payloads:
+                    value = self._data_converter.payload_converter.from_payload(payload)
+                    heartbeat_details.append(value)
+            except Exception as e:
+                logger.warning(f"Failed to decode heartbeat details: {e}")
 
         # Create retry policy from proto
         retry_policy = None
@@ -507,7 +509,7 @@ class TrioActivityWorker:
             workflow_namespace=start.workflow_namespace,
             workflow_run_id=start.workflow_execution.run_id,
             workflow_type=start.workflow_type,
-            priority=temporalio.common.Priority.default,
+            priority=temporalio.common.Priority._from_proto(start.priority),
             retry_policy=retry_policy,
         )
 

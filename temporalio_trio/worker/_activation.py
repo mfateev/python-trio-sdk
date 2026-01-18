@@ -89,9 +89,8 @@ class CancelWorkflowJob:
     """Optional cancellation details/reason."""
 
 
-# Type alias for all job types
-WorkflowJob = WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob
-"""Union type for all possible activation jobs."""
+# Type alias defined at bottom of file after all types are defined
+# WorkflowJob = WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob | ActivityResolvedJob
 
 
 @dataclass
@@ -107,7 +106,7 @@ class WorkflowActivation:
         timestamp_ns: Current workflow time in nanoseconds for this activation.
     """
 
-    jobs: list[WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob]
+    jobs: list  # Generic list - actual type is WorkflowJob defined at bottom of file
     """List of jobs to process in this activation."""
 
     timestamp_ns: int
@@ -177,11 +176,8 @@ class CancelWorkflowCommand:
     pass
 
 
-# Type alias for all command types
-WorkflowCommand = (
-    StartTimerCommand | CompleteWorkflowCommand | FailWorkflowCommand | CancelWorkflowCommand
-)
-"""Union type for all possible completion commands."""
+# Type alias defined at bottom of file after all types are defined
+# WorkflowCommand = StartTimerCommand | CompleteWorkflowCommand | ...
 
 
 @dataclass
@@ -196,9 +192,9 @@ class WorkflowActivationCompletion:
         commands: List of commands to send to the server.
     """
 
-    commands: list[
-        StartTimerCommand | CompleteWorkflowCommand | FailWorkflowCommand | CancelWorkflowCommand
-    ]
+    commands: (
+        list  # Generic list - actual type is WorkflowCommand defined at bottom of file
+    )
     """List of commands to send to the server."""
 
 
@@ -315,3 +311,23 @@ class RequestCancelActivityCommand:
 
     seq: int
     """Sequence number of the activity to cancel."""
+
+
+# =============================================================================
+# Complete Type Aliases (defined after all types are available)
+# =============================================================================
+
+WorkflowJob = (
+    WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob | ActivityResolvedJob
+)
+"""Union type for all possible activation jobs."""
+
+WorkflowCommand = (
+    StartTimerCommand
+    | CompleteWorkflowCommand
+    | FailWorkflowCommand
+    | CancelWorkflowCommand
+    | ScheduleActivityCommand
+    | RequestCancelActivityCommand
+)
+"""Union type for all possible completion commands."""

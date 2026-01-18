@@ -10,18 +10,24 @@ needing to know about protobuf details.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import google.protobuf.duration_pb2
 import temporalio.api.common.v1
+import temporalio.bridge.proto.activity_result.activity_result_pb2 as act_result_pb
 import temporalio.bridge.proto.workflow_activation.workflow_activation_pb2 as act_pb
 import temporalio.bridge.proto.workflow_commands.workflow_commands_pb2 as cmd_pb
 import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
 import temporalio.converter
 
 from temporalio_trio.worker._activation import (
+    ActivityResolvedJob,
     CancelWorkflowCommand,
     CancelWorkflowJob,
     CompleteWorkflowCommand,
     FailWorkflowCommand,
+    RequestCancelActivityCommand,
+    ScheduleActivityCommand,
     StartTimerCommand,
     TimerFiredJob,
     WorkflowActivation,
@@ -57,7 +63,9 @@ def bridge_to_poc_activation(
     )
 
     # Convert jobs
-    poc_jobs: list[WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob] = []
+    poc_jobs: list[
+        WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob | ActivityResolvedJob
+    ] = []
     for job in bridge_act.jobs:
         # Check which job type this is (oneof field)
         job_type = job.WhichOneof("variant")
@@ -70,15 +78,19 @@ def bridge_to_poc_activation(
             poc_jobs.append(_convert_fire_timer(job.fire_timer))
         elif job_type == "cancel_workflow":
             poc_jobs.append(_convert_cancel_workflow(job.cancel_workflow))
+        elif job_type == "resolve_activity":
+            poc_jobs.append(
+                _convert_resolve_activity(job.resolve_activity, data_converter)
+            )
         elif job_type == "remove_from_cache":
             # Eviction jobs are handled separately in the bridge worker
             # They should not be passed to the workflow instance
             continue
         else:
-            # Phase 1: Only support initialize_workflow, fire_timer, cancel_workflow
+            # Unsupported job types - raise error with helpful message
             raise NotImplementedError(
-                f"Job type '{job_type}' not yet supported in Phase 1. "
-                f"This will be added in Phase 2."
+                f"Job type '{job_type}' not yet supported. "
+                f"Please file an issue if this is needed."
             )
 
     return WorkflowActivation(
@@ -144,6 +156,74 @@ def _convert_cancel_workflow(cancel: act_pb.CancelWorkflow) -> CancelWorkflowJob
     return CancelWorkflowJob()
 
 
+def _convert_resolve_activity(
+    resolve: act_pb.ResolveActivity,
+    data_converter: temporalio.converter.DataConverter,
+) -> ActivityResolvedJob:
+    """Convert ResolveActivity to ActivityResolvedJob.
+
+    Args:
+        resolve: Bridge ResolveActivity job
+        data_converter: Data converter for deserializing result payload
+
+    Returns:
+        POC ActivityResolvedJob with result or failure
+    """
+    seq = resolve.seq
+    result = None
+    failure = None
+
+    # Get the activity resolution
+    resolution = resolve.result
+    status = resolution.WhichOneof("status")
+
+    if status == "completed":
+        # Activity completed successfully - decode result
+        if resolution.completed.result.ByteSize() > 0:
+            result = data_converter.payload_converter.from_payload(
+                resolution.completed.result
+            )
+    elif status == "failed":
+        # Activity failed - convert to exception
+        failure_msg = resolution.failed.failure.message
+        failure = RuntimeError(f"Activity failed: {failure_msg}")
+    elif status == "cancelled":
+        # Activity was cancelled
+        cancel_msg = (
+            resolution.cancelled.failure.message
+            if resolution.cancelled.failure.message
+            else "Activity cancelled"
+        )
+        failure = RuntimeError(f"Activity cancelled: {cancel_msg}")
+    elif status == "backoff":
+        # Activity needs to retry after backoff - treat as transient failure
+        # The SDK core handles retry scheduling, so this shouldn't typically reach here
+        failure = RuntimeError("Activity scheduled for retry (backoff)")
+    else:
+        failure = RuntimeError(f"Unknown activity resolution status: {status}")
+
+    return ActivityResolvedJob(
+        seq=seq,
+        result=result,
+        failure=failure,
+    )
+
+
+def _set_duration(
+    duration_proto: google.protobuf.duration_pb2.Duration,
+    td: timedelta,
+) -> None:
+    """Set a protobuf Duration from a Python timedelta.
+
+    Args:
+        duration_proto: The protobuf Duration to set
+        td: The Python timedelta value
+    """
+    total_seconds = td.total_seconds()
+    duration_proto.seconds = int(total_seconds)
+    duration_proto.nanos = int((total_seconds - int(total_seconds)) * 1_000_000_000)
+
+
 def poc_to_bridge_completion(
     run_id: str,
     poc_comp: WorkflowActivationCompletion,
@@ -200,6 +280,70 @@ def poc_to_bridge_completion(
         elif isinstance(cmd, CancelWorkflowCommand):
             # Convert CancelWorkflowCommand to CancelWorkflowExecution
             bridge_cmd.cancel_workflow_execution.SetInParent()
+
+        elif isinstance(cmd, ScheduleActivityCommand):
+            # Convert ScheduleActivityCommand to ScheduleActivity
+            bridge_cmd.schedule_activity.seq = cmd.seq
+            bridge_cmd.schedule_activity.activity_id = cmd.activity_id
+            bridge_cmd.schedule_activity.activity_type = cmd.activity_type
+            if cmd.task_queue:
+                bridge_cmd.schedule_activity.task_queue = cmd.task_queue
+
+            # Encode arguments
+            for arg in cmd.args:  # type: ignore[union-attr]
+                payload = data_converter.payload_converter.to_payload(arg)
+                bridge_cmd.schedule_activity.arguments.append(payload)
+
+            # Convert timeouts to Duration protobufs
+            if cmd.schedule_to_close_timeout:
+                _set_duration(
+                    bridge_cmd.schedule_activity.schedule_to_close_timeout,
+                    cmd.schedule_to_close_timeout,
+                )
+            if cmd.schedule_to_start_timeout:
+                _set_duration(
+                    bridge_cmd.schedule_activity.schedule_to_start_timeout,
+                    cmd.schedule_to_start_timeout,
+                )
+            if cmd.start_to_close_timeout:
+                _set_duration(
+                    bridge_cmd.schedule_activity.start_to_close_timeout,
+                    cmd.start_to_close_timeout,
+                )
+            if cmd.heartbeat_timeout:
+                _set_duration(
+                    bridge_cmd.schedule_activity.heartbeat_timeout,
+                    cmd.heartbeat_timeout,
+                )
+
+            # Convert retry policy if present
+            if cmd.retry_policy:
+                if cmd.retry_policy.initial_interval:
+                    _set_duration(
+                        bridge_cmd.schedule_activity.retry_policy.initial_interval,
+                        cmd.retry_policy.initial_interval,
+                    )
+                if cmd.retry_policy.maximum_interval:
+                    _set_duration(
+                        bridge_cmd.schedule_activity.retry_policy.maximum_interval,
+                        cmd.retry_policy.maximum_interval,
+                    )
+                if cmd.retry_policy.backoff_coefficient:
+                    bridge_cmd.schedule_activity.retry_policy.backoff_coefficient = (
+                        cmd.retry_policy.backoff_coefficient
+                    )
+                if cmd.retry_policy.maximum_attempts:
+                    bridge_cmd.schedule_activity.retry_policy.maximum_attempts = (
+                        cmd.retry_policy.maximum_attempts
+                    )
+                for exc_type in cmd.retry_policy.non_retryable_error_types or []:  # type: ignore[union-attr]
+                    bridge_cmd.schedule_activity.retry_policy.non_retryable_error_types.append(
+                        exc_type
+                    )
+
+        elif isinstance(cmd, RequestCancelActivityCommand):
+            # Convert RequestCancelActivityCommand to RequestCancelActivity
+            bridge_cmd.request_cancel_activity.seq = cmd.seq
 
         else:
             raise NotImplementedError(

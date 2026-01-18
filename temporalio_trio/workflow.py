@@ -9,7 +9,10 @@ import inspect
 from abc import ABC, abstractmethod
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Awaitable, Callable, TypeVar
+
+import temporalio.common
 
 __all__ = [
     "defn",
@@ -18,6 +21,7 @@ __all__ = [
     "time",
     "time_ns",
     "info",
+    "execute_activity",
     "Info",
     "_Runtime",
     "_Definition",
@@ -123,6 +127,40 @@ class _Runtime(ABC):
 
         Returns:
             Info about the current workflow execution.
+        """
+        ...
+
+    @abstractmethod
+    async def workflow_execute_activity(
+        self,
+        activity: str | Callable[..., Any],
+        *args: Any,
+        task_queue: str | None = None,
+        schedule_to_close_timeout: timedelta | None = None,
+        schedule_to_start_timeout: timedelta | None = None,
+        start_to_close_timeout: timedelta | None = None,
+        heartbeat_timeout: timedelta | None = None,
+        retry_policy: temporalio.common.RetryPolicy | None = None,
+        activity_id: str | None = None,
+    ) -> Any:
+        """Execute an activity and wait for its result.
+
+        Args:
+            activity: Activity name or function reference.
+            *args: Arguments to pass to the activity.
+            task_queue: Task queue to run the activity on. Defaults to workflow's queue.
+            schedule_to_close_timeout: Max time for activity from schedule to completion.
+            schedule_to_start_timeout: Max time waiting for worker to pick up activity.
+            start_to_close_timeout: Max time for activity execution.
+            heartbeat_timeout: Max time between heartbeats.
+            retry_policy: Retry policy for the activity.
+            activity_id: Optional unique identifier for the activity.
+
+        Returns:
+            The activity result.
+
+        Raises:
+            RuntimeError: If the activity fails or is cancelled.
         """
         ...
 
@@ -364,6 +402,65 @@ def info() -> Info:
         _NotInWorkflowContextError: If not in a workflow context.
     """
     return _Runtime.current().workflow_info()
+
+
+async def execute_activity(
+    activity: str | Callable[..., Any],
+    *args: Any,
+    task_queue: str | None = None,
+    schedule_to_close_timeout: timedelta | None = None,
+    schedule_to_start_timeout: timedelta | None = None,
+    start_to_close_timeout: timedelta | None = None,
+    heartbeat_timeout: timedelta | None = None,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    activity_id: str | None = None,
+) -> Any:
+    """Execute an activity and wait for its result.
+
+    Mirrors temporalio.workflow.execute_activity from the SDK.
+
+    This schedules an activity for execution and waits for it to complete.
+    At least one of ``schedule_to_close_timeout`` or ``start_to_close_timeout``
+    must be provided.
+
+    Args:
+        activity: Activity name (string) or function reference decorated with
+            @activity.defn.
+        *args: Arguments to pass to the activity.
+        task_queue: Task queue to run the activity on. Defaults to the current
+            workflow's task queue.
+        schedule_to_close_timeout: Max amount of time the activity can take from
+            first being scheduled to being completed. This is inclusive of all
+            retries.
+        schedule_to_start_timeout: Max amount of time the activity can take to
+            be started from first being scheduled.
+        start_to_close_timeout: Max amount of time a single activity run can
+            take from when it starts to when it completes. This is per retry.
+        heartbeat_timeout: How frequently an activity must invoke heartbeat
+            while running before it is considered timed out.
+        retry_policy: How an activity is retried on failure. If unset, a
+            server-defined default is used. Set maximum attempts to 1 to disable
+            retries.
+        activity_id: Optional unique identifier for the activity.
+
+    Returns:
+        The result of the activity execution.
+
+    Raises:
+        RuntimeError: If the activity fails or is cancelled.
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    return await _Runtime.current().workflow_execute_activity(
+        activity,
+        *args,
+        task_queue=task_queue,
+        schedule_to_close_timeout=schedule_to_close_timeout,
+        schedule_to_start_timeout=schedule_to_start_timeout,
+        start_to_close_timeout=start_to_close_timeout,
+        heartbeat_timeout=heartbeat_timeout,
+        retry_policy=retry_policy,
+        activity_id=activity_id,
+    )
 
 
 @dataclass
