@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Optional
 
+import trio
 from temporalio.api.common.v1 import Payloads
 from temporalio.api.enums.v1 import EventType
 from temporalio.api.workflowservice.v1 import GetWorkflowExecutionHistoryResponse
@@ -11,6 +13,8 @@ from temporalio.converter import DataConverter
 
 if TYPE_CHECKING:
     from ._client import Client
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowHandle:
@@ -77,7 +81,9 @@ class WorkflowHandle:
     async def result(self, *, timeout: Optional[float] = None) -> Any:
         """Wait for workflow to complete and return result.
 
-        This method blocks until the workflow completes (successfully or with error).
+        This method uses server-side long polling - the server blocks until the
+        workflow completes, then returns the close event. This matches the
+        Python SDK behavior.
 
         Args:
             timeout: Optional timeout in seconds
@@ -87,26 +93,51 @@ class WorkflowHandle:
 
         Raises:
             WorkflowFailureError: If workflow failed
-            TimeoutError: If timeout exceeded
+            RuntimeError: If workflow was canceled or terminated
+            trio.TooSlowError: If timeout exceeded
 
         Example:
             result = await handle.result()
             print(f"Workflow completed with: {result}")
         """
-        # Get workflow history (blocks until complete)
-        response_bytes = await self._client._bridge.get_workflow_result(
-            workflow_id=self._workflow_id,
-            run_id=self._result_run_id,
-            timeout=timeout,
-        )
 
-        # Parse response
-        response = GetWorkflowExecutionHistoryResponse()
-        response.ParseFromString(response_bytes)
+        async def wait_for_result() -> Any:
+            # Server-side long polling: The Rust bridge makes a GetWorkflowExecutionHistory
+            # call with wait_new_event=true and history_event_filter_type=CLOSE_EVENT.
+            # The server blocks until the workflow closes, then returns the close event.
+            # If server times out, we retry (rare - server timeout is typically 60s).
+            while True:
+                # Get workflow close event via server-side long poll
+                response_bytes = await self._client._bridge.get_workflow_result(
+                    workflow_id=self._workflow_id,
+                    run_id=self._result_run_id,
+                    timeout=None,  # Let server-side timeout handle it
+                )
 
-        # Extract result from history
-        result = await self._extract_result_from_history(response)
-        return result
+                # Parse response
+                response = GetWorkflowExecutionHistoryResponse()
+                response.ParseFromString(response_bytes)
+
+                # Try to extract result - returns _WorkflowResult if terminal event found
+                wrapped_result = await self._try_extract_result_from_history(response)
+                if wrapped_result is not None:
+                    return wrapped_result.value
+
+                # No close event yet (server timed out), retry
+                logger.debug(
+                    f"Workflow {self._workflow_id} not complete yet, retrying long poll"
+                )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                return await wait_for_result()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError(
+                    f"Workflow {self._workflow_id} did not complete within {timeout}s"
+                )
+        else:
+            return await wait_for_result()
 
     async def query(
         self,
@@ -223,21 +254,21 @@ class WorkflowHandle:
             timeout=timeout,
         )
 
-    async def _extract_result_from_history(
+    async def _try_extract_result_from_history(
         self, response: GetWorkflowExecutionHistoryResponse
-    ) -> Any:
-        """Extract workflow result from history response.
+    ) -> Optional["_WorkflowResult"]:
+        """Try to extract workflow result from history response.
 
         Args:
             response: GetWorkflowExecutionHistoryResponse
 
         Returns:
-            Deserialized workflow result
+            _WorkflowResult wrapper if terminal event found, None if still running
 
         Raises:
-            WorkflowFailureError: If workflow failed
+            RuntimeError: If workflow failed, was canceled, or terminated
         """
-        # Find WorkflowExecutionCompleted event
+        # Find terminal event in history
         for event in response.history.events:
             if event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED:
                 # Extract result payload
@@ -247,8 +278,8 @@ class WorkflowHandle:
                     results = await self._client.data_converter.decode(
                         completed.result.payloads
                     )
-                    return results[0] if results else None
-                return None
+                    return _WorkflowResult(results[0] if results else None)
+                return _WorkflowResult(None)
 
             elif event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED:
                 # Workflow failed
@@ -264,8 +295,36 @@ class WorkflowHandle:
                 terminated = event.workflow_execution_terminated_event_attributes
                 raise RuntimeError(f"Workflow was terminated: {terminated.reason}")
 
-        # If we get here, workflow might still be running or history incomplete
-        raise RuntimeError("Workflow result not found in history")
+        # No terminal event found - workflow still running
+        return None
+
+    async def _extract_result_from_history(
+        self, response: GetWorkflowExecutionHistoryResponse
+    ) -> Any:
+        """Extract workflow result from history response.
+
+        Args:
+            response: GetWorkflowExecutionHistoryResponse
+
+        Returns:
+            Deserialized workflow result
+
+        Raises:
+            RuntimeError: If workflow failed, canceled, terminated, or not complete
+        """
+        result = await self._try_extract_result_from_history(response)
+        if result is None:
+            raise RuntimeError("Workflow result not found in history")
+        return result.value
+
+
+class _WorkflowResult:
+    """Wrapper to distinguish between 'no result yet' and 'result is None'."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
 
 
 __all__ = ["WorkflowHandle"]

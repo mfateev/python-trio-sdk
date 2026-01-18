@@ -117,6 +117,10 @@ impl CoreClientHandle {
             .ok_or_else(|| anyhow!("Client not initialized"))?;
 
         // Build get_workflow_execution_history request
+        // Uses server-side long polling like the Python SDK:
+        // - wait_new_event=true: Server blocks until workflow closes or timeout
+        // - history_event_filter_type=CLOSE_EVENT (2): Only return close events
+        // - skip_archival=true: Don't search archived data
         use temporalio_common::protos::temporal::api::workflowservice::v1::GetWorkflowExecutionHistoryRequest;
         use temporalio_common::protos::temporal::api::common::v1::WorkflowExecution;
 
@@ -126,12 +130,13 @@ impl CoreClientHandle {
                 workflow_id,
                 run_id: run_id.unwrap_or_default(),
             }),
-            wait_new_event: true,
-            skip_archival: false,
+            wait_new_event: true, // Server-side long polling - blocks until close event
+            history_event_filter_type: 2, // CLOSE_EVENT - only return close events
+            skip_archival: true,
             ..Default::default()
         };
 
-        // Poll for result (this will block until workflow completes)
+        // Server will block until workflow closes (completed, failed, canceled, etc.)
         let response = client
             .get_workflow_execution_history(tonic::Request::new(request))
             .await

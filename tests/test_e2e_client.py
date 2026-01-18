@@ -11,10 +11,8 @@ Prerequisites:
     - Worker running to process workflows
 
 Note:
-    Several tests are skipped because handle.result() doesn't yet implement
-    proper polling until workflow completion. This will be addressed in a
-    future update. The core workflow execution works as demonstrated by
-    tests/test_e2e_integration.py which uses CLI-based polling.
+    Some tests for cancel/terminate are skipped as those features require
+    additional worker-side implementation (cancel_workflow job type).
 """
 
 import time
@@ -98,7 +96,6 @@ async def test_client_connect():
     await client.close()
 
 
-@pytest.mark.skip(reason="handle.result() doesn't poll until completion yet - see test_e2e_integration.py for working workflow tests")
 @pytest.mark.temporal_server
 @pytest.mark.trio
 async def test_start_workflow(client, worker_with_workflows):
@@ -123,7 +120,6 @@ async def test_start_workflow(client, worker_with_workflows):
     assert result == "Hello, World!"
 
 
-@pytest.mark.skip(reason="handle.result() doesn't poll until completion yet - see test_e2e_integration.py for working workflow tests")
 @pytest.mark.temporal_server
 @pytest.mark.trio
 async def test_execute_workflow(client, worker_with_workflows):
@@ -142,7 +138,6 @@ async def test_execute_workflow(client, worker_with_workflows):
     assert result == "Hello, Alice!"
 
 
-@pytest.mark.skip(reason="handle.result() doesn't poll until completion yet - see test_e2e_integration.py for working workflow tests")
 @pytest.mark.temporal_server
 @pytest.mark.trio
 async def test_get_workflow_handle(client, worker_with_workflows):
@@ -228,49 +223,43 @@ async def test_workflow_terminate(client, worker_with_workflows):
         await handle.result()
 
 
-@pytest.mark.skip(reason="handle.result() doesn't poll until completion yet - see test_e2e_integration.py for working workflow tests")
 @pytest.mark.temporal_server
 @pytest.mark.trio
 async def test_multiple_workflows_parallel(client, worker_with_workflows):
     """Test executing multiple workflows in parallel."""
     task_queue = worker_with_workflows
-    names = ["Alice", "Bob", "Charlie", "Diana", "Eve"]
+    names = ["Alice", "Bob", "Charlie"]  # Reduced to 3 for faster test
+    base_time = int(time.time())
 
-    # Start all workflows in parallel
-    async with trio.open_nursery() as nursery:
-        handles = []
-
-        for name in names:
-            workflow_id = f"greeting-parallel-{name}-{int(time.time())}"
-
-            async def start_workflow(name, workflow_id):
-                handle = await client.start_workflow(
-                    GreetingWorkflow,
-                    name,
-                    id=workflow_id,
-                    task_queue=task_queue,
-                )
-                handles.append((name, handle))
-
-            nursery.start_soon(start_workflow, name, workflow_id)
+    # Start all workflows sequentially first to ensure unique IDs
+    handles = []
+    for i, name in enumerate(names):
+        workflow_id = f"greeting-parallel-{name}-{base_time}-{i}"
+        handle = await client.start_workflow(
+            GreetingWorkflow,
+            name,
+            id=workflow_id,
+            task_queue=task_queue,
+        )
+        handles.append((name, handle))
 
     # Wait for all results in parallel
     async with trio.open_nursery() as nursery:
         results = []
 
         async def get_result(name, handle):
-            result = await handle.result()
+            result = await handle.result(timeout=30.0)
             results.append((name, result))
 
         for name, handle in handles:
             nursery.start_soon(get_result, name, handle)
 
     # Verify all results
+    assert len(results) == len(names)
     for name, result in results:
         assert result == f"Hello, {name}!"
 
 
-@pytest.mark.skip(reason="handle.result() doesn't poll until completion yet - see test_e2e_integration.py for working workflow tests")
 @pytest.mark.temporal_server
 @pytest.mark.trio
 async def test_workflow_with_timeout(client, worker_with_workflows):

@@ -152,6 +152,7 @@ async def test_workflow_handle_result(mock_bridge):
     result = await handle.result()
     assert result == 42
 
+    # Note: Uses server-side long poll (timeout=None lets server handle it)
     mock_bridge.get_workflow_result.assert_called_once_with(
         workflow_id="wf-123",
         run_id=None,
