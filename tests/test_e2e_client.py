@@ -163,7 +163,6 @@ async def test_get_workflow_handle(client, worker_with_workflows):
     assert result == "Hello, Bob!"
 
 
-@pytest.mark.skip(reason="cancel_workflow job type not implemented yet")
 @pytest.mark.temporal_server
 @pytest.mark.trio
 async def test_workflow_cancel(client, worker_with_workflows):
@@ -193,7 +192,6 @@ async def test_workflow_cancel(client, worker_with_workflows):
         await handle.result()
 
 
-@pytest.mark.skip(reason="terminate and handle.result() not fully implemented yet")
 @pytest.mark.temporal_server
 @pytest.mark.trio
 async def test_workflow_terminate(client, worker_with_workflows):

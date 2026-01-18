@@ -19,11 +19,13 @@ __all__ = [
     # Workflow jobs
     "WorkflowStartedJob",
     "TimerFiredJob",
+    "CancelWorkflowJob",
     "WorkflowActivation",
     # Workflow commands
     "StartTimerCommand",
     "CompleteWorkflowCommand",
     "FailWorkflowCommand",
+    "CancelWorkflowCommand",
     "WorkflowActivationCompletion",
     # Activity jobs (for workflow-activity integration)
     "ActivityResolvedJob",
@@ -72,8 +74,23 @@ class TimerFiredJob:
     """The ID of the timer that fired."""
 
 
+@dataclass
+class CancelWorkflowJob:
+    """Job indicating workflow cancellation was requested.
+
+    This job is sent when a cancellation request has been received for the
+    workflow. The workflow should clean up and exit gracefully.
+
+    Attributes:
+        details: Optional cancellation details/reason.
+    """
+
+    details: tuple[Any, ...] = ()
+    """Optional cancellation details/reason."""
+
+
 # Type alias for all job types
-WorkflowJob = WorkflowStartedJob | TimerFiredJob
+WorkflowJob = WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob
 """Union type for all possible activation jobs."""
 
 
@@ -90,7 +107,7 @@ class WorkflowActivation:
         timestamp_ns: Current workflow time in nanoseconds for this activation.
     """
 
-    jobs: list[WorkflowStartedJob | TimerFiredJob]
+    jobs: list[WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob]
     """List of jobs to process in this activation."""
 
     timestamp_ns: int
@@ -149,8 +166,21 @@ class FailWorkflowCommand:
     """The exception that caused the workflow to fail."""
 
 
+@dataclass
+class CancelWorkflowCommand:
+    """Command to mark workflow as cancelled.
+
+    This command indicates the workflow was cancelled (in response to a
+    cancellation request).
+    """
+
+    pass
+
+
 # Type alias for all command types
-WorkflowCommand = StartTimerCommand | CompleteWorkflowCommand | FailWorkflowCommand
+WorkflowCommand = (
+    StartTimerCommand | CompleteWorkflowCommand | FailWorkflowCommand | CancelWorkflowCommand
+)
 """Union type for all possible completion commands."""
 
 
@@ -166,7 +196,9 @@ class WorkflowActivationCompletion:
         commands: List of commands to send to the server.
     """
 
-    commands: list[StartTimerCommand | CompleteWorkflowCommand | FailWorkflowCommand]
+    commands: list[
+        StartTimerCommand | CompleteWorkflowCommand | FailWorkflowCommand | CancelWorkflowCommand
+    ]
     """List of commands to send to the server."""
 
 

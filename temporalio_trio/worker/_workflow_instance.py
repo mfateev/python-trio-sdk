@@ -13,6 +13,8 @@ from typing import Any
 import trio
 
 from temporalio_trio.worker._activation import (
+    CancelWorkflowCommand,
+    CancelWorkflowJob,
     CompleteWorkflowCommand,
     FailWorkflowCommand,
     StartTimerCommand,
@@ -39,6 +41,16 @@ class _WorkflowYield(BaseException):
     This is raised when the workflow needs to wait for an external event
     (like a timer firing). It's a BaseException so it won't be caught by
     normal exception handlers in workflow code.
+    """
+
+    pass
+
+
+class _WorkflowCancelled(BaseException):
+    """Signal that workflow was cancelled.
+
+    This is raised when the workflow receives a cancellation request.
+    It's a BaseException so it won't be caught by normal exception handlers.
     """
 
     pass
@@ -246,9 +258,10 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         self._fired_timers: set[int] = set()
         self._pending_timer_id: int | None = None
         self._commands: list[
-            StartTimerCommand | CompleteWorkflowCommand | FailWorkflowCommand
+            StartTimerCommand | CompleteWorkflowCommand | FailWorkflowCommand | CancelWorkflowCommand
         ] = []
         self._start_args: tuple[Any, ...] | None = None
+        self._cancel_requested: bool = False
 
     @property
     def defn(self) -> _Definition:
@@ -298,6 +311,8 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 self._fired_timers.add(job.timer_id)
                 if self._pending_timer_id == job.timer_id:
                     self._pending_timer_id = None
+            elif isinstance(job, CancelWorkflowJob):
+                self._cancel_requested = True
 
         # If we have start args (either new or from previous activation), run workflow
         if self._start_args is not None:
@@ -329,6 +344,8 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         """Run the workflow from the beginning.
 
         This re-executes the workflow, with fired timers completing immediately.
+        If cancellation was requested, the workflow will raise _WorkflowCancelled
+        when it tries to wait for something (like a timer).
         """
         assert self._start_args is not None
         self._workflow_obj = self._defn.cls()
@@ -338,6 +355,9 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         except _WorkflowYield:
             # Re-raise to propagate yield signal
             raise
+        except _WorkflowCancelled:
+            # Workflow was cancelled - emit cancel command
+            self._commands.append(CancelWorkflowCommand())
         except Exception as e:
             self._commands.append(FailWorkflowCommand(exception=e))
 
@@ -375,6 +395,10 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         # Check if this timer has already fired (replay)
         if timer_id in self._fired_timers:
             return
+
+        # Check for cancellation before waiting for timer
+        if self._cancel_requested:
+            raise _WorkflowCancelled()
 
         # Timer hasn't fired yet - create command and yield
         self._commands.append(

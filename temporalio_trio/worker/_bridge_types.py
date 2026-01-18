@@ -18,6 +18,8 @@ import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as co
 import temporalio.converter
 
 from temporalio_trio.worker._activation import (
+    CancelWorkflowCommand,
+    CancelWorkflowJob,
     CompleteWorkflowCommand,
     FailWorkflowCommand,
     StartTimerCommand,
@@ -55,7 +57,7 @@ def bridge_to_poc_activation(
     )
 
     # Convert jobs
-    poc_jobs: list[WorkflowStartedJob | TimerFiredJob] = []
+    poc_jobs: list[WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob] = []
     for job in bridge_act.jobs:
         # Check which job type this is (oneof field)
         job_type = job.WhichOneof("variant")
@@ -66,12 +68,14 @@ def bridge_to_poc_activation(
             )
         elif job_type == "fire_timer":
             poc_jobs.append(_convert_fire_timer(job.fire_timer))
+        elif job_type == "cancel_workflow":
+            poc_jobs.append(_convert_cancel_workflow(job.cancel_workflow))
         elif job_type == "remove_from_cache":
             # Eviction jobs are handled separately in the bridge worker
             # They should not be passed to the workflow instance
             continue
         else:
-            # Phase 1: Only support initialize_workflow and fire_timer
+            # Phase 1: Only support initialize_workflow, fire_timer, cancel_workflow
             raise NotImplementedError(
                 f"Job type '{job_type}' not yet supported in Phase 1. "
                 f"This will be added in Phase 2."
@@ -127,6 +131,19 @@ def _convert_fire_timer(fire: act_pb.FireTimer) -> TimerFiredJob:
     return TimerFiredJob(timer_id=fire.seq)
 
 
+def _convert_cancel_workflow(cancel: act_pb.CancelWorkflow) -> CancelWorkflowJob:
+    """Convert CancelWorkflow to CancelWorkflowJob.
+
+    Args:
+        cancel: Bridge CancelWorkflow job
+
+    Returns:
+        POC CancelWorkflowJob
+    """
+    # CancelWorkflow has optional details field - for now we ignore it
+    return CancelWorkflowJob()
+
+
 def poc_to_bridge_completion(
     run_id: str,
     poc_comp: WorkflowActivationCompletion,
@@ -179,6 +196,10 @@ def poc_to_bridge_completion(
                 bridge_cmd.fail_workflow_execution.failure.stack_trace = "".join(
                     traceback.format_tb(cmd.exception.__traceback__)
                 )
+
+        elif isinstance(cmd, CancelWorkflowCommand):
+            # Convert CancelWorkflowCommand to CancelWorkflowExecution
+            bridge_cmd.cancel_workflow_execution.SetInParent()
 
         else:
             raise NotImplementedError(
