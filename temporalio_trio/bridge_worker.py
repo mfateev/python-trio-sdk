@@ -80,7 +80,9 @@ class TrioBridgeWorker:
                 self._workflows[defn.name] = defn
 
         # Track workflow instances by run_id
+        # Protected by _instances_lock for thread-safe access from concurrent activations
         self._instances: dict[str, WorkflowInstance] = {}
+        self._instances_lock = trio.Lock()
 
     async def run(self) -> None:
         """Run the worker until shutdown.
@@ -162,8 +164,9 @@ class TrioBridgeWorker:
             if is_eviction:
                 # Handle eviction: remove from cache and respond with empty completion
                 logger.debug(f"Evicting workflow {run_id}")
-                if run_id in self._instances:
-                    del self._instances[run_id]
+                async with self._instances_lock:
+                    if run_id in self._instances:
+                        del self._instances[run_id]
 
                 # Send empty success completion
                 comp = temporalio.bridge.proto.workflow_completion.workflow_completion_pb2.WorkflowActivationCompletion()
@@ -176,64 +179,67 @@ class TrioBridgeWorker:
             # Convert bridge activation to POC activation
             poc_act = bridge_to_poc_activation(bridge_act, self._data_converter)
 
-            instance = self._instances.get(run_id)
-            if instance is None:
-                # Find the WorkflowStartedJob to create the instance
-                from temporalio_trio.worker._activation import WorkflowStartedJob
+            # Get or create instance with lock protection
+            # Lock ensures atomic get-check-create-store for concurrent activations
+            async with self._instances_lock:
+                instance = self._instances.get(run_id)
+                if instance is None:
+                    # Find the WorkflowStartedJob to create the instance
+                    from temporalio_trio.worker._activation import WorkflowStartedJob
 
-                started_job: WorkflowStartedJob | None = None
-                for job in poc_act.jobs:  # type: ignore[assignment]
-                    if isinstance(job, WorkflowStartedJob):
-                        started_job = job
-                        break
+                    started_job: WorkflowStartedJob | None = None
+                    for job in poc_act.jobs:  # type: ignore[assignment]
+                        if isinstance(job, WorkflowStartedJob):
+                            started_job = job
+                            break
 
-                if started_job is None:
-                    raise RuntimeError(
-                        f"No WorkflowStartedJob found for new workflow {run_id}"
+                    if started_job is None:
+                        raise RuntimeError(
+                            f"No WorkflowStartedJob found for new workflow {run_id}"
+                        )
+
+                    defn = self._workflows.get(started_job.workflow_type)
+                    if defn is None:
+                        raise RuntimeError(
+                            f"Unknown workflow type: {started_job.workflow_type}"
+                        )
+
+                    # Create workflow info
+                    # Extract workflow_id from bridge activation
+                    workflow_id = None
+                    for job in bridge_act.jobs:
+                        if job.HasField("initialize_workflow"):
+                            workflow_id = job.initialize_workflow.workflow_id
+                            break
+
+                    if workflow_id is None:
+                        raise RuntimeError("No workflow_id in InitializeWorkflow")
+
+                    info = Info(
+                        workflow_id=workflow_id,
+                        run_id=run_id,
+                        workflow_type=started_job.workflow_type,
+                        task_queue=self._task_queue,
                     )
 
-                defn = self._workflows.get(started_job.workflow_type)
-                if defn is None:
-                    raise RuntimeError(
-                        f"Unknown workflow type: {started_job.workflow_type}"
+                    randomness_seed = 0
+                    for job in bridge_act.jobs:
+                        if job.HasField("initialize_workflow"):
+                            randomness_seed = job.initialize_workflow.randomness_seed
+                            break
+
+                    # Create instance details
+                    details = WorkflowInstanceDetails(
+                        defn=defn,
+                        info=info,
+                        randomness_seed=randomness_seed,
                     )
 
-                # Create workflow info
-                # Extract workflow_id from bridge activation
-                workflow_id = None
-                for job in bridge_act.jobs:
-                    if job.HasField("initialize_workflow"):
-                        workflow_id = job.initialize_workflow.workflow_id
-                        break
+                    # Create instance
+                    instance = self._runner.create_instance(details)
+                    self._instances[run_id] = instance
 
-                if workflow_id is None:
-                    raise RuntimeError("No workflow_id in InitializeWorkflow")
-
-                info = Info(
-                    workflow_id=workflow_id,
-                    run_id=run_id,
-                    workflow_type=started_job.workflow_type,
-                    task_queue=self._task_queue,
-                )
-
-                randomness_seed = 0
-                for job in bridge_act.jobs:
-                    if job.HasField("initialize_workflow"):
-                        randomness_seed = job.initialize_workflow.randomness_seed
-                        break
-
-                # Create instance details
-                details = WorkflowInstanceDetails(
-                    defn=defn,
-                    info=info,
-                    randomness_seed=randomness_seed,
-                )
-
-                # Create instance
-                instance = self._runner.create_instance(details)
-                self._instances[run_id] = instance
-
-            # Run activation in a thread for isolation
+            # Run activation in a thread for isolation (outside lock)
             # Each workflow activation runs in its own thread with its own trio.run()
             # This allows deterministic, isolated execution per workflow
             poc_comp = await trio.to_thread.run_sync(instance.activate, poc_act)
