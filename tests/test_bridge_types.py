@@ -157,7 +157,9 @@ def test_convert_unsupported_job_type():
 
     # Try to convert - should raise NotImplementedError
     data_converter = temporalio.converter.DataConverter()
-    with pytest.raises(NotImplementedError, match="update_random_seed.*not yet supported"):
+    with pytest.raises(
+        NotImplementedError, match="update_random_seed.*not yet supported"
+    ):
         bridge_to_poc_activation(bridge_act, data_converter)
 
 

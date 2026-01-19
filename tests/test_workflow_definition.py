@@ -7,6 +7,11 @@ import pytest
 import temporalio.common
 
 from temporalio_trio import workflow
+from temporalio_trio.workflow import (
+    ChildWorkflowCancellationType,
+    ChildWorkflowHandle,
+    ParentClosePolicy,
+)
 
 
 class TestWorkflowRunDecorator:
@@ -201,6 +206,22 @@ class TestRuntimeClass:
             ) -> Any:
                 pass
 
+            async def workflow_start_child_workflow(
+                self,
+                workflow: str | type,
+                *args: Any,
+                id: str,
+                task_queue: str | None,
+                cancellation_type: ChildWorkflowCancellationType,
+                parent_close_policy: ParentClosePolicy,
+                execution_timeout: timedelta | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> ChildWorkflowHandle[Any, Any]:
+                raise NotImplementedError()
+
         mock = MockRuntime()
 
         # Initially None
@@ -251,6 +272,22 @@ class TestRuntimeClass:
                 activity_id: str | None = None,
             ) -> Any:
                 pass
+
+            async def workflow_start_child_workflow(
+                self,
+                workflow: str | type,
+                *args: Any,
+                id: str,
+                task_queue: str | None,
+                cancellation_type: ChildWorkflowCancellationType,
+                parent_close_policy: ParentClosePolicy,
+                execution_timeout: timedelta | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> ChildWorkflowHandle[Any, Any]:
+                raise NotImplementedError()
 
         mock1 = MockRuntime("mock1")
         mock2 = MockRuntime("mock2")
@@ -317,6 +354,22 @@ class TestPublicAPI:
             ) -> Any:
                 pass
 
+            async def workflow_start_child_workflow(
+                self,
+                workflow: str | type,
+                *args: Any,
+                id: str,
+                task_queue: str | None,
+                cancellation_type: ChildWorkflowCancellationType,
+                parent_close_policy: ParentClosePolicy,
+                execution_timeout: timedelta | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> ChildWorkflowHandle[Any, Any]:
+                raise NotImplementedError()
+
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
         try:
@@ -369,6 +422,22 @@ class TestPublicAPI:
                 activity_id: str | None = None,
             ) -> Any:
                 pass
+
+            async def workflow_start_child_workflow(
+                self,
+                workflow: str | type,
+                *args: Any,
+                id: str,
+                task_queue: str | None,
+                cancellation_type: ChildWorkflowCancellationType,
+                parent_close_policy: ParentClosePolicy,
+                execution_timeout: timedelta | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> ChildWorkflowHandle[Any, Any]:
+                raise NotImplementedError()
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)

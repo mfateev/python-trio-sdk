@@ -20,14 +20,19 @@ logger = logging.getLogger(__name__)
 
 from temporalio_trio.worker._activation import (
     ActivityResolvedJob,
+    CancelChildWorkflowCommand,
     CancelWorkflowCommand,
     CancelWorkflowJob,
+    ChildWorkflowResolvedJob,
+    ChildWorkflowStartedJob,
+    ChildWorkflowStartFailedJob,
     CompleteWorkflowCommand,
     FailWorkflowCommand,
     QueryResultCommand,
     QueryWorkflowJob,
     ScheduleActivityCommand,
     SignalWorkflowJob,
+    StartChildWorkflowCommand,
     StartTimerCommand,
     TimerFiredJob,
     WorkflowActivation,
@@ -36,7 +41,10 @@ from temporalio_trio.worker._activation import (
 )
 from temporalio_trio.worker._clock import WorkflowClock
 from temporalio_trio.workflow import (
+    ChildWorkflowCancellationType,
+    ChildWorkflowHandle,
     Info,
+    ParentClosePolicy,
     _Definition,
     _QueryDefinition,
     _Runtime,
@@ -285,6 +293,8 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             | CancelWorkflowCommand
             | ScheduleActivityCommand
             | QueryResultCommand
+            | StartChildWorkflowCommand
+            | CancelChildWorkflowCommand
         ] = []
         self._start_args: tuple[Any, ...] | None = None
         self._cancel_requested: bool = False
@@ -294,6 +304,18 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         # Query handling
         self._queries: dict[str | None, _QueryDefinition] = dict(det.defn.queries)
         self._pending_queries: list[QueryWorkflowJob] = []
+        # Child workflow handling
+        self._child_workflow_seq: int = 0
+        # Track child workflows waiting for start confirmation: seq -> handle
+        self._pending_child_starts: dict[int, ChildWorkflowHandle[Any, Any]] = {}
+        # Track child workflows waiting for completion: seq -> handle
+        self._pending_child_results: dict[int, ChildWorkflowHandle[Any, Any]] = {}
+        # Track resolved child workflows for replay: seq -> (result, failure)
+        self._resolved_child_workflows: dict[int, tuple[Any, BaseException | None]] = {}
+        # Track started child workflows (for determining run_id during replay): seq -> run_id
+        self._started_child_workflows: dict[int, str] = {}
+        # Current pending child workflow sequence (for yield tracking)
+        self._pending_child_seq: int | None = None
 
     @property
     def defn(self) -> _Definition:
@@ -354,12 +376,34 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 self._pending_signals.append(job)
             elif isinstance(job, QueryWorkflowJob):
                 self._pending_queries.append(job)
+            elif isinstance(job, ChildWorkflowStartedJob):
+                # Child workflow started - store run_id for replay
+                self._started_child_workflows[job.seq] = job.run_id
+                if self._pending_child_seq == job.seq:
+                    self._pending_child_seq = None
+            elif isinstance(job, ChildWorkflowStartFailedJob):
+                # Child workflow failed to start - store as failure for replay
+                self._resolved_child_workflows[job.seq] = (
+                    None,
+                    RuntimeError(
+                        f"Child workflow '{job.workflow_type}' (id={job.workflow_id}) "
+                        f"failed to start: {job.cause}"
+                    ),
+                )
+                if self._pending_child_seq == job.seq:
+                    self._pending_child_seq = None
+            elif isinstance(job, ChildWorkflowResolvedJob):
+                # Child workflow completed - store result for replay
+                self._resolved_child_workflows[job.seq] = (job.result, job.failure)
+                if self._pending_child_seq == job.seq:
+                    self._pending_child_seq = None
 
         # If we have start args (either new or from previous activation), run workflow
         if self._start_args is not None:
             # Reset sequences for deterministic replay
             self._timer_seq = 0
             self._activity_seq = 0
+            self._child_workflow_seq = 0
 
             token = _Runtime.set_current(self)
             try:
@@ -627,4 +671,122 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         self._pending_activity_seq = seq
 
         # Yield control - workflow will re-run when activity resolves
+        raise _WorkflowYield()
+
+    async def workflow_start_child_workflow(
+        self,
+        workflow: str | type,
+        *args: Any,
+        id: str,
+        task_queue: str | None,
+        cancellation_type: ChildWorkflowCancellationType,
+        parent_close_policy: ParentClosePolicy,
+        execution_timeout: timedelta | None,
+        run_timeout: timedelta | None,
+        task_timeout: timedelta | None,
+        id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
+        retry_policy: temporalio.common.RetryPolicy | None,
+    ) -> ChildWorkflowHandle[Any, Any]:
+        """Start a child workflow and return a handle.
+
+        If this child workflow has already started or completed (during replay),
+        returns immediately with the appropriate state. Otherwise, creates a
+        start child workflow command and yields back to the activation loop.
+
+        Args:
+            workflow: Workflow class or type name.
+            *args: Arguments to pass to the workflow.
+            id: Unique workflow ID.
+            task_queue: Task queue (defaults to parent's).
+            cancellation_type: How child reacts to parent cancellation.
+            parent_close_policy: What happens when parent closes.
+            execution_timeout: Total timeout including retries.
+            run_timeout: Timeout for a single run.
+            task_timeout: Timeout for a single workflow task.
+            id_reuse_policy: How existing IDs are treated.
+            retry_policy: Retry policy for the workflow.
+
+        Returns:
+            A handle to the started child workflow.
+
+        Raises:
+            RuntimeError: If the child workflow fails to start.
+        """
+        # Get workflow name from class or string
+        if isinstance(workflow, str):
+            workflow_type = workflow
+        else:
+            # Try to get name from workflow definition
+            from temporalio_trio.workflow import _Definition
+
+            defn = _Definition.from_class(workflow)
+            if defn is not None:
+                workflow_type = defn.name
+            else:
+                # Fallback to class name
+                workflow_type = getattr(workflow, "__name__", str(workflow))
+
+        # Get sequence number for this child workflow
+        seq = self._child_workflow_seq
+        self._child_workflow_seq += 1
+
+        # Create handle for this child workflow
+        handle: ChildWorkflowHandle[Any, Any] = ChildWorkflowHandle(
+            seq=seq,
+            id=id,
+            workflow_type=workflow_type,
+        )
+
+        # Check if this child workflow has already resolved (replay)
+        if seq in self._resolved_child_workflows:
+            result, failure = self._resolved_child_workflows[seq]
+
+            # Check if child started - if not in _started_child_workflows but in
+            # _resolved_child_workflows, it's a start failure - raise immediately
+            if seq not in self._started_child_workflows:
+                # Start failure - raise immediately from start_child_workflow
+                if failure is not None:
+                    raise failure
+                # Shouldn't happen, but handle gracefully
+                raise RuntimeError("Child workflow failed to start with unknown error")
+
+            # Child started and resolved - set result/failure on handle
+            handle._set_started(self._started_child_workflows[seq])
+            if failure is not None:
+                handle._set_failure(failure)
+            else:
+                handle._set_result(result)
+            return handle
+
+        # Check if this child workflow has started but not completed
+        if seq in self._started_child_workflows:
+            handle._set_started(self._started_child_workflows[seq])
+            # Still need to wait for completion - yield
+            self._pending_child_seq = seq
+            raise _WorkflowYield()
+
+        # Check for cancellation before starting child workflow
+        if self._cancel_requested:
+            raise _WorkflowCancelled()
+
+        # Child workflow hasn't started yet - create command and yield
+        self._commands.append(
+            StartChildWorkflowCommand(
+                seq=seq,
+                workflow_id=id,
+                workflow_type=workflow_type,
+                args=tuple(args),
+                task_queue=task_queue,
+                execution_timeout=execution_timeout,
+                run_timeout=run_timeout,
+                task_timeout=task_timeout,
+                parent_close_policy=parent_close_policy.value,
+                cancellation_type=cancellation_type.value,
+                retry_policy=retry_policy,
+                id_reuse_policy=id_reuse_policy.value,
+            )
+        )
+        self._pending_child_seq = seq
+
+        # Yield control - workflow will re-run when child workflow starts/completes
         raise _WorkflowYield()

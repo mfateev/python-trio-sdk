@@ -10,9 +10,14 @@ from abc import ABC, abstractmethod
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Awaitable, Callable, TypeVar
+from enum import IntEnum
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Generic, Sequence, TypeVar
+from uuid import uuid4
 
 import temporalio.common
+
+if TYPE_CHECKING:
+    pass
 
 __all__ = [
     "defn",
@@ -24,7 +29,12 @@ __all__ = [
     "time_ns",
     "info",
     "execute_activity",
+    "start_child_workflow",
+    "execute_child_workflow",
     "Info",
+    "ChildWorkflowHandle",
+    "ChildWorkflowCancellationType",
+    "ParentClosePolicy",
     "_Runtime",
     "_Definition",
     "_SignalDefinition",
@@ -35,6 +45,52 @@ __all__ = [
 # Type variable for decorator
 F = TypeVar("F", bound=Callable[..., Any])
 T = TypeVar("T")
+SelfType = TypeVar("SelfType")
+ReturnType = TypeVar("ReturnType")
+
+
+# =============================================================================
+# Child Workflow Enums
+# =============================================================================
+
+
+class ChildWorkflowCancellationType(IntEnum):
+    """How a child workflow reacts to cancellation of its parent.
+
+    Mirrors temporalio.workflow.ChildWorkflowCancellationType from the SDK.
+    """
+
+    ABANDON = 0
+    """Do not request cancellation of the child workflow if already scheduled."""
+
+    TRY_CANCEL = 1
+    """Initiate a cancellation request and immediately report cancellation to the parent."""
+
+    WAIT_CANCELLATION_COMPLETED = 2
+    """Wait for child cancellation completion before reporting cancellation."""
+
+    WAIT_CANCELLATION_REQUESTED = 3
+    """Request cancellation and wait for confirmation that the request was received."""
+
+
+class ParentClosePolicy(IntEnum):
+    """What happens to a child workflow when the parent workflow closes.
+
+    Mirrors temporalio.workflow.ParentClosePolicy from the SDK.
+    """
+
+    UNSPECIFIED = 0
+    """Let the server set the default policy."""
+
+    TERMINATE = 1
+    """Terminate the child workflow when the parent closes."""
+
+    ABANDON = 2
+    """Do nothing to the child workflow when the parent closes."""
+
+    REQUEST_CANCEL = 3
+    """Request cancellation of the child workflow when the parent closes."""
+
 
 # Context variable for current runtime (Trio doesn't have event loops like asyncio)
 _current_runtime: ContextVar[_Runtime | None] = ContextVar(
@@ -165,6 +221,41 @@ class _Runtime(ABC):
 
         Raises:
             RuntimeError: If the activity fails or is cancelled.
+        """
+        ...
+
+    @abstractmethod
+    async def workflow_start_child_workflow(
+        self,
+        workflow: str | type,
+        *args: Any,
+        id: str,
+        task_queue: str | None,
+        cancellation_type: ChildWorkflowCancellationType,
+        parent_close_policy: ParentClosePolicy,
+        execution_timeout: timedelta | None,
+        run_timeout: timedelta | None,
+        task_timeout: timedelta | None,
+        id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
+        retry_policy: temporalio.common.RetryPolicy | None,
+    ) -> "ChildWorkflowHandle[Any, Any]":
+        """Start a child workflow and return a handle.
+
+        Args:
+            workflow: Workflow class or type name.
+            *args: Arguments to pass to the workflow.
+            id: Unique workflow ID.
+            task_queue: Task queue (defaults to parent's).
+            cancellation_type: How child reacts to parent cancellation.
+            parent_close_policy: What happens when parent closes.
+            execution_timeout: Total timeout including retries.
+            run_timeout: Timeout for a single run.
+            task_timeout: Timeout for a single workflow task.
+            id_reuse_policy: How existing IDs are treated.
+            retry_policy: Retry policy for the workflow.
+
+        Returns:
+            A handle to the started child workflow.
         """
         ...
 
@@ -658,3 +749,282 @@ class Info:
 
     task_queue: str
     """Task queue the workflow is running on."""
+
+
+# =============================================================================
+# Child Workflow Handle
+# =============================================================================
+
+
+class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
+    """Handle for interacting with a started child workflow.
+
+    Mirrors temporalio.workflow.ChildWorkflowHandle from the SDK.
+
+    This handle is returned by :py:func:`start_child_workflow` and provides
+    methods to get the result, signal the child, and access its metadata.
+
+    Example:
+        handle = await workflow.start_child_workflow(
+            ChildWorkflow.run,
+            "arg",
+            id="child-1",
+        )
+        # Wait for result
+        result = await handle.result()
+        # Or just await the handle
+        result = await handle
+    """
+
+    def __init__(
+        self,
+        seq: int,
+        id: str,
+        workflow_type: str,
+        first_execution_run_id: str | None = None,
+    ) -> None:
+        """Initialize a child workflow handle.
+
+        Args:
+            seq: Internal sequence number.
+            id: Workflow ID.
+            workflow_type: Type name of the child workflow.
+            first_execution_run_id: Run ID of the first execution (if known).
+        """
+        self._seq = seq
+        self._id = id
+        self._workflow_type = workflow_type
+        self._first_execution_run_id = first_execution_run_id
+        self._result: ReturnType | None = None
+        self._failure: BaseException | None = None
+        self._completed = False
+
+    @property
+    def id(self) -> str:
+        """Workflow ID of the child workflow."""
+        return self._id
+
+    @property
+    def workflow_type(self) -> str:
+        """Type name of the child workflow."""
+        return self._workflow_type
+
+    @property
+    def first_execution_run_id(self) -> str | None:
+        """Run ID of the first execution (available after started)."""
+        return self._first_execution_run_id
+
+    async def result(self) -> ReturnType:
+        """Wait for and return the result of the child workflow.
+
+        Returns:
+            The child workflow's return value.
+
+        Raises:
+            RuntimeError: If the child workflow failed or was cancelled.
+        """
+        # This will be called after the workflow has completed
+        # The actual waiting is handled by the workflow instance
+        if self._failure:
+            raise self._failure
+        return self._result  # type: ignore[return-value]
+
+    async def signal(
+        self,
+        signal: str | Callable,
+        arg: Any = temporalio.common._arg_unset,
+        *,
+        args: Sequence[Any] = [],
+    ) -> None:
+        """Send a signal to the child workflow.
+
+        Args:
+            signal: Signal name or decorated method reference.
+            arg: Single argument to the signal.
+            args: Multiple arguments (cannot be set if arg is set).
+        """
+        # TODO: Implement signal external workflow
+        raise NotImplementedError("Child workflow signaling not yet implemented")
+
+    def __await__(self):
+        """Support `await handle` syntax.
+
+        This is a shortcut for `await handle.result()`.
+        """
+        return self.result().__await__()
+
+    def _set_started(self, run_id: str) -> None:
+        """Mark the child workflow as started with the given run ID.
+
+        Internal method called by the workflow instance.
+        """
+        self._first_execution_run_id = run_id
+
+    def _set_result(self, result: Any) -> None:
+        """Set the successful result of the child workflow.
+
+        Internal method called by the workflow instance.
+        """
+        self._result = result
+        self._completed = True
+
+    def _set_failure(self, failure: BaseException) -> None:
+        """Set the failure of the child workflow.
+
+        Internal method called by the workflow instance.
+        """
+        self._failure = failure
+        self._completed = True
+
+
+# =============================================================================
+# Child Workflow Public API
+# =============================================================================
+
+
+async def start_child_workflow(
+    workflow: type | str,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    id: str | None = None,
+    task_queue: str | None = None,
+    cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
+    execution_timeout: timedelta | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    id_reuse_policy: temporalio.common.WorkflowIDReusePolicy = temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+) -> ChildWorkflowHandle[Any, Any]:
+    """Start a child workflow and return a handle.
+
+    Mirrors temporalio.workflow.start_child_workflow from the SDK.
+
+    This starts a child workflow and returns a handle that can be used to
+    wait for the result, send signals, or get metadata.
+
+    Example:
+        # Start and wait for result
+        handle = await workflow.start_child_workflow(
+            ChildWorkflow.run,
+            "arg1",
+            id="child-1",
+        )
+        result = await handle.result()
+
+        # Or use execute_child_workflow for simpler cases
+        result = await workflow.execute_child_workflow(
+            ChildWorkflow.run,
+            "arg1",
+            id="child-1",
+        )
+
+    Args:
+        workflow: Workflow class decorated with @workflow.defn, or workflow
+            type name as a string.
+        arg: Single argument to the workflow.
+        args: Multiple arguments. Cannot be set if arg is set.
+        id: Unique workflow ID. Defaults to a UUID.
+        task_queue: Task queue to run the child on. Defaults to the parent
+            workflow's task queue.
+        cancellation_type: How the child workflow should react when the parent
+            workflow is cancelled.
+        parent_close_policy: What happens to the child when the parent closes.
+        execution_timeout: Total timeout including retries and continue-as-new.
+        run_timeout: Timeout for a single run (not including retries).
+        task_timeout: Timeout for a single workflow task.
+        id_reuse_policy: How existing workflow IDs are handled.
+        retry_policy: Retry policy for the workflow.
+
+    Returns:
+        A handle to the started child workflow.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+        RuntimeError: If the child workflow fails to start.
+    """
+    return await _Runtime.current().workflow_start_child_workflow(
+        workflow,
+        *temporalio.common._arg_or_args(arg, args),
+        id=id or str(uuid4()),
+        task_queue=task_queue,
+        cancellation_type=cancellation_type,
+        parent_close_policy=parent_close_policy,
+        execution_timeout=execution_timeout,
+        run_timeout=run_timeout,
+        task_timeout=task_timeout,
+        id_reuse_policy=id_reuse_policy,
+        retry_policy=retry_policy,
+    )
+
+
+async def execute_child_workflow(
+    workflow: type | str,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    id: str | None = None,
+    task_queue: str | None = None,
+    cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
+    execution_timeout: timedelta | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    id_reuse_policy: temporalio.common.WorkflowIDReusePolicy = temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+) -> Any:
+    """Start a child workflow and wait for its result.
+
+    Mirrors temporalio.workflow.execute_child_workflow from the SDK.
+
+    This is a convenience method equivalent to:
+        handle = await start_child_workflow(...)
+        return await handle.result()
+
+    Example:
+        result = await workflow.execute_child_workflow(
+            ChildWorkflow.run,
+            "arg1",
+            id="child-1",
+        )
+
+    Args:
+        workflow: Workflow class decorated with @workflow.defn, or workflow
+            type name as a string.
+        arg: Single argument to the workflow.
+        args: Multiple arguments. Cannot be set if arg is set.
+        id: Unique workflow ID. Defaults to a UUID.
+        task_queue: Task queue to run the child on. Defaults to the parent
+            workflow's task queue.
+        cancellation_type: How the child workflow should react when the parent
+            workflow is cancelled.
+        parent_close_policy: What happens to the child when the parent closes.
+        execution_timeout: Total timeout including retries and continue-as-new.
+        run_timeout: Timeout for a single run (not including retries).
+        task_timeout: Timeout for a single workflow task.
+        id_reuse_policy: How existing workflow IDs are handled.
+        retry_policy: Retry policy for the workflow.
+
+    Returns:
+        The result of the child workflow.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+        RuntimeError: If the child workflow fails.
+    """
+    handle = await start_child_workflow(
+        workflow,
+        arg,
+        args=args,
+        id=id,
+        task_queue=task_queue,
+        cancellation_type=cancellation_type,
+        parent_close_policy=parent_close_policy,
+        execution_timeout=execution_timeout,
+        run_timeout=run_timeout,
+        task_timeout=task_timeout,
+        id_reuse_policy=id_reuse_policy,
+        retry_policy=retry_policy,
+    )
+    return await handle.result()

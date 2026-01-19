@@ -4,7 +4,6 @@ import pytest
 import trio
 
 from temporalio_trio import workflow
-from temporalio_trio.workflow import _Definition, _SignalDefinition
 from temporalio_trio.worker._activation import (
     SignalWorkflowJob,
     WorkflowActivation,
@@ -14,7 +13,7 @@ from temporalio_trio.worker._workflow_instance import (
     TrioWorkflowInstance,
     WorkflowInstanceDetails,
 )
-from temporalio_trio.workflow import Info
+from temporalio_trio.workflow import Info, _Definition, _SignalDefinition
 
 
 class TestSignalDecorator:
@@ -22,6 +21,7 @@ class TestSignalDecorator:
 
     def test_signal_decorator_marks_method(self):
         """Test that @signal decorator marks method with definition."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.signal
@@ -39,6 +39,7 @@ class TestSignalDecorator:
 
     def test_signal_decorator_with_custom_name(self):
         """Test signal decorator with custom name."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.signal(name="custom-signal")
@@ -55,6 +56,7 @@ class TestSignalDecorator:
 
     def test_signal_decorator_dynamic(self):
         """Test dynamic signal decorator."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.signal(dynamic=True)
@@ -71,6 +73,7 @@ class TestSignalDecorator:
 
     def test_signal_collected_in_definition(self):
         """Test that signals are collected in workflow definition."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.signal
@@ -93,6 +96,7 @@ class TestSignalDecorator:
     def test_duplicate_signal_name_raises(self):
         """Test that duplicate signal names raise error."""
         with pytest.raises(ValueError, match="Duplicate signal"):
+
             @workflow.defn
             class TestWorkflow:
                 @workflow.signal(name="same-name")
@@ -271,6 +275,7 @@ class TestSignalHandler:
 
     def test_signal_modifies_workflow_state(self):
         """Test that signals can modify workflow instance state."""
+
         @workflow.defn
         class CounterWorkflow:
             def __init__(self):
@@ -302,6 +307,7 @@ class TestSignalHandler:
         assert len(completion.commands) > 0
         # The completion should be a CompleteWorkflowCommand with result=8
         from temporalio_trio.worker._activation import CompleteWorkflowCommand
+
         complete_cmd = None
         for cmd in completion.commands:
             if isinstance(cmd, CompleteWorkflowCommand):
@@ -312,6 +318,7 @@ class TestSignalHandler:
 
     def test_unknown_signal_ignored(self):
         """Test that unknown signals are ignored with warning."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.signal
@@ -343,6 +350,7 @@ class TestSignalDefinition:
 
     def test_from_fn_returns_none_for_non_signal(self):
         """Test that from_fn returns None for non-signal functions."""
+
         def regular_func():
             pass
 
@@ -350,6 +358,7 @@ class TestSignalDefinition:
 
     def test_from_fn_returns_definition_for_signal(self):
         """Test that from_fn returns definition for signal functions."""
+
         @workflow.signal
         def my_signal():
             pass

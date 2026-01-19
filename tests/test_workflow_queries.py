@@ -4,10 +4,9 @@ import pytest
 import trio
 
 from temporalio_trio import workflow
-from temporalio_trio.workflow import _Definition, _QueryDefinition
 from temporalio_trio.worker._activation import (
-    QueryWorkflowJob,
     QueryResultCommand,
+    QueryWorkflowJob,
     WorkflowActivation,
     WorkflowStartedJob,
 )
@@ -15,7 +14,7 @@ from temporalio_trio.worker._workflow_instance import (
     TrioWorkflowInstance,
     WorkflowInstanceDetails,
 )
-from temporalio_trio.workflow import Info
+from temporalio_trio.workflow import Info, _Definition, _QueryDefinition
 
 
 class TestQueryDecorator:
@@ -23,6 +22,7 @@ class TestQueryDecorator:
 
     def test_query_decorator_marks_method(self):
         """Test that @query decorator marks method with definition."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.query
@@ -40,6 +40,7 @@ class TestQueryDecorator:
 
     def test_query_decorator_with_custom_name(self):
         """Test query decorator with custom name."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.query(name="custom-query")
@@ -56,6 +57,7 @@ class TestQueryDecorator:
 
     def test_query_decorator_dynamic(self):
         """Test dynamic query decorator."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.query(dynamic=True)
@@ -73,6 +75,7 @@ class TestQueryDecorator:
     def test_query_decorator_rejects_async(self):
         """Test that async query handlers are rejected."""
         with pytest.raises(ValueError, match="must be synchronous"):
+
             @workflow.defn
             class TestWorkflow:
                 @workflow.query
@@ -85,6 +88,7 @@ class TestQueryDecorator:
 
     def test_query_collected_in_definition(self):
         """Test that queries are collected in workflow definition."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.query
@@ -107,6 +111,7 @@ class TestQueryDecorator:
     def test_duplicate_query_name_raises(self):
         """Test that duplicate query names raise error."""
         with pytest.raises(ValueError, match="Duplicate query"):
+
             @workflow.defn
             class TestWorkflow:
                 @workflow.query(name="same-name")
@@ -143,6 +148,7 @@ class TestQueryHandler:
 
     def test_query_handler_returns_value(self):
         """Test query handler returns a value."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.query
@@ -174,7 +180,9 @@ class TestQueryHandler:
         completion = instance.activate(activation)
 
         # Check that we have a query result command
-        query_results = [c for c in completion.commands if isinstance(c, QueryResultCommand)]
+        query_results = [
+            c for c in completion.commands if isinstance(c, QueryResultCommand)
+        ]
         assert len(query_results) == 1
         assert query_results[0].query_id == "query-1"
         assert query_results[0].result == 42
@@ -182,6 +190,7 @@ class TestQueryHandler:
 
     def test_query_handler_with_args(self):
         """Test query handler with arguments."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.query
@@ -208,12 +217,15 @@ class TestQueryHandler:
 
         completion = instance.activate(activation)
 
-        query_results = [c for c in completion.commands if isinstance(c, QueryResultCommand)]
+        query_results = [
+            c for c in completion.commands if isinstance(c, QueryResultCommand)
+        ]
         assert len(query_results) == 1
         assert query_results[0].result == 42
 
     def test_query_reads_workflow_state(self):
         """Test that query can read workflow instance state."""
+
         @workflow.defn
         class CounterWorkflow:
             def __init__(self):
@@ -243,12 +255,15 @@ class TestQueryHandler:
 
         completion = instance.activate(activation)
 
-        query_results = [c for c in completion.commands if isinstance(c, QueryResultCommand)]
+        query_results = [
+            c for c in completion.commands if isinstance(c, QueryResultCommand)
+        ]
         assert len(query_results) == 1
         assert query_results[0].result == 100
 
     def test_multiple_queries_same_activation(self):
         """Test multiple queries in same activation."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.query
@@ -276,7 +291,9 @@ class TestQueryHandler:
 
         completion = instance.activate(activation)
 
-        query_results = [c for c in completion.commands if isinstance(c, QueryResultCommand)]
+        query_results = [
+            c for c in completion.commands if isinstance(c, QueryResultCommand)
+        ]
         assert len(query_results) == 2
 
         results_by_id = {r.query_id: r.result for r in query_results}
@@ -285,6 +302,7 @@ class TestQueryHandler:
 
     def test_query_not_found_error(self):
         """Test that unknown query returns error."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.query
@@ -312,7 +330,9 @@ class TestQueryHandler:
         completion = instance.activate(activation)
 
         # Should still succeed (workflow runs) but with a query error
-        query_results = [c for c in completion.commands if isinstance(c, QueryResultCommand)]
+        query_results = [
+            c for c in completion.commands if isinstance(c, QueryResultCommand)
+        ]
         assert len(query_results) == 1
         assert query_results[0].query_id == "query-1"
         assert query_results[0].error is not None
@@ -320,6 +340,7 @@ class TestQueryHandler:
 
     def test_query_handler_exception_returns_error(self):
         """Test that exceptions in query handlers return errors."""
+
         @workflow.defn
         class TestWorkflow:
             @workflow.query
@@ -346,7 +367,9 @@ class TestQueryHandler:
 
         completion = instance.activate(activation)
 
-        query_results = [c for c in completion.commands if isinstance(c, QueryResultCommand)]
+        query_results = [
+            c for c in completion.commands if isinstance(c, QueryResultCommand)
+        ]
         assert len(query_results) == 1
         assert query_results[0].error is not None
         assert "Query failed intentionally" in query_results[0].error
@@ -357,6 +380,7 @@ class TestQueryDefinition:
 
     def test_from_fn_returns_none_for_non_query(self):
         """Test that from_fn returns None for non-query functions."""
+
         def regular_func():
             pass
 
@@ -364,6 +388,7 @@ class TestQueryDefinition:
 
     def test_from_fn_returns_definition_for_query(self):
         """Test that from_fn returns definition for query functions."""
+
         @workflow.query
         def my_query():
             return 1
