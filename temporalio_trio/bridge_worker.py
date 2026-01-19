@@ -269,10 +269,16 @@ class TrioBridgeWorker:
         """Initiate graceful shutdown of the worker.
 
         This signals the worker to stop polling and complete in-flight activations.
+
+        Note: We intentionally do NOT call _bridge.initiate_shutdown() here.
+        The bridge shutdown happens in Worker.run() after the nursery has been
+        cancelled and all in-flight activation handlers have completed. This
+        prevents a race condition where handlers try to complete activations
+        after the bridge has been marked as SHUTDOWN.
         """
         logger.info("Initiating worker shutdown")
         self._shutdown_event.set()
-        self._bridge.initiate_shutdown()
+        # Bridge shutdown is handled by Worker.run() after all handlers complete
 
     async def finalize_shutdown(self) -> None:
         """Finalize shutdown of the bridge worker.

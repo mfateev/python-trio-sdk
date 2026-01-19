@@ -101,6 +101,12 @@ class MockRustBridge:
                     request_id="test-123", success=True, data=b""
                 )
                 callback(result)
+            elif operation == "initiate_shutdown":
+                # Return success RequestResult
+                result = MockRequestResult(
+                    request_id="test-123", success=True, data=b""
+                )
+                callback(result)
             elif operation == "finalize_shutdown":
                 # Return success RequestResult
                 result = MockRequestResult(
@@ -189,7 +195,9 @@ class TestBridgeLifecycle:
         started_bridge.initiate_shutdown()
 
         assert started_bridge._state == BridgeState.SHUTDOWN
-        assert mock_bridge.shutdown_initiated
+        # initiate_shutdown sends a request to the core worker, not shutdown() on the bridge
+        # This allows in-flight completions to continue while stopping new polls
+        assert any(op == "initiate_shutdown" for op, _, _ in mock_bridge.requests)
 
     @pytest.mark.trio
     async def test_initiate_shutdown_idempotent(self, started_bridge):

@@ -1003,13 +1003,23 @@ class TrioBridgeWrapper:
 
         Note:
             After calling this, poll_workflow_activation will stop returning new work.
+            However, complete_workflow_activation will continue to work, allowing
+            in-flight activations to complete gracefully.
         """
         if self._state == BridgeState.SHUTDOWN:
             return
 
-        # Call shutdown on the Rust bridge
-        # Note: The Rust bridge only has shutdown(), not initiate_shutdown()
-        self._rust_bridge.shutdown()
+        # Send initiate_shutdown request to the core worker (fire-and-forget)
+        # This tells the core worker to stop polling, which unblocks poll_workflow_activation
+        # but does NOT close the bridge - completions can still be sent
+        def noop_callback(result: object) -> None:
+            pass  # Ignore result - this is fire-and-forget
+
+        try:
+            self._rust_bridge.send_request("initiate_shutdown", b"", noop_callback)
+        except RuntimeError:
+            # Bridge may already be shut down, ignore
+            pass
 
         self._state = BridgeState.SHUTDOWN
 
@@ -1076,6 +1086,14 @@ class TrioBridgeWrapper:
             await event.wait()
 
         self._shutdown_finalized = True
+
+        # Now it's safe to close the Rust bridge completely
+        # All operations have been drained
+        try:
+            self._rust_bridge.shutdown()
+        except RuntimeError:
+            # Bridge may already be shut down, ignore
+            pass
 
         if error_container:
             raise error_container[0]

@@ -316,10 +316,20 @@ class Worker:
 
                 await self._shutdown_event.wait()
 
-                # Cancel the nursery to stop workers
+                # Initiate bridge shutdown to unblock poll_workflow_activation
+                # This sends PollShutdownError to the poll loops, causing them to exit
+                # But it does NOT close the bridge - in-flight completions can still proceed
+                bridge_wrapper.initiate_shutdown()
+
+                # Wait a brief moment for poll loops to receive the shutdown signal
+                # and for any in-flight handlers to complete
+                await trio.sleep(0.1)
+
+                # Cancel the nursery to stop any remaining tasks
+                # At this point, most handlers should have completed gracefully
                 nursery.cancel_scope.cancel()
 
-            # Shutdown bridge
+            # Shutdown bridge - now it's safe since handlers have drained
             await bridge_wrapper.shutdown()
 
             logger.info("Trio worker stopped")
