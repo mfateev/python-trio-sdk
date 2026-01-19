@@ -18,6 +18,7 @@ __all__ = [
     "defn",
     "run",
     "signal",
+    "query",
     "sleep",
     "time",
     "time_ns",
@@ -27,6 +28,7 @@ __all__ = [
     "_Runtime",
     "_Definition",
     "_SignalDefinition",
+    "_QueryDefinition",
     "_NotInWorkflowContextError",
 ]
 
@@ -183,6 +185,21 @@ class _SignalDefinition:
 
 
 @dataclass
+class _QueryDefinition:
+    """Query handler definition metadata."""
+
+    name: str | None  # None for dynamic handlers
+    fn: Callable[..., Any]
+    is_method: bool
+    description: str | None = None
+
+    @staticmethod
+    def from_fn(fn: Callable) -> "_QueryDefinition | None":
+        """Get query definition from a function if it has one."""
+        return getattr(fn, "__temporal_query_definition", None)
+
+
+@dataclass
 class _Definition:
     """Workflow definition metadata.
 
@@ -204,6 +221,9 @@ class _Definition:
 
     signals: dict[str | None, _SignalDefinition] = field(default_factory=dict)
     """Signal handlers for this workflow, keyed by signal name (None for dynamic)."""
+
+    queries: dict[str | None, _QueryDefinition] = field(default_factory=dict)
+    """Query handlers for this workflow, keyed by query name (None for dynamic)."""
 
     _ATTR_NAME: str = "__temporal_workflow_definition"
 
@@ -326,6 +346,71 @@ def signal(
     return decorator
 
 
+def query(
+    fn: Callable | None = None,
+    *,
+    name: str | None = None,
+    dynamic: bool = False,
+    description: str | None = None,
+) -> Any:
+    """Decorator for workflow query handler methods.
+
+    Query handlers must be synchronous (not async) and should not mutate workflow state.
+    They return a value that is sent back to the query caller.
+
+    Example:
+        @workflow.defn
+        class MyWorkflow:
+            def __init__(self):
+                self.status = "starting"
+
+            @workflow.query
+            def get_status(self) -> str:
+                return self.status
+
+            @workflow.query(name="custom-query")
+            def another_query(self, param: int) -> int:
+                return param * 2
+
+    Args:
+        fn: The function to decorate (when used without parentheses)
+        name: Custom query name. Defaults to function name.
+        dynamic: If True, this is a dynamic handler for any query name.
+        description: Optional description for the query.
+
+    Raises:
+        ValueError: If the function is async (queries must be synchronous)
+    """
+
+    def decorator(fn: Callable) -> Callable:
+        # Queries must not be async
+        if inspect.iscoroutinefunction(fn):
+            raise ValueError(
+                f"Query handler '{fn.__name__}' must be synchronous (not async). "
+                "Queries are read-only and must complete immediately."
+            )
+
+        if dynamic:
+            query_name = None
+        elif name:
+            query_name = name
+        else:
+            query_name = fn.__name__
+
+        defn = _QueryDefinition(
+            name=query_name,
+            fn=fn,
+            is_method=True,
+            description=description,
+        )
+        setattr(fn, "__temporal_query_definition", defn)
+        return fn
+
+    if fn is not None:
+        return decorator(fn)
+    return decorator
+
+
 def defn(cls: type | None = None, *, name: str | None = None) -> Any:
     """Decorator for workflow classes.
 
@@ -364,6 +449,7 @@ def defn(cls: type | None = None, *, name: str | None = None) -> Any:
     def decorator(cls: type) -> type:
         run_fn: Callable[..., Awaitable[Any]] | None = None
         signals: dict[str | None, _SignalDefinition] = {}
+        queries: dict[str | None, _QueryDefinition] = {}
 
         for attr_name in dir(cls):
             if attr_name.startswith("_"):
@@ -390,6 +476,13 @@ def defn(cls: type | None = None, *, name: str | None = None) -> Any:
                     )
                 signals[signal_defn.name] = signal_defn
 
+            # Collect query handlers
+            query_defn = _QueryDefinition.from_fn(method)
+            if query_defn is not None:
+                if query_defn.name in queries:
+                    raise ValueError(f"Duplicate query handler for '{query_defn.name}'")
+                queries[query_defn.name] = query_defn
+
         if run_fn is None:
             raise ValueError(
                 f"Workflow class {cls.__name__} must have a @workflow.run method"
@@ -400,6 +493,7 @@ def defn(cls: type | None = None, *, name: str | None = None) -> Any:
             cls=cls,
             run_fn=run_fn,
             signals=signals,
+            queries=queries,
         )
         setattr(cls, _Definition._ATTR_NAME, definition)
         return cls

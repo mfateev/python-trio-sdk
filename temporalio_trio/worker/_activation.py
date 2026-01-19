@@ -21,12 +21,14 @@ __all__ = [
     "TimerFiredJob",
     "CancelWorkflowJob",
     "SignalWorkflowJob",
+    "QueryWorkflowJob",
     "WorkflowActivation",
     # Workflow commands
     "StartTimerCommand",
     "CompleteWorkflowCommand",
     "FailWorkflowCommand",
     "CancelWorkflowCommand",
+    "QueryResultCommand",
     "WorkflowActivationCompletion",
     # Activity jobs (for workflow-activity integration)
     "ActivityResolvedJob",
@@ -113,8 +115,35 @@ class SignalWorkflowJob:
     """Optional headers associated with the signal."""
 
 
+@dataclass
+class QueryWorkflowJob:
+    """Job to handle a query.
+
+    This job is sent when a query is made against the workflow.
+    The workflow should invoke the appropriate query handler and return a result.
+
+    Attributes:
+        query_id: Unique identifier for this query request.
+        query_type: Name of the query to invoke.
+        args: Arguments to pass to the query handler.
+        headers: Optional headers associated with the query.
+    """
+
+    query_id: str
+    """Unique identifier for this query request."""
+
+    query_type: str
+    """Name of the query to invoke."""
+
+    args: tuple[Any, ...]
+    """Arguments to pass to the query handler."""
+
+    headers: dict[str, Any] | None = None
+    """Optional headers associated with the query."""
+
+
 # Type alias defined at bottom of file after all types are defined
-# WorkflowJob = WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob | ActivityResolvedJob | SignalWorkflowJob
+# WorkflowJob = WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob | ActivityResolvedJob | SignalWorkflowJob | QueryWorkflowJob
 
 
 @dataclass
@@ -337,6 +366,29 @@ class RequestCancelActivityCommand:
     """Sequence number of the activity to cancel."""
 
 
+@dataclass
+class QueryResultCommand:
+    """Command to respond to a query.
+
+    This command sends the result of a query back to the caller.
+    Either result or error should be set, but not both.
+
+    Attributes:
+        query_id: The ID of the query being responded to.
+        result: The result value (if successful).
+        error: The error message (if failed).
+    """
+
+    query_id: str
+    """The ID of the query being responded to."""
+
+    result: Any | None = None
+    """The result value (if successful)."""
+
+    error: str | None = None
+    """The error message (if failed)."""
+
+
 # =============================================================================
 # Complete Type Aliases (defined after all types are available)
 # =============================================================================
@@ -346,6 +398,7 @@ WorkflowJob = (
     | TimerFiredJob
     | CancelWorkflowJob
     | SignalWorkflowJob
+    | QueryWorkflowJob
     | ActivityResolvedJob
 )
 """Union type for all possible activation jobs."""
@@ -357,5 +410,6 @@ WorkflowCommand = (
     | CancelWorkflowCommand
     | ScheduleActivityCommand
     | RequestCancelActivityCommand
+    | QueryResultCommand
 )
 """Union type for all possible completion commands."""

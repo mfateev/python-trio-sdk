@@ -26,6 +26,8 @@ from temporalio_trio.worker._activation import (
     CancelWorkflowJob,
     CompleteWorkflowCommand,
     FailWorkflowCommand,
+    QueryResultCommand,
+    QueryWorkflowJob,
     RequestCancelActivityCommand,
     ScheduleActivityCommand,
     SignalWorkflowJob,
@@ -69,6 +71,7 @@ def bridge_to_poc_activation(
         | TimerFiredJob
         | CancelWorkflowJob
         | SignalWorkflowJob
+        | QueryWorkflowJob
         | ActivityResolvedJob
     ] = []
     for job in bridge_act.jobs:
@@ -86,6 +89,10 @@ def bridge_to_poc_activation(
         elif job_type == "signal_workflow":
             poc_jobs.append(
                 _convert_signal_workflow(job.signal_workflow, data_converter)
+            )
+        elif job_type == "query_workflow":
+            poc_jobs.append(
+                _convert_query_workflow(job.query_workflow, data_converter)
             )
         elif job_type == "resolve_activity":
             poc_jobs.append(
@@ -183,6 +190,29 @@ def _convert_signal_workflow(
     )
     return SignalWorkflowJob(
         signal_name=signal.signal_name,
+        args=args,
+    )
+
+
+def _convert_query_workflow(
+    query: act_pb.QueryWorkflow,
+    data_converter: temporalio.converter.DataConverter,
+) -> QueryWorkflowJob:
+    """Convert bridge QueryWorkflow to POC QueryWorkflowJob.
+
+    Args:
+        query: Bridge QueryWorkflow job
+        data_converter: Data converter for deserializing arguments
+
+    Returns:
+        POC QueryWorkflowJob
+    """
+    args = tuple(
+        data_converter.payload_converter.from_payload(p) for p in query.arguments
+    )
+    return QueryWorkflowJob(
+        query_id=query.query_id,
+        query_type=query.query_type,
         args=args,
     )
 
@@ -375,6 +405,15 @@ def poc_to_bridge_completion(
         elif isinstance(cmd, RequestCancelActivityCommand):
             # Convert RequestCancelActivityCommand to RequestCancelActivity
             bridge_cmd.request_cancel_activity.seq = cmd.seq
+
+        elif isinstance(cmd, QueryResultCommand):
+            # Convert QueryResultCommand to RespondToQuery
+            bridge_cmd.respond_to_query.query_id = cmd.query_id
+            if cmd.error:
+                bridge_cmd.respond_to_query.failed.message = cmd.error
+            else:
+                payload = data_converter.payload_converter.to_payload(cmd.result)
+                bridge_cmd.respond_to_query.succeeded.response.CopyFrom(payload)
 
         else:
             raise NotImplementedError(

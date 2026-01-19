@@ -24,6 +24,8 @@ from temporalio_trio.worker._activation import (
     CancelWorkflowJob,
     CompleteWorkflowCommand,
     FailWorkflowCommand,
+    QueryResultCommand,
+    QueryWorkflowJob,
     ScheduleActivityCommand,
     SignalWorkflowJob,
     StartTimerCommand,
@@ -33,7 +35,13 @@ from temporalio_trio.worker._activation import (
     WorkflowStartedJob,
 )
 from temporalio_trio.worker._clock import WorkflowClock
-from temporalio_trio.workflow import Info, _Definition, _Runtime, _SignalDefinition
+from temporalio_trio.workflow import (
+    Info,
+    _Definition,
+    _QueryDefinition,
+    _Runtime,
+    _SignalDefinition,
+)
 
 __all__ = [
     "WorkflowRunner",
@@ -276,12 +284,16 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             | FailWorkflowCommand
             | CancelWorkflowCommand
             | ScheduleActivityCommand
+            | QueryResultCommand
         ] = []
         self._start_args: tuple[Any, ...] | None = None
         self._cancel_requested: bool = False
         # Signal handling
         self._signals: dict[str | None, _SignalDefinition] = dict(det.defn.signals)
         self._pending_signals: list[SignalWorkflowJob] = []
+        # Query handling
+        self._queries: dict[str | None, _QueryDefinition] = dict(det.defn.queries)
+        self._pending_queries: list[QueryWorkflowJob] = []
 
     @property
     def defn(self) -> _Definition:
@@ -340,6 +352,8 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 self._cancel_requested = True
             elif isinstance(job, SignalWorkflowJob):
                 self._pending_signals.append(job)
+            elif isinstance(job, QueryWorkflowJob):
+                self._pending_queries.append(job)
 
         # If we have start args (either new or from previous activation), run workflow
         if self._start_args is not None:
@@ -365,6 +379,12 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
 
             finally:
                 _Runtime.reset_current(token)
+
+        # Process queries after workflow has run (queries need access to workflow state)
+        # Queries are processed synchronously and should not mutate state
+        for query_job in self._pending_queries:
+            self._apply_query(query_job)
+        self._pending_queries.clear()
 
         return WorkflowActivationCompletion(commands=self._commands)
 
@@ -414,6 +434,44 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         result = handler(*job.args)
         if inspect.iscoroutine(result):
             await result
+
+    def _apply_query(self, job: QueryWorkflowJob) -> None:
+        """Apply a query to the workflow (synchronous, read-only).
+
+        Query handlers must be synchronous and should not mutate workflow state.
+        The result is sent back to the query caller via a QueryResultCommand.
+
+        Args:
+            job: The query job containing query type and arguments.
+        """
+        try:
+            defn = self._queries.get(job.query_type) or self._queries.get(None)
+            if defn is None:
+                known = sorted([k for k in self._queries.keys() if k])
+                raise RuntimeError(
+                    f"Query handler for '{job.query_type}' not found. "
+                    f"Known queries: [{', '.join(known)}]"
+                )
+
+            handler = defn.fn
+            if defn.is_method:
+                handler = handler.__get__(self._workflow_obj, type(self._workflow_obj))
+
+            result = handler(*job.args)
+
+            self._commands.append(
+                QueryResultCommand(
+                    query_id=job.query_id,
+                    result=result,
+                )
+            )
+        except Exception as e:
+            self._commands.append(
+                QueryResultCommand(
+                    query_id=job.query_id,
+                    error=str(e),
+                )
+            )
 
     # _Runtime implementation
 

@@ -118,20 +118,46 @@ def test_convert_signal_workflow():
     assert signal_job.args == ()
 
 
-def test_convert_unsupported_job_type():
-    """Test that unsupported job types raise NotImplementedError."""
-    # Create bridge activation with query_workflow job (not supported yet)
+def test_convert_query_workflow():
+    """Test converting QueryWorkflow to QueryWorkflowJob."""
+    # Create bridge activation with query_workflow job
     bridge_act = act_pb.WorkflowActivation()
     bridge_act.run_id = "test-run-id"
     bridge_act.timestamp.seconds = 1000
     bridge_act.timestamp.nanos = 0
 
     job = bridge_act.jobs.add()
-    job.query_workflow.query_id = "test-query"
+    job.query_workflow.query_id = "test-query-id"
+    job.query_workflow.query_type = "get_status"
+
+    # Convert and verify
+    data_converter = temporalio.converter.DataConverter()
+    poc_act = bridge_to_poc_activation(bridge_act, data_converter)
+
+    assert len(poc_act.jobs) == 1
+    query_job = poc_act.jobs[0]
+    assert query_job.query_id == "test-query-id"
+    assert query_job.query_type == "get_status"
+    assert query_job.args == ()
+
+
+def test_convert_unsupported_job_type():
+    """Test that unsupported job types raise NotImplementedError."""
+    # Create bridge activation with a job type that uses an unsupported variant
+    # We need to use a variant that exists in the protobuf but we don't handle
+    # For now, we test by mocking since all common types are implemented
+    bridge_act = act_pb.WorkflowActivation()
+    bridge_act.run_id = "test-run-id"
+    bridge_act.timestamp.seconds = 1000
+    bridge_act.timestamp.nanos = 0
+
+    job = bridge_act.jobs.add()
+    # update_random_seed is a job type that we don't handle
+    job.update_random_seed.randomness_seed = 42
 
     # Try to convert - should raise NotImplementedError
     data_converter = temporalio.converter.DataConverter()
-    with pytest.raises(NotImplementedError, match="query_workflow.*not yet supported"):
+    with pytest.raises(NotImplementedError, match="update_random_seed.*not yet supported"):
         bridge_to_poc_activation(bridge_act, data_converter)
 
 
