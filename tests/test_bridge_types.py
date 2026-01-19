@@ -98,9 +98,8 @@ def test_convert_remove_from_cache():
     assert len(poc_act.jobs) == 0
 
 
-def test_convert_unsupported_job_type():
-    """Test that unsupported job types raise NotImplementedError."""
-    # Create bridge activation with signal_workflow job (not supported in Phase 1)
+def test_convert_signal_workflow():
+    """Test converting SignalWorkflow to SignalWorkflowJob."""
     bridge_act = act_pb.WorkflowActivation()
     bridge_act.run_id = "test-run-id"
     bridge_act.timestamp.seconds = 1000
@@ -109,9 +108,30 @@ def test_convert_unsupported_job_type():
     job = bridge_act.jobs.add()
     job.signal_workflow.signal_name = "test-signal"
 
+    # Convert and verify
+    data_converter = temporalio.converter.DataConverter()
+    poc_act = bridge_to_poc_activation(bridge_act, data_converter)
+
+    assert len(poc_act.jobs) == 1
+    signal_job = poc_act.jobs[0]
+    assert signal_job.signal_name == "test-signal"
+    assert signal_job.args == ()
+
+
+def test_convert_unsupported_job_type():
+    """Test that unsupported job types raise NotImplementedError."""
+    # Create bridge activation with query_workflow job (not supported yet)
+    bridge_act = act_pb.WorkflowActivation()
+    bridge_act.run_id = "test-run-id"
+    bridge_act.timestamp.seconds = 1000
+    bridge_act.timestamp.nanos = 0
+
+    job = bridge_act.jobs.add()
+    job.query_workflow.query_id = "test-query"
+
     # Try to convert - should raise NotImplementedError
     data_converter = temporalio.converter.DataConverter()
-    with pytest.raises(NotImplementedError, match="signal_workflow.*not yet supported"):
+    with pytest.raises(NotImplementedError, match="query_workflow.*not yet supported"):
         bridge_to_poc_activation(bridge_act, data_converter)
 
 

@@ -28,6 +28,7 @@ from temporalio_trio.worker._activation import (
     FailWorkflowCommand,
     RequestCancelActivityCommand,
     ScheduleActivityCommand,
+    SignalWorkflowJob,
     StartTimerCommand,
     TimerFiredJob,
     WorkflowActivation,
@@ -64,7 +65,11 @@ def bridge_to_poc_activation(
 
     # Convert jobs
     poc_jobs: list[
-        WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob | ActivityResolvedJob
+        WorkflowStartedJob
+        | TimerFiredJob
+        | CancelWorkflowJob
+        | SignalWorkflowJob
+        | ActivityResolvedJob
     ] = []
     for job in bridge_act.jobs:
         # Check which job type this is (oneof field)
@@ -78,6 +83,10 @@ def bridge_to_poc_activation(
             poc_jobs.append(_convert_fire_timer(job.fire_timer))
         elif job_type == "cancel_workflow":
             poc_jobs.append(_convert_cancel_workflow(job.cancel_workflow))
+        elif job_type == "signal_workflow":
+            poc_jobs.append(
+                _convert_signal_workflow(job.signal_workflow, data_converter)
+            )
         elif job_type == "resolve_activity":
             poc_jobs.append(
                 _convert_resolve_activity(job.resolve_activity, data_converter)
@@ -154,6 +163,28 @@ def _convert_cancel_workflow(cancel: act_pb.CancelWorkflow) -> CancelWorkflowJob
     """
     # CancelWorkflow has optional details field - for now we ignore it
     return CancelWorkflowJob()
+
+
+def _convert_signal_workflow(
+    signal: act_pb.SignalWorkflow,
+    data_converter: temporalio.converter.DataConverter,
+) -> SignalWorkflowJob:
+    """Convert bridge SignalWorkflow to POC SignalWorkflowJob.
+
+    Args:
+        signal: Bridge SignalWorkflow job
+        data_converter: Data converter for deserializing arguments
+
+    Returns:
+        POC SignalWorkflowJob
+    """
+    args = tuple(
+        data_converter.payload_converter.from_payload(p) for p in signal.input
+    )
+    return SignalWorkflowJob(
+        signal_name=signal.signal_name,
+        args=args,
+    )
 
 
 def _convert_resolve_activity(

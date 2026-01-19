@@ -20,6 +20,7 @@ __all__ = [
     "WorkflowStartedJob",
     "TimerFiredJob",
     "CancelWorkflowJob",
+    "SignalWorkflowJob",
     "WorkflowActivation",
     # Workflow commands
     "StartTimerCommand",
@@ -89,8 +90,31 @@ class CancelWorkflowJob:
     """Optional cancellation details/reason."""
 
 
+@dataclass
+class SignalWorkflowJob:
+    """Job indicating a signal was received.
+
+    This job is sent when an external signal has been sent to the workflow.
+    The workflow should invoke the appropriate signal handler.
+
+    Attributes:
+        signal_name: Name of the signal to invoke.
+        args: Arguments to pass to the signal handler.
+        headers: Optional headers associated with the signal.
+    """
+
+    signal_name: str
+    """Name of the signal to invoke."""
+
+    args: tuple[Any, ...]
+    """Arguments to pass to the signal handler."""
+
+    headers: dict[str, Any] | None = None
+    """Optional headers associated with the signal."""
+
+
 # Type alias defined at bottom of file after all types are defined
-# WorkflowJob = WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob | ActivityResolvedJob
+# WorkflowJob = WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob | ActivityResolvedJob | SignalWorkflowJob
 
 
 @dataclass
@@ -318,7 +342,11 @@ class RequestCancelActivityCommand:
 # =============================================================================
 
 WorkflowJob = (
-    WorkflowStartedJob | TimerFiredJob | CancelWorkflowJob | ActivityResolvedJob
+    WorkflowStartedJob
+    | TimerFiredJob
+    | CancelWorkflowJob
+    | SignalWorkflowJob
+    | ActivityResolvedJob
 )
 """Union type for all possible activation jobs."""
 

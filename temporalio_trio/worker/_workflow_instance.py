@@ -5,6 +5,8 @@ This module contains the core classes for creating and managing workflow instanc
 
 from __future__ import annotations
 
+import inspect
+import logging
 import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -14,6 +16,8 @@ from typing import Any, Callable
 import temporalio.common
 import trio
 
+logger = logging.getLogger(__name__)
+
 from temporalio_trio.worker._activation import (
     ActivityResolvedJob,
     CancelWorkflowCommand,
@@ -21,6 +25,7 @@ from temporalio_trio.worker._activation import (
     CompleteWorkflowCommand,
     FailWorkflowCommand,
     ScheduleActivityCommand,
+    SignalWorkflowJob,
     StartTimerCommand,
     TimerFiredJob,
     WorkflowActivation,
@@ -28,7 +33,7 @@ from temporalio_trio.worker._activation import (
     WorkflowStartedJob,
 )
 from temporalio_trio.worker._clock import WorkflowClock
-from temporalio_trio.workflow import Info, _Definition, _Runtime
+from temporalio_trio.workflow import Info, _Definition, _Runtime, _SignalDefinition
 
 __all__ = [
     "WorkflowRunner",
@@ -274,6 +279,9 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         ] = []
         self._start_args: tuple[Any, ...] | None = None
         self._cancel_requested: bool = False
+        # Signal handling
+        self._signals: dict[str | None, _SignalDefinition] = dict(det.defn.signals)
+        self._pending_signals: list[SignalWorkflowJob] = []
 
     @property
     def defn(self) -> _Definition:
@@ -330,6 +338,8 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                     self._pending_activity_seq = None
             elif isinstance(job, CancelWorkflowJob):
                 self._cancel_requested = True
+            elif isinstance(job, SignalWorkflowJob):
+                self._pending_signals.append(job)
 
         # If we have start args (either new or from previous activation), run workflow
         if self._start_args is not None:
@@ -367,6 +377,12 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         """
         assert self._start_args is not None
         self._workflow_obj = self._defn.cls()
+
+        # Process pending signals before running the main workflow
+        for signal_job in self._pending_signals:
+            await self._apply_signal(signal_job)
+        self._pending_signals.clear()
+
         try:
             result = await self._defn.run_fn(self._workflow_obj, *self._start_args)
             self._commands.append(CompleteWorkflowCommand(result=result))
@@ -378,6 +394,26 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             self._commands.append(CancelWorkflowCommand())
         except Exception as e:
             self._commands.append(FailWorkflowCommand(exception=e))
+
+    async def _apply_signal(self, job: SignalWorkflowJob) -> None:
+        """Apply a signal to the workflow.
+
+        Args:
+            job: The signal job containing signal name and arguments.
+        """
+        defn = self._signals.get(job.signal_name) or self._signals.get(None)
+        if defn is None:
+            # Buffer signal for later (dynamic handler may be added)
+            logger.warning(f"No handler for signal '{job.signal_name}', ignoring")
+            return
+
+        handler = defn.fn
+        if defn.is_method:
+            handler = handler.__get__(self._workflow_obj, type(self._workflow_obj))
+
+        result = handler(*job.args)
+        if inspect.iscoroutine(result):
+            await result
 
     # _Runtime implementation
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 import inspect
 from abc import ABC, abstractmethod
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Awaitable, Callable, TypeVar
 
@@ -17,6 +17,7 @@ import temporalio.common
 __all__ = [
     "defn",
     "run",
+    "signal",
     "sleep",
     "time",
     "time_ns",
@@ -25,6 +26,7 @@ __all__ = [
     "Info",
     "_Runtime",
     "_Definition",
+    "_SignalDefinition",
     "_NotInWorkflowContextError",
 ]
 
@@ -166,6 +168,21 @@ class _Runtime(ABC):
 
 
 @dataclass
+class _SignalDefinition:
+    """Signal handler definition metadata."""
+
+    name: str | None  # None for dynamic handlers
+    fn: Callable[..., None | Awaitable[None]]
+    is_method: bool
+    description: str | None = None
+
+    @staticmethod
+    def from_fn(fn: Callable) -> "_SignalDefinition | None":
+        """Get signal definition from a function if it has one."""
+        return getattr(fn, "__temporal_signal_definition", None)
+
+
+@dataclass
 class _Definition:
     """Workflow definition metadata.
 
@@ -184,6 +201,9 @@ class _Definition:
 
     run_fn: Callable[..., Awaitable[Any]]
     """The method decorated with @workflow.run."""
+
+    signals: dict[str | None, _SignalDefinition] = field(default_factory=dict)
+    """Signal handlers for this workflow, keyed by signal name (None for dynamic)."""
 
     _ATTR_NAME: str = "__temporal_workflow_definition"
 
@@ -255,6 +275,57 @@ def run(fn: F) -> F:
     return fn
 
 
+def signal(
+    fn: Callable | None = None,
+    *,
+    name: str | None = None,
+    dynamic: bool = False,
+    description: str | None = None,
+) -> Any:
+    """Decorator for workflow signal handler methods.
+
+    Signal handlers can be sync or async and receive arguments from the signal sender.
+
+    Example:
+        @workflow.defn
+        class MyWorkflow:
+            @workflow.signal
+            def my_signal(self, value: int) -> None:
+                self.value = value
+
+            @workflow.signal(name="custom-name")
+            async def another_signal(self) -> None:
+                pass
+
+    Args:
+        fn: The function to decorate (when used without parentheses)
+        name: Custom signal name. Defaults to function name.
+        dynamic: If True, this is a dynamic handler for any signal name.
+        description: Optional description for the signal.
+    """
+
+    def decorator(fn: Callable) -> Callable:
+        if dynamic:
+            signal_name = None
+        elif name:
+            signal_name = name
+        else:
+            signal_name = fn.__name__
+
+        defn = _SignalDefinition(
+            name=signal_name,
+            fn=fn,
+            is_method=True,
+            description=description,
+        )
+        setattr(fn, "__temporal_signal_definition", defn)
+        return fn
+
+    if fn is not None:
+        return decorator(fn)
+    return decorator
+
+
 def defn(cls: type | None = None, *, name: str | None = None) -> Any:
     """Decorator for workflow classes.
 
@@ -292,6 +363,7 @@ def defn(cls: type | None = None, *, name: str | None = None) -> Any:
 
     def decorator(cls: type) -> type:
         run_fn: Callable[..., Awaitable[Any]] | None = None
+        signals: dict[str | None, _SignalDefinition] = {}
 
         for attr_name in dir(cls):
             if attr_name.startswith("_"):
@@ -309,6 +381,15 @@ def defn(cls: type | None = None, *, name: str | None = None) -> Any:
                     )
                 run_fn = method
 
+            # Collect signal handlers
+            signal_defn = _SignalDefinition.from_fn(method)
+            if signal_defn is not None:
+                if signal_defn.name in signals:
+                    raise ValueError(
+                        f"Duplicate signal handler for '{signal_defn.name}'"
+                    )
+                signals[signal_defn.name] = signal_defn
+
         if run_fn is None:
             raise ValueError(
                 f"Workflow class {cls.__name__} must have a @workflow.run method"
@@ -318,6 +399,7 @@ def defn(cls: type | None = None, *, name: str | None = None) -> Any:
             name=name or cls.__name__,
             cls=cls,
             run_fn=run_fn,
+            signals=signals,
         )
         setattr(cls, _Definition._ATTR_NAME, definition)
         return cls
