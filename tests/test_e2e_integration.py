@@ -306,6 +306,169 @@ def _query_workflow_via_cli(workflow_id: str, namespace: str) -> dict[str, Any]:
         raise RuntimeError(f"Unexpected error querying workflow: {e}") from e
 
 
+@workflow.defn
+class TimerSummaryWorkflow:
+    """Workflow that uses sleep with a summary for testing."""
+
+    @workflow.run
+    async def run(self) -> str:
+        """Execute workflow with a timer that has a summary."""
+        await workflow.sleep(0.1, summary="waiting-for-approval")
+        return "done"
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_e2e_timer_summary_in_history(trio_client):
+    """Test that workflow.sleep() summary is preserved in workflow history.
+
+    This test validates that when using workflow.sleep(duration, summary="..."),
+    the summary appears in the TimerStarted event's user_metadata in the
+    workflow history.
+
+    Requires:
+        - Temporal server running on localhost:7233
+        - temporal CLI at /home/sprite/workarea/bin/temporal
+    """
+    # Configuration
+    namespace = "default"
+    task_queue = "trio-e2e-timer-summary-queue"
+    workflow_id = f"test-timer-summary-{int(time.time())}"
+
+    # Create worker
+    worker = Worker(
+        client=trio_client,
+        task_queue=task_queue,
+        workflows=[TimerSummaryWorkflow],
+    )
+
+    async with trio.open_nursery() as nursery:
+        # Start the worker
+        nursery.start_soon(worker.run)
+
+        # Give worker time to start
+        await trio.sleep(3)
+
+        try:
+            # Execute workflow
+            print(f"Starting workflow {workflow_id} via CLI...")
+            _start_workflow_via_cli(
+                workflow_id=workflow_id,
+                workflow_type="TimerSummaryWorkflow",
+                task_queue=task_queue,
+                namespace=namespace,
+                args=[],
+            )
+
+            # Wait for workflow completion
+            max_wait = 30
+            start_time_test = time.time()
+            while time.time() - start_time_test < max_wait:
+                cli_result = _query_workflow_via_cli(workflow_id, namespace)
+                status = cli_result.get("status", "UNKNOWN")
+
+                if status == "COMPLETED":
+                    break
+                elif status in ["FAILED", "TERMINATED", "CANCELLED"]:
+                    raise RuntimeError(f"Workflow ended with status: {status}")
+
+                await trio.sleep(0.5)
+            else:
+                raise TimeoutError(
+                    f"Workflow did not complete within {max_wait} seconds"
+                )
+
+            # Get workflow history and verify timer summary
+            history = _get_workflow_history_via_cli(workflow_id, namespace)
+
+            # Find TimerStarted event
+            timer_started_events = [
+                e
+                for e in history.get("events", [])
+                if e.get("eventType") == "EVENT_TYPE_TIMER_STARTED"
+            ]
+
+            assert len(timer_started_events) >= 1, (
+                "Expected at least one TimerStarted event"
+            )
+
+            # Check that the summary is in user_metadata
+            timer_event = timer_started_events[0]
+            user_metadata = timer_event.get("userMetadata", {})
+            summary_payload = user_metadata.get("summary", {})
+
+            # The summary is stored as a JSON-encoded payload
+            # The data is base64 encoded in the payload
+            import base64
+
+            summary_data = summary_payload.get("data", "")
+            if summary_data:
+                # Decode base64 and parse JSON
+                decoded = base64.b64decode(summary_data).decode("utf-8")
+                # Remove JSON quotes if present
+                if decoded.startswith('"') and decoded.endswith('"'):
+                    decoded = decoded[1:-1]
+                assert decoded == "waiting-for-approval", (
+                    f"Expected summary 'waiting-for-approval', got '{decoded}'"
+                )
+            else:
+                raise AssertionError(
+                    f"Timer event missing summary in user_metadata: {timer_event}"
+                )
+
+            print("✅ E2E timer summary test passed - summary preserved in history")
+
+        finally:
+            # Shutdown worker
+            worker.shutdown()
+            await trio.sleep(0.5)
+            nursery.cancel_scope.cancel()
+
+
+def _get_workflow_history_via_cli(workflow_id: str, namespace: str) -> dict[str, Any]:
+    """Get workflow history using Temporal CLI.
+
+    Args:
+        workflow_id: The workflow ID to get history for
+        namespace: Temporal namespace
+
+    Returns:
+        Dictionary with workflow history
+
+    Raises:
+        RuntimeError: If CLI command fails
+    """
+    try:
+        result = subprocess.run(
+            [
+                TEMPORAL_CLI_PATH,
+                "workflow",
+                "show",
+                "--workflow-id",
+                workflow_id,
+                "--namespace",
+                namespace,
+                "--output",
+                "json",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+
+        return json.loads(result.stdout)
+
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"CLI history query failed: {e.stderr if e.stderr else e.stdout}"
+        ) from e
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Failed to parse CLI output: {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"Unexpected error getting history: {e}") from e
+
+
 if __name__ == "__main__":
     # Allow running tests directly for debugging
     print("Running E2E integration tests...")
