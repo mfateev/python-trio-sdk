@@ -36,6 +36,13 @@ __all__ = [
     # Activity commands (for workflow-activity integration)
     "ScheduleActivityCommand",
     "RequestCancelActivityCommand",
+    # Child workflow jobs
+    "ChildWorkflowStartedJob",
+    "ChildWorkflowStartFailedJob",
+    "ChildWorkflowResolvedJob",
+    # Child workflow commands
+    "StartChildWorkflowCommand",
+    "CancelChildWorkflowCommand",
 ]
 
 
@@ -390,6 +397,161 @@ class QueryResultCommand:
 
 
 # =============================================================================
+# Child Workflow Jobs (for child workflow execution)
+# =============================================================================
+
+
+@dataclass
+class ChildWorkflowStartedJob:
+    """Job indicating a child workflow started successfully.
+
+    This job is sent when a previously requested child workflow has been
+    accepted and started by the Temporal server.
+
+    Attributes:
+        seq: Sequence number matching StartChildWorkflowCommand.
+        run_id: The run ID of the started child workflow.
+    """
+
+    seq: int
+    """Sequence number matching the StartChildWorkflowCommand."""
+
+    run_id: str
+    """The run ID of the started child workflow."""
+
+
+@dataclass
+class ChildWorkflowStartFailedJob:
+    """Job indicating a child workflow failed to start.
+
+    This job is sent when a child workflow could not be started, e.g., due to
+    a workflow ID conflict or other server-side error.
+
+    Attributes:
+        seq: Sequence number matching StartChildWorkflowCommand.
+        workflow_id: The requested workflow ID.
+        workflow_type: The requested workflow type.
+        cause: The reason the child workflow failed to start.
+    """
+
+    seq: int
+    """Sequence number matching the StartChildWorkflowCommand."""
+
+    workflow_id: str
+    """The requested workflow ID."""
+
+    workflow_type: str
+    """The requested workflow type."""
+
+    cause: str
+    """The reason the child workflow failed to start."""
+
+
+@dataclass
+class ChildWorkflowResolvedJob:
+    """Job indicating a child workflow completed, failed, or was cancelled.
+
+    This job is sent when a previously started child workflow has finished
+    execution. Either result or failure will be set, but not both.
+
+    Attributes:
+        seq: Sequence number matching StartChildWorkflowCommand.
+        result: The result value (if completed successfully).
+        failure: The exception (if failed or cancelled).
+    """
+
+    seq: int
+    """Sequence number matching the StartChildWorkflowCommand."""
+
+    result: Any | None = None
+    """The result value (if completed successfully)."""
+
+    failure: BaseException | None = None
+    """The exception (if failed or cancelled)."""
+
+
+# =============================================================================
+# Child Workflow Commands (for child workflow execution)
+# =============================================================================
+
+
+@dataclass
+class StartChildWorkflowCommand:
+    """Command to start a child workflow.
+
+    This command requests the Temporal server to start a new child workflow.
+    When the child starts, the server will send a ChildWorkflowStartedJob or
+    ChildWorkflowStartFailedJob. When the child completes, the server will
+    send a ChildWorkflowResolvedJob.
+
+    Attributes:
+        seq: Unique sequence number for this command.
+        workflow_id: ID for the child workflow.
+        workflow_type: Name of the workflow type to execute.
+        args: Arguments to pass to the child workflow.
+        task_queue: Task queue to run child on (defaults to parent's).
+        execution_timeout: Total timeout including retries.
+        run_timeout: Timeout for a single run.
+        task_timeout: Timeout for a single workflow task.
+        parent_close_policy: What happens to child when parent closes.
+        cancellation_type: How child reacts to parent cancellation.
+        retry_policy: Retry policy for the child workflow.
+        id_reuse_policy: How existing workflow IDs are treated.
+    """
+
+    seq: int
+    """Unique sequence number for this command."""
+
+    workflow_id: str
+    """ID for the child workflow."""
+
+    workflow_type: str
+    """Name of the workflow type to execute."""
+
+    args: tuple[Any, ...] = field(default_factory=tuple)
+    """Arguments to pass to the child workflow."""
+
+    task_queue: str | None = None
+    """Task queue to run child on (defaults to parent's)."""
+
+    execution_timeout: timedelta | None = None
+    """Total timeout for child workflow including retries."""
+
+    run_timeout: timedelta | None = None
+    """Timeout for a single run of the child workflow."""
+
+    task_timeout: timedelta | None = None
+    """Timeout for a single workflow task of the child."""
+
+    parent_close_policy: int = 1
+    """What happens to child when parent closes. Default: TERMINATE (1)."""
+
+    cancellation_type: int = 2
+    """How child reacts to parent cancellation. Default: WAIT_CANCELLATION_COMPLETED (2)."""
+
+    retry_policy: temporalio.common.RetryPolicy | None = None
+    """Retry policy for the child workflow."""
+
+    id_reuse_policy: int = 1
+    """How existing workflow IDs are treated. Default: ALLOW_DUPLICATE (1)."""
+
+
+@dataclass
+class CancelChildWorkflowCommand:
+    """Command to cancel a child workflow.
+
+    This command requests cancellation of a running child workflow.
+    The child workflow will receive a cancellation request.
+
+    Attributes:
+        seq: Sequence number of the child workflow to cancel.
+    """
+
+    seq: int
+    """Sequence number of the child workflow to cancel."""
+
+
+# =============================================================================
 # Complete Type Aliases (defined after all types are available)
 # =============================================================================
 
@@ -400,6 +562,9 @@ WorkflowJob = (
     | SignalWorkflowJob
     | QueryWorkflowJob
     | ActivityResolvedJob
+    | ChildWorkflowStartedJob
+    | ChildWorkflowStartFailedJob
+    | ChildWorkflowResolvedJob
 )
 """Union type for all possible activation jobs."""
 
@@ -411,5 +576,7 @@ WorkflowCommand = (
     | ScheduleActivityCommand
     | RequestCancelActivityCommand
     | QueryResultCommand
+    | StartChildWorkflowCommand
+    | CancelChildWorkflowCommand
 )
 """Union type for all possible completion commands."""
