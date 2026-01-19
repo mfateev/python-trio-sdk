@@ -22,8 +22,12 @@ import temporalio.converter
 
 from temporalio_trio.worker._activation import (
     ActivityResolvedJob,
+    CancelChildWorkflowCommand,
     CancelWorkflowCommand,
     CancelWorkflowJob,
+    ChildWorkflowResolvedJob,
+    ChildWorkflowStartedJob,
+    ChildWorkflowStartFailedJob,
     CompleteWorkflowCommand,
     FailWorkflowCommand,
     QueryResultCommand,
@@ -31,6 +35,7 @@ from temporalio_trio.worker._activation import (
     RequestCancelActivityCommand,
     ScheduleActivityCommand,
     SignalWorkflowJob,
+    StartChildWorkflowCommand,
     StartTimerCommand,
     TimerFiredJob,
     WorkflowActivation,
@@ -73,6 +78,9 @@ def bridge_to_poc_activation(
         | SignalWorkflowJob
         | QueryWorkflowJob
         | ActivityResolvedJob
+        | ChildWorkflowStartedJob
+        | ChildWorkflowStartFailedJob
+        | ChildWorkflowResolvedJob
     ] = []
     for job in bridge_act.jobs:
         # Check which job type this is (oneof field)
@@ -91,12 +99,22 @@ def bridge_to_poc_activation(
                 _convert_signal_workflow(job.signal_workflow, data_converter)
             )
         elif job_type == "query_workflow":
-            poc_jobs.append(
-                _convert_query_workflow(job.query_workflow, data_converter)
-            )
+            poc_jobs.append(_convert_query_workflow(job.query_workflow, data_converter))
         elif job_type == "resolve_activity":
             poc_jobs.append(
                 _convert_resolve_activity(job.resolve_activity, data_converter)
+            )
+        elif job_type == "resolve_child_workflow_execution_start":
+            poc_jobs.append(
+                _convert_resolve_child_workflow_start(
+                    job.resolve_child_workflow_execution_start, data_converter
+                )
+            )
+        elif job_type == "resolve_child_workflow_execution":
+            poc_jobs.append(
+                _convert_resolve_child_workflow(
+                    job.resolve_child_workflow_execution, data_converter
+                )
             )
         elif job_type == "remove_from_cache":
             # Eviction jobs are handled separately in the bridge worker
@@ -185,9 +203,7 @@ def _convert_signal_workflow(
     Returns:
         POC SignalWorkflowJob
     """
-    args = tuple(
-        data_converter.payload_converter.from_payload(p) for p in signal.input
-    )
+    args = tuple(data_converter.payload_converter.from_payload(p) for p in signal.input)
     return SignalWorkflowJob(
         signal_name=signal.signal_name,
         args=args,
@@ -264,6 +280,100 @@ def _convert_resolve_activity(
         failure = RuntimeError(f"Unknown activity resolution status: {status}")
 
     return ActivityResolvedJob(
+        seq=seq,
+        result=result,
+        failure=failure,
+    )
+
+
+def _convert_resolve_child_workflow_start(
+    resolve: act_pb.ResolveChildWorkflowExecutionStart,
+    data_converter: temporalio.converter.DataConverter,
+) -> ChildWorkflowStartedJob | ChildWorkflowStartFailedJob:
+    """Convert ResolveChildWorkflowExecutionStart to POC job.
+
+    Args:
+        resolve: Bridge ResolveChildWorkflowExecutionStart job
+        data_converter: Data converter (not currently used but kept for consistency)
+
+    Returns:
+        Either ChildWorkflowStartedJob (if succeeded) or ChildWorkflowStartFailedJob (if failed/cancelled)
+    """
+    seq = resolve.seq
+    status = resolve.WhichOneof("status")
+
+    if status == "succeeded":
+        return ChildWorkflowStartedJob(
+            seq=seq,
+            run_id=resolve.succeeded.run_id,
+        )
+    elif status == "failed":
+        return ChildWorkflowStartFailedJob(
+            seq=seq,
+            workflow_id=resolve.failed.workflow_id,
+            workflow_type=resolve.failed.workflow_type,
+            cause=str(resolve.failed.cause),
+        )
+    elif status == "cancelled":
+        # Cancelled during start - treat as start failure
+        cancel_msg = (
+            resolve.cancelled.failure.message
+            if resolve.cancelled.failure.message
+            else "Child workflow start cancelled"
+        )
+        return ChildWorkflowStartFailedJob(
+            seq=seq,
+            workflow_id="",
+            workflow_type="",
+            cause=f"CANCELLED: {cancel_msg}",
+        )
+    else:
+        raise RuntimeError(f"Unknown child workflow start status: {status}")
+
+
+def _convert_resolve_child_workflow(
+    resolve: act_pb.ResolveChildWorkflowExecution,
+    data_converter: temporalio.converter.DataConverter,
+) -> ChildWorkflowResolvedJob:
+    """Convert ResolveChildWorkflowExecution to ChildWorkflowResolvedJob.
+
+    Args:
+        resolve: Bridge ResolveChildWorkflowExecution job
+        data_converter: Data converter for deserializing result payload
+
+    Returns:
+        POC ChildWorkflowResolvedJob with result or failure
+    """
+    seq = resolve.seq
+    result = None
+    failure = None
+
+    # Get the child workflow result
+    child_result = resolve.result
+    status = child_result.WhichOneof("status")
+
+    if status == "completed":
+        # Child completed successfully - decode result
+        if child_result.completed.result.ByteSize() > 0:
+            result = data_converter.payload_converter.from_payload(
+                child_result.completed.result
+            )
+    elif status == "failed":
+        # Child workflow failed
+        failure_msg = child_result.failed.failure.message
+        failure = RuntimeError(f"Child workflow failed: {failure_msg}")
+    elif status == "cancelled":
+        # Child workflow was cancelled
+        cancel_msg = (
+            child_result.cancelled.failure.message
+            if child_result.cancelled.failure.message
+            else "Child workflow cancelled"
+        )
+        failure = RuntimeError(f"Child workflow cancelled: {cancel_msg}")
+    else:
+        failure = RuntimeError(f"Unknown child workflow result status: {status}")
+
+    return ChildWorkflowResolvedJob(
         seq=seq,
         result=result,
         failure=failure,
@@ -414,6 +524,72 @@ def poc_to_bridge_completion(
             else:
                 payload = data_converter.payload_converter.to_payload(cmd.result)
                 bridge_cmd.respond_to_query.succeeded.response.CopyFrom(payload)
+
+        elif isinstance(cmd, StartChildWorkflowCommand):
+            # Convert StartChildWorkflowCommand to StartChildWorkflowExecution
+            bridge_cmd.start_child_workflow_execution.seq = cmd.seq
+            bridge_cmd.start_child_workflow_execution.workflow_id = cmd.workflow_id
+            bridge_cmd.start_child_workflow_execution.workflow_type = cmd.workflow_type
+            if cmd.task_queue:
+                bridge_cmd.start_child_workflow_execution.task_queue = cmd.task_queue
+
+            # Encode arguments
+            for arg in cmd.args:
+                payload = data_converter.payload_converter.to_payload(arg)
+                bridge_cmd.start_child_workflow_execution.input.append(payload)
+
+            # Convert timeouts to Duration protobufs
+            if cmd.execution_timeout:
+                _set_duration(
+                    bridge_cmd.start_child_workflow_execution.workflow_execution_timeout,
+                    cmd.execution_timeout,
+                )
+            if cmd.run_timeout:
+                _set_duration(
+                    bridge_cmd.start_child_workflow_execution.workflow_run_timeout,
+                    cmd.run_timeout,
+                )
+            if cmd.task_timeout:
+                _set_duration(
+                    bridge_cmd.start_child_workflow_execution.workflow_task_timeout,
+                    cmd.task_timeout,
+                )
+
+            # Set policies
+            bridge_cmd.start_child_workflow_execution.parent_close_policy = (
+                cmd.parent_close_policy
+            )
+            bridge_cmd.start_child_workflow_execution.cancellation_type = (
+                cmd.cancellation_type
+            )
+            bridge_cmd.start_child_workflow_execution.workflow_id_reuse_policy = (
+                cmd.id_reuse_policy
+            )
+
+            # Convert retry policy if present
+            if cmd.retry_policy:
+                if cmd.retry_policy.initial_interval:
+                    _set_duration(
+                        bridge_cmd.start_child_workflow_execution.retry_policy.initial_interval,
+                        cmd.retry_policy.initial_interval,
+                    )
+                if cmd.retry_policy.maximum_interval:
+                    _set_duration(
+                        bridge_cmd.start_child_workflow_execution.retry_policy.maximum_interval,
+                        cmd.retry_policy.maximum_interval,
+                    )
+                if cmd.retry_policy.backoff_coefficient:
+                    bridge_cmd.start_child_workflow_execution.retry_policy.backoff_coefficient = cmd.retry_policy.backoff_coefficient
+                if cmd.retry_policy.maximum_attempts:
+                    bridge_cmd.start_child_workflow_execution.retry_policy.maximum_attempts = cmd.retry_policy.maximum_attempts
+                for exc_type in cmd.retry_policy.non_retryable_error_types or []:
+                    bridge_cmd.start_child_workflow_execution.retry_policy.non_retryable_error_types.append(
+                        exc_type
+                    )
+
+        elif isinstance(cmd, CancelChildWorkflowCommand):
+            # Convert CancelChildWorkflowCommand to CancelChildWorkflowExecution
+            bridge_cmd.cancel_child_workflow_execution.child_workflow_seq = cmd.seq
 
         else:
             raise NotImplementedError(
