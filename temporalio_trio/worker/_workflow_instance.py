@@ -543,7 +543,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
 
         Args:
             duration: Sleep duration in seconds.
-            summary: Optional description for debugging (currently unused).
+            summary: Optional human-readable description for UI/CLI visibility.
         """
         timer_id = self._timer_seq
         self._timer_seq += 1
@@ -561,6 +561,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             StartTimerCommand(
                 timer_id=timer_id,
                 duration_ms=int(duration * 1000),
+                summary=summary,
             )
         )
         self._pending_timer_id = timer_id

@@ -107,7 +107,9 @@ class TestStressConcurrentInstances:
         for i, instance in instances:
             sleep_ms = 100 + i  # Different sleep times
             act = WorkflowActivation(
-                jobs=[WorkflowStartedJob(workflow_type="TimerWorkflow", args=(sleep_ms,))],
+                jobs=[
+                    WorkflowStartedJob(workflow_type="TimerWorkflow", args=(sleep_ms,))
+                ],
                 timestamp_ns=1000000000,
             )
             completion = instance.activate(act)
@@ -225,7 +227,11 @@ class TestStressConcurrentInstances:
         timers = []
         for increment, instance in instances:
             act = WorkflowActivation(
-                jobs=[WorkflowStartedJob(workflow_type="StatefulWorkflow", args=(increment,))],
+                jobs=[
+                    WorkflowStartedJob(
+                        workflow_type="StatefulWorkflow", args=(increment,)
+                    )
+                ],
                 timestamp_ns=1000000000,
             )
             completion = instance.activate(act)
@@ -328,7 +334,11 @@ class TestStressMemory:
         for i in range(num_workflows):
             instance = make_instance(LargeResultWorkflow, f"large-result-{i}")
             act = WorkflowActivation(
-                jobs=[WorkflowStartedJob(workflow_type="LargeResultWorkflow", args=(result_size,))],
+                jobs=[
+                    WorkflowStartedJob(
+                        workflow_type="LargeResultWorkflow", args=(result_size,)
+                    )
+                ],
                 timestamp_ns=1000000000,
             )
             completion = instance.activate(act)
@@ -350,7 +360,9 @@ class TestStressMemory:
         large_arg = list(range(10000))
         instance = make_instance(LargeArgsWorkflow, "large-args-1")
         act = WorkflowActivation(
-            jobs=[WorkflowStartedJob(workflow_type="LargeArgsWorkflow", args=(large_arg,))],
+            jobs=[
+                WorkflowStartedJob(workflow_type="LargeArgsWorkflow", args=(large_arg,))
+            ],
             timestamp_ns=1000000000,
         )
         completion = instance.activate(act)
@@ -400,7 +412,9 @@ class TestStressSignalsAndQueries:
         for i, instance, timer_id in instances:
             # Send 3 signals with workflow-specific values
             signals = [i * 10, i * 10 + 1, i * 10 + 2]
-            signal_jobs = [SignalWorkflowJob(signal_name="add_value", args=(v,)) for v in signals]
+            signal_jobs = [
+                SignalWorkflowJob(signal_name="add_value", args=(v,)) for v in signals
+            ]
 
             # Timer fires with signals in same activation
             act = WorkflowActivation(
@@ -419,7 +433,10 @@ class TestStressSignalsAndQueries:
     def test_100_workflows_with_queries(self):
         """Test 100 workflows each handling queries."""
 
-        from temporalio_trio.worker._activation import QueryResultCommand, QueryWorkflowJob
+        from temporalio_trio.worker._activation import (
+            QueryResultCommand,
+            QueryWorkflowJob,
+        )
 
         @workflow.defn
         class QueryWorkflow:
@@ -443,7 +460,9 @@ class TestStressSignalsAndQueries:
         for i in range(num_workflows):
             instance = make_instance(QueryWorkflow, f"query-workflow-{i}")
             act = WorkflowActivation(
-                jobs=[WorkflowStartedJob(workflow_type="QueryWorkflow", args=(i * 100,))],
+                jobs=[
+                    WorkflowStartedJob(workflow_type="QueryWorkflow", args=(i * 100,))
+                ],
                 timestamp_ns=1000000000,
             )
             completion = instance.activate(act)
@@ -455,7 +474,11 @@ class TestStressSignalsAndQueries:
         for i, instance, timer_id in instances:
             # Query the workflow
             act = WorkflowActivation(
-                jobs=[QueryWorkflowJob(query_id=f"query-{i}", query_type="get_value", args=())],
+                jobs=[
+                    QueryWorkflowJob(
+                        query_id=f"query-{i}", query_type="get_value", args=()
+                    )
+                ],
                 timestamp_ns=1500000000,
             )
             completion = instance.activate(act)

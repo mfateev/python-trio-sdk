@@ -115,34 +115,50 @@ class TestWorkflowClockDeadlineToSleepTime:
         clock = WorkflowClock(start_time_ns=5_000_000_000)  # 5 seconds
         assert clock.deadline_to_sleep_time(5.0) == 0.0
 
-    def test_deadline_in_future_returns_inf(self) -> None:
-        """Test deadline_to_sleep_time() returns inf for future deadlines.
+    def test_deadline_inf_returns_inf(self) -> None:
+        """Test deadline_to_sleep_time() returns inf for inf deadline.
 
-        For workflow clocks, we never actually sleep - we wait for external
-        events (timer fired activations) instead.
+        Trio uses inf to mean "no deadline" - this is a sentinel value
+        and should be passed through.
+        """
+        clock = WorkflowClock(start_time_ns=1_000_000_000)  # 1 second
+        assert clock.deadline_to_sleep_time(float("inf")) == float("inf")
+
+    def test_deadline_in_future_raises_error(self) -> None:
+        """Test deadline_to_sleep_time() raises for finite future deadlines.
+
+        A finite future deadline indicates trio.sleep() was called, which
+        is not allowed in workflows. workflow.sleep() should be used instead.
         """
         clock = WorkflowClock(start_time_ns=1_000_000_000)  # 1 second
         # Deadline at 5 seconds is in the future
-        assert clock.deadline_to_sleep_time(5.0) == float("inf")
+        with pytest.raises(RuntimeError, match="trio.sleep\\(\\) cannot be used"):
+            clock.deadline_to_sleep_time(5.0)
 
-    def test_deadline_just_after_current_returns_inf(self) -> None:
-        """Test deadline_to_sleep_time() returns inf for deadline just after current."""
+    def test_deadline_just_after_current_raises_error(self) -> None:
+        """Test deadline_to_sleep_time() raises for deadline just after current."""
         clock = WorkflowClock(start_time_ns=1_000_000_000)  # 1 second
         # Deadline at 1.001 seconds is just after current
-        assert clock.deadline_to_sleep_time(1.001) == float("inf")
+        with pytest.raises(RuntimeError, match="trio.sleep\\(\\) cannot be used"):
+            clock.deadline_to_sleep_time(1.001)
 
 
 class TestWorkflowClockIntegration:
     """Integration tests for WorkflowClock behavior."""
 
     def test_clock_time_flow(self) -> None:
-        """Test typical clock usage flow in workflow execution."""
+        """Test typical clock usage flow in workflow execution.
+
+        Note: workflow.sleep() uses _WorkflowYield and doesn't go through
+        Trio's deadline system. So deadline_to_sleep_time() is only called
+        with inf (no deadline) or past deadlines.
+        """
         # Initial activation at t=0
         clock = WorkflowClock(start_time_ns=0)
         assert clock.current_time() == 0.0
 
-        # Timer for 5 seconds requested, deadline check
-        assert clock.deadline_to_sleep_time(5.0) == float("inf")
+        # Trio internal check with inf deadline (no deadline)
+        assert clock.deadline_to_sleep_time(float("inf")) == float("inf")
 
         # Timer fired activation at t=5s
         clock.advance_to(5_000_000_000)
@@ -150,9 +166,6 @@ class TestWorkflowClockIntegration:
 
         # Now the deadline has passed
         assert clock.deadline_to_sleep_time(5.0) == 0.0
-
-        # Next timer for 10 more seconds (deadline at 15s)
-        assert clock.deadline_to_sleep_time(15.0) == float("inf")
 
         # Timer fired at t=15s
         clock.advance_to(15_000_000_000)

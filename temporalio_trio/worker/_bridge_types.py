@@ -14,6 +14,7 @@ from datetime import timedelta
 
 import google.protobuf.duration_pb2
 import temporalio.api.common.v1
+import temporalio.api.sdk.v1.user_metadata_pb2 as user_metadata_pb
 import temporalio.bridge.proto.activity_result.activity_result_pb2 as act_result_pb
 import temporalio.bridge.proto.workflow_activation.workflow_activation_pb2 as act_pb
 import temporalio.bridge.proto.workflow_commands.workflow_commands_pb2 as cmd_pb
@@ -428,6 +429,14 @@ def poc_to_bridge_completion(
             duration.seconds = cmd.duration_ms // 1000
             duration.nanos = (cmd.duration_ms % 1000) * 1_000_000
             bridge_cmd.start_timer.start_to_fire_timeout.CopyFrom(duration)
+            # Add summary as user_metadata if provided
+            if cmd.summary:
+                summary_payload = data_converter.payload_converter.to_payload(
+                    cmd.summary
+                )
+                bridge_cmd.user_metadata.CopyFrom(
+                    user_metadata_pb.UserMetadata(summary=summary_payload)
+                )
 
         elif isinstance(cmd, CompleteWorkflowCommand):
             # Convert CompleteWorkflowCommand to CompleteWorkflowExecution

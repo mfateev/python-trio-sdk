@@ -9,8 +9,8 @@ import logging
 import os
 import shutil
 import signal
-import subprocess
 import socket
+import subprocess
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, AsyncIterator, Optional
 
@@ -187,7 +187,9 @@ class WorkflowEnvironment:
         for attempt in range(max_attempts):
             # Check if process died
             if server_process.poll() is not None:
-                stderr_output = server_process.stderr.read() if server_process.stderr else ""
+                stderr_output = (
+                    server_process.stderr.read() if server_process.stderr else ""
+                )
                 raise RuntimeError(
                     f"Temporal dev server exited unexpectedly. "
                     f"Exit code: {server_process.returncode}. "

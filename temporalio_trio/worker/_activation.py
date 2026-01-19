@@ -188,6 +188,7 @@ class StartTimerCommand:
     Attributes:
         timer_id: Unique ID for this timer (used to match TimerFiredJob).
         duration_ms: Timer duration in milliseconds.
+        summary: Optional human-readable description for UI/CLI visibility.
     """
 
     timer_id: int
@@ -195,6 +196,9 @@ class StartTimerCommand:
 
     duration_ms: int
     """Timer duration in milliseconds."""
+
+    summary: str | None = None
+    """Optional human-readable description for UI/CLI visibility."""
 
 
 @dataclass
