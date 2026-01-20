@@ -24,6 +24,7 @@ import temporalio.converter
 from temporalio_trio.worker._activation import (
     ActivityResolvedJob,
     CancelChildWorkflowCommand,
+    CancelTimerCommand,
     CancelWorkflowCommand,
     CancelWorkflowJob,
     ChildWorkflowResolvedJob,
@@ -437,6 +438,10 @@ def poc_to_bridge_completion(
                 bridge_cmd.user_metadata.CopyFrom(
                     user_metadata_pb.UserMetadata(summary=summary_payload)
                 )
+
+        elif isinstance(cmd, CancelTimerCommand):
+            # Convert CancelTimerCommand to CancelTimer
+            bridge_cmd.cancel_timer.seq = cmd.timer_id
 
         elif isinstance(cmd, CompleteWorkflowCommand):
             # Convert CompleteWorkflowCommand to CompleteWorkflowExecution

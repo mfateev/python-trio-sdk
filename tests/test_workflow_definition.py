@@ -222,6 +222,15 @@ class TestRuntimeClass:
             ) -> ChildWorkflowHandle[Any, Any]:
                 raise NotImplementedError()
 
+            async def workflow_wait_condition(
+                self,
+                fn: Callable[[], bool],
+                *,
+                timeout: float | None = None,
+                timeout_summary: str | None = None,
+            ) -> None:
+                pass
+
         mock = MockRuntime()
 
         # Initially None
@@ -288,6 +297,15 @@ class TestRuntimeClass:
                 retry_policy: temporalio.common.RetryPolicy | None,
             ) -> ChildWorkflowHandle[Any, Any]:
                 raise NotImplementedError()
+
+            async def workflow_wait_condition(
+                self,
+                fn: Callable[[], bool],
+                *,
+                timeout: float | None = None,
+                timeout_summary: str | None = None,
+            ) -> None:
+                pass
 
         mock1 = MockRuntime("mock1")
         mock2 = MockRuntime("mock2")
@@ -370,6 +388,15 @@ class TestPublicAPI:
             ) -> ChildWorkflowHandle[Any, Any]:
                 raise NotImplementedError()
 
+            async def workflow_wait_condition(
+                self,
+                fn: Callable[[], bool],
+                *,
+                timeout: float | None = None,
+                timeout_summary: str | None = None,
+            ) -> None:
+                pass
+
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
         try:
@@ -438,6 +465,15 @@ class TestPublicAPI:
                 retry_policy: temporalio.common.RetryPolicy | None,
             ) -> ChildWorkflowHandle[Any, Any]:
                 raise NotImplementedError()
+
+            async def workflow_wait_condition(
+                self,
+                fn: Callable[[], bool],
+                *,
+                timeout: float | None = None,
+                timeout_summary: str | None = None,
+            ) -> None:
+                pass
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)

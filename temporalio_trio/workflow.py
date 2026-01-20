@@ -29,6 +29,7 @@ __all__ = [
     "time_ns",
     "info",
     "execute_activity",
+    "wait_condition",
     "start_child_workflow",
     "execute_child_workflow",
     "Info",
@@ -256,6 +257,26 @@ class _Runtime(ABC):
 
         Returns:
             A handle to the started child workflow.
+        """
+        ...
+
+    @abstractmethod
+    async def workflow_wait_condition(
+        self,
+        fn: Callable[[], bool],
+        *,
+        timeout: float | None = None,
+        timeout_summary: str | None = None,
+    ) -> None:
+        """Wait until condition returns True or timeout expires.
+
+        Args:
+            fn: A callable returning True when condition is met.
+            timeout: Optional maximum wait time in seconds.
+            timeout_summary: Optional description for Temporal UI.
+
+        Raises:
+            TimeoutError: If timeout expires before condition becomes true.
         """
         ...
 
@@ -727,6 +748,56 @@ async def execute_activity(
         heartbeat_timeout=heartbeat_timeout,
         retry_policy=retry_policy,
         activity_id=activity_id,
+    )
+
+
+async def wait_condition(
+    fn: Callable[[], bool],
+    *,
+    timeout: timedelta | float | None = None,
+    timeout_summary: str | None = None,
+) -> None:
+    """Wait until a condition becomes true.
+
+    The condition function is evaluated after each signal is processed.
+    If the condition becomes true, execution continues immediately.
+    If a timeout is specified and expires first, TimeoutError is raised.
+
+    Mirrors temporalio.workflow.wait_condition from the SDK.
+
+    Args:
+        fn: A callable returning True when condition is met.
+            Must be deterministic and side-effect free.
+        timeout: Optional maximum wait time (timedelta or seconds).
+        timeout_summary: Optional description for Temporal UI.
+
+    Raises:
+        TimeoutError: If timeout expires before condition becomes true.
+        CancelledError: If workflow is cancelled while waiting.
+
+    Example:
+        # Wait for approval signal
+        await workflow.wait_condition(lambda: self._approved)
+
+        # Wait with timeout
+        try:
+            await workflow.wait_condition(
+                lambda: self._approved,
+                timeout=timedelta(hours=1),
+            )
+        except TimeoutError:
+            # Handle timeout
+            pass
+    """
+    runtime = _Runtime.current()
+
+    if isinstance(timeout, timedelta):
+        timeout = timeout.total_seconds()
+
+    await runtime.workflow_wait_condition(
+        fn,
+        timeout=timeout,
+        timeout_summary=timeout_summary,
     )
 
 

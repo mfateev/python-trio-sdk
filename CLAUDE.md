@@ -8,6 +8,46 @@ This is an experimental implementation of the Temporal Python SDK using [Trio](h
 
 **Status**: Experimental, not ready for production use.
 
+## Git Workflow (IMPORTANT)
+
+**The `main` branch is protected.** All changes must go through pull requests.
+
+### Branch Strategy
+```bash
+# Always work from a feature branch, never commit directly to main
+git checkout -b feature/my-feature
+
+# Or use the existing task branch
+git checkout task/trio-asyncio
+```
+
+### Making Changes
+```bash
+# 1. Create or switch to feature branch
+git checkout -b feature/description
+
+# 2. Make changes, test, lint
+uv run pytest -v -m "not temporal_server"
+uv run poe lint
+uv run poe format
+
+# 3. Commit changes
+git add <files>
+git commit -m "feat(component): description"
+
+# 4. Push branch
+git push -u origin feature/description
+
+# 5. Create PR to merge into main
+gh pr create --base main --title "Description" --body "Details"
+```
+
+### Pull Request Requirements
+- All tests must pass
+- Code must be linted and formatted
+- PR description should explain the changes
+- Use `gh pr create` to create PRs from the command line
+
 ## Essential Commands
 
 ### Development Setup
@@ -109,11 +149,13 @@ temporalio_trio/
 ├── __init__.py              # Public exports
 ├── workflow.py              # @workflow.defn, @workflow.run, sleep(), time()
 ├── _async_bridge.py         # TrioBridgeWrapper (Trio ↔ Rust bridge)
-├── bridge_worker.py         # TrioBridgeWorker (polling/completion)
 └── worker/
     ├── __init__.py          # Worker exports
     ├── _worker.py           # Worker class (high-level API)
-    ├── _workflow_instance.py # TrioWorkflowInstance (execution in threads)
+    ├── _single_thread_worker.py  # SingleThreadWorker (event-based execution)
+    ├── _runtime.py          # WorkflowRuntime (contextvar-isolated state)
+    ├── _workflow_state.py   # WorkflowState (per-workflow coordination)
+    ├── _workflow_instance.py # TrioWorkflowInstance (workflow execution)
     ├── _clock.py            # WorkflowClock (deterministic time)
     ├── _activation.py       # Activation processing
     └── _bridge_types.py     # Bridge type conversions
@@ -146,19 +188,29 @@ def time() -> float:
 
 ### Workflow Execution Flow
 
-1. **Worker.run()** creates `TrioBridgeWrapper` and starts polling
-2. **TrioBridgeWorker._poll_loop()** polls for activations (fully async)
-3. **Activation** received → creates `TrioWorkflowInstance`
-4. **WorkflowInstance.activate()** runs workflow in separate thread (for deterministic scheduling)
-5. **Workflow execution** uses Trio with deterministic scheduling (custom trio fork)
-6. **Completion** sent back to bridge via `complete_workflow_activation()`
+All workflows execute within a **single `trio.run()` call** using FIFO scheduling and contextvar-based isolation:
+
+1. **Worker.run()** calls `trio.run(deterministic=True, fifo=True)` with the worker main task
+2. **SingleThreadWorker** polls for activations via the bridge (non-blocking)
+3. **New workflow** → spawns task in shared nursery with isolated `WorkflowRuntime` contextvar
+4. **Existing workflow** → delivers activation, wakes suspended `trio.Event`
+5. **Workflow suspends** on `trio.Event` when waiting for timers/activities/child workflows
+6. **Activation received** → fires event, workflow resumes
+7. **Completion** sent back to bridge via `complete_workflow_activation()`
+
+**Key benefits:**
+- No thread pool overhead (all workflows in single thread)
+- Workflows stay alive between activations (event-based suspension)
+- FIFO scheduling ensures deterministic task ordering
+- ContextVar isolation prevents workflows from interfering
 
 ### Deterministic Scheduling (Critical Feature)
 
 Workflows run with deterministic task scheduling via a custom Trio fork:
 - Fork: `github.com/mfateev/trio` (branch: `temporal-deterministic-scheduling`)
-- Feature: `trio.run(deterministic=True, random_seed=seed)`
-- Purpose: Ensures workflow replay produces identical results
+- Feature: `trio.run(deterministic=True, fifo=True)`
+- FIFO mode: Tasks execute in creation order (no random shuffling)
+- Purpose: Ensures workflow replay produces identical results regardless of other workflows
 
 ## Key Design Principles
 
@@ -268,41 +320,14 @@ uv run pytest
 
 Tests are the safety net that prevents regressions. Respect them.
 
-### Known Issue: E2E Shutdown Race Condition (MUST FIX)
+### E2E Shutdown Race Condition (RESOLVED)
 
-**DO NOT IGNORE THIS ISSUE.** The E2E tests have a known race condition during worker shutdown that causes intermittent failures with errors like:
+The previous multi-threaded architecture had a shutdown race condition. This was resolved by the single-threaded `SingleThreadWorker` architecture which:
+- Handles all workflows in a single `trio.run()` context
+- Uses proper shutdown coordination via cancel scopes
+- Drains in-flight activations before completing shutdown
 
-```
-RuntimeError: Bridge is not running (state: BridgeState.SHUTDOWN). Call start() first.
-```
-
-**What happens:**
-1. Workflow completes successfully
-2. An eviction activation arrives from the server
-3. Worker shutdown begins (triggered by test completion)
-4. The eviction handler tries to call `complete_workflow_activation()` but the bridge is already in SHUTDOWN state
-
-**This is a real bug, not test flakiness.** The shutdown logic in `bridge_worker.py` and `_worker.py` does not properly handle in-flight activations during shutdown.
-
-**Required behavior:**
-- ❌ **NEVER** dismiss this as "flaky tests" and move on
-- ❌ **NEVER** skip, disable, or modify E2E tests to hide this issue
-- ❌ **NEVER** add retry logic to tests to mask the race condition
-- ✅ **FIX** the shutdown logic to gracefully handle in-flight activations
-- ✅ **FIX** the bridge to allow completing activations that started before shutdown
-- ✅ **ENSURE** all E2E tests pass reliably before considering work complete
-
-**Files involved:**
-- `temporalio_trio/bridge_worker.py` - `_poll_loop()`, `_handle_activation()`, shutdown logic
-- `temporalio_trio/worker/_worker.py` - Worker shutdown coordination
-- `temporalio_trio/_async_bridge.py` - Bridge state management, `_check_running()`
-
-**When you encounter this failure:**
-1. Stop what you're doing
-2. Investigate the shutdown race condition
-3. Implement a proper fix (e.g., drain in-flight activations before shutdown, or allow completions for already-started activations)
-4. Verify ALL E2E tests pass multiple times in a row
-5. Only then continue with other work
+If E2E tests show shutdown-related failures, investigate the `SingleThreadWorker` shutdown logic in `temporalio_trio/worker/_single_thread_worker.py`.
 
 ## Development Workflow
 

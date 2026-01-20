@@ -25,6 +25,7 @@ __all__ = [
     "WorkflowActivation",
     # Workflow commands
     "StartTimerCommand",
+    "CancelTimerCommand",
     "CompleteWorkflowCommand",
     "FailWorkflowCommand",
     "CancelWorkflowCommand",
@@ -199,6 +200,21 @@ class StartTimerCommand:
 
     summary: str | None = None
     """Optional human-readable description for UI/CLI visibility."""
+
+
+@dataclass
+class CancelTimerCommand:
+    """Command to cancel a pending timer.
+
+    This command requests the Temporal server to cancel a previously started
+    timer. If the timer has already fired, this command has no effect.
+
+    Attributes:
+        timer_id: The ID of the timer to cancel (must match a StartTimerCommand).
+    """
+
+    timer_id: int
+    """The ID of the timer to cancel."""
 
 
 @dataclass
@@ -574,6 +590,7 @@ WorkflowJob = (
 
 WorkflowCommand = (
     StartTimerCommand
+    | CancelTimerCommand
     | CompleteWorkflowCommand
     | FailWorkflowCommand
     | CancelWorkflowCommand

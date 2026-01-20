@@ -2,6 +2,9 @@
 
 This module provides a Worker class that matches the standard Temporal Python SDK
 Worker interface, but uses Trio for async operations instead of asyncio.
+
+The Worker uses SingleThreadWorker which runs all workflows in a single trio.run()
+with event-based suspension for efficient execution.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ import temporalio.converter
 import trio
 
 from temporalio_trio._async_bridge import TrioBridgeWrapper
-from temporalio_trio.bridge_worker import TrioBridgeWorker
+from temporalio_trio.worker._single_thread_worker import SingleThreadWorker
 
 if TYPE_CHECKING:
     from temporalio_trio.client import Client
@@ -30,9 +33,12 @@ class Worker:
     """Worker to process Trio-based workflows.
 
     This worker matches the standard Temporal Python SDK Worker API but uses Trio
-    for async operations. Once created, workers can be run and shut down explicitly
-    via :py:meth:`run` and :py:meth:`shutdown`. Alternatively, workers can be used
-    in an ``async with`` clause.
+    for async operations. It uses a single-threaded execution model (SingleThreadWorker)
+    that runs all workflows in a single trio.run() with event-based suspension.
+
+    Once created, workers can be run and shut down explicitly via :py:meth:`run`
+    and :py:meth:`shutdown`. Alternatively, workers can be used in an ``async with``
+    clause.
 
     Example:
         ```python
@@ -174,7 +180,7 @@ class Worker:
         self._max_concurrent_local_activities = max_concurrent_local_activities or 100
 
         # Internal state
-        self._trio_worker: Optional[TrioBridgeWorker] = None
+        self._single_thread_worker: Optional[SingleThreadWorker] = None
         self._activity_worker = None  # TrioActivityWorker when activities are provided
         self._started = False
         self._shutdown_event = trio.Event()
@@ -272,15 +278,16 @@ class Worker:
             # The initialization above already validates connection to Temporal server
             # await bridge_wrapper.validate()
 
-            # Create Trio workflow worker if workflows provided
-            self._trio_worker = None
+            # Create workflow worker if workflows provided
+            self._single_thread_worker = None
             if self._workflows:
-                self._trio_worker = TrioBridgeWorker(
-                    bridge_wrapper=bridge_wrapper,
-                    namespace=self._namespace,
+                self._single_thread_worker = SingleThreadWorker(
+                    bridge=bridge_wrapper,
                     task_queue=self._task_queue,
                     workflows=self._workflows,
-                    data_converter=self._data_converter,
+                    activities=self._activities
+                    if not self._no_remote_activities
+                    else None,
                 )
 
             # Create Trio activity worker if activities provided
@@ -307,12 +314,8 @@ class Worker:
 
             async with trio.open_nursery() as nursery:
                 # Start workflow worker
-                if self._trio_worker:
-                    nursery.start_soon(self._trio_worker.run)
-
-                # Start activity worker
-                if self._activity_worker:
-                    nursery.start_soon(self._activity_worker.run)
+                if self._single_thread_worker:
+                    nursery.start_soon(self._single_thread_worker.run)
 
                 await self._shutdown_event.wait()
 
@@ -348,10 +351,8 @@ class Worker:
         """
         logger.info("Initiating worker shutdown")
         self._shutdown_event.set()
-        if self._trio_worker:
-            self._trio_worker.shutdown()
-        if self._activity_worker:
-            self._activity_worker.shutdown()
+        if self._single_thread_worker:
+            self._single_thread_worker.shutdown()
 
     async def __aenter__(self) -> Worker:
         """Start the worker and return self for use by ``async with``.

@@ -22,6 +22,7 @@ from temporalio_trio.worker._activation import (
 )
 from temporalio_trio.worker._activity import TrioActivityWorker
 from temporalio_trio.worker._clock import WorkflowClock
+from temporalio_trio.worker._single_thread_worker import SingleThreadWorker
 from temporalio_trio.worker._worker import Worker
 from temporalio_trio.worker._workflow_instance import (
     TrioWorkflowInstance,
@@ -34,6 +35,8 @@ from temporalio_trio.worker._workflow_instance import (
 __all__ = [
     # High-level Worker API
     "Worker",
+    # Single-threaded worker (new execution model)
+    "SingleThreadWorker",
     # Activity worker
     "TrioActivityWorker",
     # Workflow activation types
