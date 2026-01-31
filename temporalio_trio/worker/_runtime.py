@@ -13,15 +13,13 @@ This implements Phases 1, 2, and 4 of the single-threaded migration plan:
 
 from __future__ import annotations
 
-import asyncio
 import random
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Callable
 
-if TYPE_CHECKING:
-    import trio
+import trio
 
 __all__ = [
     "WorkflowRuntime",
@@ -338,7 +336,7 @@ class WorkflowRuntime:
 
         # Check for cancellation after waking (Phase 7)
         if self.cancel_requested:
-            raise asyncio.CancelledError("Workflow cancelled")
+            raise trio.Cancelled._create()
 
     def apply_timer_fired(self, seq: int, fire_time_ns: int) -> None:
         """Handle a timer fired job from an activation.
@@ -470,7 +468,7 @@ class WorkflowRuntime:
 
         # Check for cancellation after waking (Phase 7)
         if self.cancel_requested:
-            raise asyncio.CancelledError("Workflow cancelled")
+            raise trio.Cancelled._create()
 
         if isinstance(result, BaseException):
             raise result
@@ -604,7 +602,7 @@ class WorkflowRuntime:
 
         # Check for cancellation after waking (Phase 7)
         if self.cancel_requested:
-            raise asyncio.CancelledError("Workflow cancelled")
+            raise trio.Cancelled._create()
 
         if isinstance(result, BaseException):
             raise result

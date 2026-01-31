@@ -2268,9 +2268,7 @@ class TestWorkflowSleepCancellation:
 
     @pytest.mark.trio
     async def test_workflow_sleep_raises_cancelled_error_when_cancelled(self) -> None:
-        """Test workflow_sleep raises CancelledError when cancelled."""
-        import asyncio
-
+        """Test workflow_sleep raises trio.Cancelled when cancelled."""
         runtime = _create_test_runtime()
         cancelled_error_raised = False
 
@@ -2278,7 +2276,7 @@ class TestWorkflowSleepCancellation:
             nonlocal cancelled_error_raised
             try:
                 await runtime.workflow_sleep(5.0)
-            except asyncio.CancelledError:
+            except trio.Cancelled:
                 cancelled_error_raised = True
                 # Don't re-raise - just record that we got the exception
 
@@ -2324,9 +2322,7 @@ class TestExecuteActivityCancellation:
 
     @pytest.mark.trio
     async def test_execute_activity_raises_cancelled_error_when_cancelled(self) -> None:
-        """Test execute_activity raises CancelledError when cancelled."""
-        import asyncio
-
+        """Test execute_activity raises trio.Cancelled when cancelled."""
         runtime = _create_test_runtime()
         cancelled_error_raised = False
 
@@ -2334,7 +2330,7 @@ class TestExecuteActivityCancellation:
             nonlocal cancelled_error_raised
             try:
                 await runtime.execute_activity("my_activity", ())
-            except asyncio.CancelledError:
+            except trio.Cancelled:
                 cancelled_error_raised = True
                 # Don't re-raise - just record that we got the exception
 
@@ -2385,9 +2381,7 @@ class TestExecuteChildWorkflowCancellation:
     async def test_execute_child_workflow_raises_cancelled_error_when_cancelled(
         self,
     ) -> None:
-        """Test execute_child_workflow raises CancelledError when cancelled."""
-        import asyncio
-
+        """Test execute_child_workflow raises trio.Cancelled when cancelled."""
         runtime = _create_test_runtime()
         cancelled_error_raised = False
 
@@ -2395,7 +2389,7 @@ class TestExecuteChildWorkflowCancellation:
             nonlocal cancelled_error_raised
             try:
                 await runtime.execute_child_workflow("ChildWorkflow", "child-wf-1", ())
-            except asyncio.CancelledError:
+            except trio.Cancelled:
                 cancelled_error_raised = True
                 # Don't re-raise - just record that we got the exception
 

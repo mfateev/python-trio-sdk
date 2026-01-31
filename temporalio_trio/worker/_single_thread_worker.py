@@ -16,7 +16,6 @@ This implements Phase 3 of the single-threaded migration plan.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import logging
 import random
@@ -413,7 +412,7 @@ class SingleThreadWorker:
             # Workflow completed successfully
             runtime.commands.append(CompleteWorkflowCommand(result=result))
 
-        except (trio.Cancelled, asyncio.CancelledError):
+        except trio.Cancelled:
             # Workflow was cancelled - emit CancelWorkflowCommand
             runtime.commands.append(CancelWorkflowCommand())
 

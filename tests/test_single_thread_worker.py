@@ -2081,7 +2081,7 @@ class TestSingleThreadWorkerCancellation:
 
             @run
             async def run(self) -> str:
-                import asyncio
+                import trio
 
                 from temporalio_trio.worker._runtime import get_current_runtime
 
@@ -2089,7 +2089,7 @@ class TestSingleThreadWorkerCancellation:
                 try:
                     await runtime.workflow_sleep(10.0)
                     return "completed normally"
-                except asyncio.CancelledError:
+                except trio.Cancelled:
                     # Handle cancellation gracefully
                     return "cancelled gracefully"
 
