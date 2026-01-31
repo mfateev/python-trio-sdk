@@ -8,21 +8,33 @@ from __future__ import annotations
 import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from datetime import timedelta
+from random import Random
+from typing import Any, Callable, Mapping, NoReturn, Sequence
 
 import trio
 
 from temporalio_trio.worker._activation import (
     CompleteWorkflowCommand,
+    ContinueAsNewWorkflowCommand,
     FailWorkflowCommand,
     StartTimerCommand,
     TimerFiredJob,
+    UpdateAcceptedCommand,
+    UpdateCompletedCommand,
+    UpdateRejectedCommand,
     WorkflowActivation,
     WorkflowActivationCompletion,
     WorkflowStartedJob,
 )
 from temporalio_trio.worker._clock import WorkflowClock
-from temporalio_trio.workflow import Info, _Definition, _Runtime
+from temporalio_trio.workflow import (
+    Info,
+    _ContinueAsNewError,
+    _Definition,
+    _Runtime,
+    _unset,
+)
 
 __all__ = [
     "WorkflowRunner",
@@ -246,7 +258,13 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         self._fired_timers: set[int] = set()
         self._pending_timer_id: int | None = None
         self._commands: list[
-            StartTimerCommand | CompleteWorkflowCommand | FailWorkflowCommand
+            StartTimerCommand
+            | CompleteWorkflowCommand
+            | FailWorkflowCommand
+            | ContinueAsNewWorkflowCommand
+            | UpdateAcceptedCommand
+            | UpdateCompletedCommand
+            | UpdateRejectedCommand
         ] = []
         self._start_args: tuple[Any, ...] | None = None
 
@@ -340,6 +358,18 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         except _WorkflowYield:
             # Re-raise to propagate yield signal
             raise
+        except _ContinueAsNewError as err:
+            # Workflow requested continue-as-new
+            self._commands.append(
+                ContinueAsNewWorkflowCommand(
+                    workflow=err.workflow,
+                    args=err.workflow_args,
+                    task_queue=err.task_queue,
+                    run_timeout=err.run_timeout,
+                    task_timeout=err.task_timeout,
+                    memo=err.memo,
+                )
+            )
         except Exception as e:
             self._commands.append(FailWorkflowCommand(exception=e))
 
@@ -402,3 +432,91 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         if self._pending_timer_id is not None:
             return {self._pending_timer_id: None}
         return {}
+
+    def workflow_random(self) -> Random:
+        """Get the deterministic random number generator for this workflow.
+
+        Returns:
+            The seeded random instance for this workflow execution.
+        """
+        return self._random
+
+    def workflow_memo(self) -> Mapping[str, Any]:
+        """Get all memo values for this workflow.
+
+        In the POC, memo values are already converted Python objects stored
+        in Info.raw_memo. In the full SDK, this would convert raw Payload
+        objects using the payload converter.
+
+        Returns:
+            Mapping of memo keys to values.
+        """
+        return self._info.raw_memo
+
+    def workflow_memo_value(
+        self, key: str, default: Any, *, type_hint: type | None
+    ) -> Any:
+        """Get a specific memo value.
+
+        Args:
+            key: The memo key to retrieve.
+            default: Default value if key not found (use _unset to raise KeyError).
+            type_hint: Optional type hint for conversion (currently unused in POC).
+
+        Returns:
+            The memo value.
+
+        Raises:
+            KeyError: If key not found and no default provided.
+        """
+        memo = self._info.raw_memo
+        if key in memo:
+            return memo[key]
+        if default is _unset:
+            raise KeyError(f"Memo key {key!r} not found")
+        return default
+
+    def workflow_continue_as_new(
+        self,
+        *args: Any,
+        workflow: str | Callable | None,
+        task_queue: str | None,
+        run_timeout: timedelta | None,
+        task_timeout: timedelta | None,
+        memo: Mapping[str, Any] | None,
+    ) -> NoReturn:
+        """Continue the workflow as a new execution.
+
+        Args:
+            *args: Arguments for the new workflow execution.
+            workflow: Workflow type or name, or None for same workflow.
+            task_queue: Task queue or None for same task queue.
+            run_timeout: Run timeout or None for same timeout.
+            task_timeout: Task timeout or None for same timeout.
+            memo: Memo or None for same memo.
+
+        Raises:
+            _ContinueAsNewError: Always raised to signal continue-as-new.
+        """
+        # Resolve workflow name from callable if needed
+        workflow_name: str | None = None
+        if workflow is not None:
+            if isinstance(workflow, str):
+                workflow_name = workflow
+            else:
+                # It's a callable - try to get the workflow definition
+                defn = _Definition.from_class(workflow)
+                if defn:
+                    workflow_name = defn.name
+                else:
+                    # Fallback to function/class name
+                    workflow_name = getattr(workflow, "__name__", str(workflow))
+
+        raise _ContinueAsNewError(
+            workflow=workflow_name,
+            workflow_args=args,
+            task_queue=task_queue,
+            run_timeout=run_timeout,
+            task_timeout=task_timeout,
+            memo=memo,
+        )

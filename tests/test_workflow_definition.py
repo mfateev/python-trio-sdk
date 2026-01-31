@@ -183,6 +183,28 @@ class TestRuntimeClass:
                     task_queue="mock-queue",
                 )
 
+            def workflow_random(self) -> workflow.Random:
+                raise NotImplementedError
+
+            def workflow_memo(self) -> workflow.Mapping[str, workflow.Any]:
+                raise NotImplementedError
+
+            def workflow_memo_value(
+                self, key: str, default: workflow.Any, *, type_hint: type | None
+            ) -> workflow.Any:
+                raise NotImplementedError
+
+            def workflow_continue_as_new(
+                self,
+                *args: workflow.Any,
+                workflow: str | type | None,
+                task_queue: str | None,
+                run_timeout: workflow.timedelta | None,
+                task_timeout: workflow.timedelta | None,
+                memo: workflow.Mapping[str, workflow.Any] | None,
+            ) -> workflow.NoReturn:
+                raise NotImplementedError
+
         mock = MockRuntime()
 
         # Initially None
@@ -219,6 +241,28 @@ class TestRuntimeClass:
                     run_id="mock-run",
                     task_queue="mock-queue",
                 )
+
+            def workflow_random(self) -> workflow.Random:
+                raise NotImplementedError
+
+            def workflow_memo(self) -> workflow.Mapping[str, workflow.Any]:
+                raise NotImplementedError
+
+            def workflow_memo_value(
+                self, key: str, default: workflow.Any, *, type_hint: type | None
+            ) -> workflow.Any:
+                raise NotImplementedError
+
+            def workflow_continue_as_new(
+                self,
+                *args: workflow.Any,
+                workflow: str | type | None,
+                task_queue: str | None,
+                run_timeout: workflow.timedelta | None,
+                task_timeout: workflow.timedelta | None,
+                memo: workflow.Mapping[str, workflow.Any] | None,
+            ) -> workflow.NoReturn:
+                raise NotImplementedError
 
         mock1 = MockRuntime("mock1")
         mock2 = MockRuntime("mock2")
@@ -271,6 +315,28 @@ class TestPublicAPI:
                     task_queue="mock-queue",
                 )
 
+            def workflow_random(self) -> workflow.Random:
+                raise NotImplementedError
+
+            def workflow_memo(self) -> workflow.Mapping[str, workflow.Any]:
+                raise NotImplementedError
+
+            def workflow_memo_value(
+                self, key: str, default: workflow.Any, *, type_hint: type | None
+            ) -> workflow.Any:
+                raise NotImplementedError
+
+            def workflow_continue_as_new(
+                self,
+                *args: workflow.Any,
+                workflow: str | type | None,
+                task_queue: str | None,
+                run_timeout: workflow.timedelta | None,
+                task_timeout: workflow.timedelta | None,
+                memo: workflow.Mapping[str, workflow.Any] | None,
+            ) -> workflow.NoReturn:
+                raise NotImplementedError
+
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
         try:
@@ -309,6 +375,28 @@ class TestPublicAPI:
                     run_id="mock-run",
                     task_queue="mock-queue",
                 )
+
+            def workflow_random(self) -> workflow.Random:
+                raise NotImplementedError
+
+            def workflow_memo(self) -> workflow.Mapping[str, workflow.Any]:
+                raise NotImplementedError
+
+            def workflow_memo_value(
+                self, key: str, default: workflow.Any, *, type_hint: type | None
+            ) -> workflow.Any:
+                raise NotImplementedError
+
+            def workflow_continue_as_new(
+                self,
+                *args: workflow.Any,
+                workflow: str | type | None,
+                task_queue: str | None,
+                run_timeout: workflow.timedelta | None,
+                task_timeout: workflow.timedelta | None,
+                memo: workflow.Mapping[str, workflow.Any] | None,
+            ) -> workflow.NoReturn:
+                raise NotImplementedError
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
