@@ -238,14 +238,13 @@ class SingleThreadWorker:
         )
 
         if has_workflow_start and run_id in self._workflow_states:
-            # Replay scenario: evict old state and start fresh
-            logger.debug(f"Replay detected for {run_id}, evicting old state")
-            old_state = self._workflow_states[run_id]
-            # Cancel the old workflow task if running
-            if old_state.runtime and old_state.runtime.nursery:
-                old_state.runtime.nursery.cancel_scope.cancel()
-            del self._workflow_states[run_id]
-            # Fall through to create new state
+            # This should not happen normally - cached workflows should not receive
+            # initialize_workflow again. Log warning but DO NOT evict (matches sdk-python).
+            logger.warning(
+                f"Cache already exists for activation with initialize job (run_id={run_id})"
+            )
+            # Continue processing - deliver activation to existing workflow
+            # (skip the WorkflowStartedJob since workflow is already started)
 
         # Handle empty activations for non-existent workflows (cleanup after completion)
         if not has_workflow_start and run_id not in self._workflow_states:
@@ -402,13 +401,15 @@ class SingleThreadWorker:
                     self._apply_activation(runtime, activation)
 
                     # Yield to scheduler to let woken tasks run
+                    # For activations with jobs that wake workflows (TimerFired, etc.),
+                    # we need to wait for the workflow to process and signal commands ready
                     await trio.sleep(0)
 
-                    # If the workflow didn't signal commands ready (e.g., empty activation
-                    # or no jobs that woke up suspended tasks), signal it now
-                    # Check by seeing if commands_ready event is not set (no one called signal_commands_ready)
-                    if not state.commands_ready.is_set() and not state.is_complete:
-                        # Signal commands ready with current commands (may be empty)
+                    # Only force-signal for truly empty activations (0 jobs).
+                    # Activations with jobs that wake workflows should NOT be force-signaled
+                    # because the workflow needs time to process and produce commands.
+                    if len(activation.jobs) == 0 and not state.commands_ready.is_set() and not state.is_complete:
+                        # Empty activation (heartbeat) - signal with current commands
                         state.signal_commands_ready()
 
         except Exception as e:

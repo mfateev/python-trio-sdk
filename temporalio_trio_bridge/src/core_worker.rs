@@ -90,6 +90,7 @@ impl CoreWorkerHandle {
         let worker_config = WorkerConfig::builder()
             .namespace(config.namespace.clone())
             .task_queue(config.task_queue.clone())
+            .max_cached_workflows(config.max_cached_workflows)
             .versioning_strategy(WorkerVersioningStrategy::None {
                 build_id: "trio-worker".to_string(),
             })
