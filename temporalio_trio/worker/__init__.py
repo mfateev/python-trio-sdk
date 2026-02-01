@@ -6,14 +6,32 @@ as the async runtime.
 
 from temporalio_trio.worker._activation import (
     CompleteWorkflowCommand,
+    ContinueAsNewWorkflowCommand,
+    DoUpdateJob,
     FailWorkflowCommand,
     StartTimerCommand,
     TimerFiredJob,
+    UpdateAcceptedCommand,
+    UpdateCompletedCommand,
+    UpdateRejectedCommand,
     WorkflowActivation,
     WorkflowActivationCompletion,
     WorkflowStartedJob,
 )
 from temporalio_trio.worker._clock import WorkflowClock
+from temporalio_trio.worker._interceptor import (
+    ContinueAsNewInput,
+    ExecuteWorkflowInput,
+    HandleQueryInput,
+    HandleSignalInput,
+    HandleUpdateInput,
+    Interceptor,
+    StartActivityInput,
+    StartChildWorkflowInput,
+    WorkflowInboundInterceptor,
+    WorkflowInterceptorClassInput,
+    WorkflowOutboundInterceptor,
+)
 from temporalio_trio.worker._workflow_instance import (
     TrioWorkflowInstance,
     TrioWorkflowRunner,
@@ -28,9 +46,14 @@ __all__ = [
     "WorkflowActivationCompletion",
     "WorkflowStartedJob",
     "TimerFiredJob",
+    "DoUpdateJob",
     "StartTimerCommand",
     "CompleteWorkflowCommand",
     "FailWorkflowCommand",
+    "ContinueAsNewWorkflowCommand",
+    "UpdateAcceptedCommand",
+    "UpdateCompletedCommand",
+    "UpdateRejectedCommand",
     # Clock
     "WorkflowClock",
     # Runner types
@@ -40,4 +63,16 @@ __all__ = [
     "WorkflowInstanceDetails",
     "WorkflowInstance",
     "TrioWorkflowInstance",
+    # Interceptor types
+    "Interceptor",
+    "WorkflowInterceptorClassInput",
+    "WorkflowInboundInterceptor",
+    "WorkflowOutboundInterceptor",
+    "ExecuteWorkflowInput",
+    "HandleSignalInput",
+    "HandleQueryInput",
+    "HandleUpdateInput",
+    "ContinueAsNewInput",
+    "StartActivityInput",
+    "StartChildWorkflowInput",
 ]
