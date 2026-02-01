@@ -57,19 +57,34 @@ class WorkflowClock(Clock):
         """Compute real seconds to sleep until deadline.
 
         For workflow clocks, if the deadline has passed, return 0.
-        Otherwise, return infinity to indicate that we should wait for
-        an external event (like a timer fired activation) rather than
-        actually sleeping.
+        If deadline is inf, return inf (Trio uses this for "no deadline").
+        Otherwise, raise an error because this indicates unauthorized
+        use of trio.sleep() inside a workflow.
+
+        Note: workflow.sleep() uses a custom _WorkflowYield mechanism
+        and never goes through Trio's deadline system. So any call to
+        this method with a finite future deadline means trio.sleep() was used.
 
         Args:
             deadline: The absolute deadline time in seconds.
 
         Returns:
-            0.0 if deadline already passed, float('inf') otherwise.
+            0.0 if deadline already passed.
+            float('inf') if deadline is inf (no deadline).
+
+        Raises:
+            RuntimeError: If deadline is a finite future time, indicating
+                trio.sleep() was used instead of workflow.sleep().
         """
         if deadline <= self.current_time():
             return 0.0
-        return float("inf")
+        # Trio uses inf to mean "no deadline" - this is fine
+        if deadline == float("inf"):
+            return float("inf")
+        raise RuntimeError(
+            "trio.sleep() cannot be used inside a workflow. "
+            "Use workflow.sleep() instead for deterministic execution."
+        )
 
     def advance_to(self, time_ns: int) -> None:
         """Advance the clock to the given time.

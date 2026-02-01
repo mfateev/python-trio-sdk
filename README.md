@@ -56,6 +56,31 @@ uv run poe format
 uv run poe lint
 ```
 
+### Testing
+
+The project includes both unit tests and end-to-end integration tests.
+
+**Run all tests:**
+```bash
+uv run pytest -v
+```
+
+**Run only unit tests (no server required):**
+```bash
+uv run pytest -v -m "not temporal_server"
+```
+
+**Run end-to-end tests (requires Temporal server):**
+```bash
+# Terminal 1: Start Temporal dev server
+temporal server start-dev
+
+# Terminal 2: Run e2e tests
+uv run pytest -v -m temporal_server
+```
+
+For detailed information about e2e tests, see [tests/E2E_TESTING.md](tests/E2E_TESTING.md).
+
 ## Related Projects
 
 - [Temporal Python SDK](https://github.com/temporalio/sdk-python) - Official asyncio-based SDK

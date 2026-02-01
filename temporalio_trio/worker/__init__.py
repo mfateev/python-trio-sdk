@@ -1,37 +1,29 @@
 """Worker module for Temporal with Trio support.
 
-This module provides the infrastructure for executing workflows using Trio
-as the async runtime.
+This module provides the infrastructure for executing workflows and activities
+using Trio as the async runtime.
 """
 
 from temporalio_trio.worker._activation import (
+    # Activity types (for workflow-activity integration)
+    ActivityCancelledJob,
+    ActivityResolvedJob,
+    # Workflow commands
     CompleteWorkflowCommand,
-    ContinueAsNewWorkflowCommand,
-    DoUpdateJob,
     FailWorkflowCommand,
+    RequestCancelActivityCommand,
+    ScheduleActivityCommand,
     StartTimerCommand,
+    # Workflow jobs
     TimerFiredJob,
-    UpdateAcceptedCommand,
-    UpdateCompletedCommand,
-    UpdateRejectedCommand,
     WorkflowActivation,
     WorkflowActivationCompletion,
     WorkflowStartedJob,
 )
+from temporalio_trio.worker._activity import TrioActivityWorker
 from temporalio_trio.worker._clock import WorkflowClock
-from temporalio_trio.worker._interceptor import (
-    ContinueAsNewInput,
-    ExecuteWorkflowInput,
-    HandleQueryInput,
-    HandleSignalInput,
-    HandleUpdateInput,
-    Interceptor,
-    StartActivityInput,
-    StartChildWorkflowInput,
-    WorkflowInboundInterceptor,
-    WorkflowInterceptorClassInput,
-    WorkflowOutboundInterceptor,
-)
+from temporalio_trio.worker._single_thread_worker import SingleThreadWorker
+from temporalio_trio.worker._worker import Worker
 from temporalio_trio.worker._workflow_instance import (
     TrioWorkflowInstance,
     TrioWorkflowRunner,
@@ -41,19 +33,26 @@ from temporalio_trio.worker._workflow_instance import (
 )
 
 __all__ = [
-    # Activation types
+    # High-level Worker API
+    "Worker",
+    # Single-threaded worker (new execution model)
+    "SingleThreadWorker",
+    # Activity worker
+    "TrioActivityWorker",
+    # Workflow activation types
     "WorkflowActivation",
     "WorkflowActivationCompletion",
     "WorkflowStartedJob",
     "TimerFiredJob",
-    "DoUpdateJob",
+    # Workflow command types
     "StartTimerCommand",
     "CompleteWorkflowCommand",
     "FailWorkflowCommand",
-    "ContinueAsNewWorkflowCommand",
-    "UpdateAcceptedCommand",
-    "UpdateCompletedCommand",
-    "UpdateRejectedCommand",
+    # Activity types (for workflow-activity integration)
+    "ActivityResolvedJob",
+    "ActivityCancelledJob",
+    "ScheduleActivityCommand",
+    "RequestCancelActivityCommand",
     # Clock
     "WorkflowClock",
     # Runner types
@@ -63,16 +62,4 @@ __all__ = [
     "WorkflowInstanceDetails",
     "WorkflowInstance",
     "TrioWorkflowInstance",
-    # Interceptor types
-    "Interceptor",
-    "WorkflowInterceptorClassInput",
-    "WorkflowInboundInterceptor",
-    "WorkflowOutboundInterceptor",
-    "ExecuteWorkflowInput",
-    "HandleSignalInput",
-    "HandleQueryInput",
-    "HandleUpdateInput",
-    "ContinueAsNewInput",
-    "StartActivityInput",
-    "StartChildWorkflowInput",
 ]

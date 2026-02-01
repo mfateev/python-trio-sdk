@@ -5,35 +5,53 @@ This module contains the core classes for creating and managing workflow instanc
 
 from __future__ import annotations
 
+import inspect
+import logging
 import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import timedelta
-from random import Random
-from typing import Any, Callable, Mapping, NoReturn, Sequence
+from typing import Any, Callable
 
+import outcome
+import temporalio.common
 import trio
+import trio.lowlevel
+
+logger = logging.getLogger(__name__)
 
 from temporalio_trio.worker._activation import (
+    ActivityResolvedJob,
+    CancelChildWorkflowCommand,
+    CancelTimerCommand,
+    CancelWorkflowCommand,
+    CancelWorkflowJob,
+    ChildWorkflowResolvedJob,
+    ChildWorkflowStartedJob,
+    ChildWorkflowStartFailedJob,
     CompleteWorkflowCommand,
-    ContinueAsNewWorkflowCommand,
     FailWorkflowCommand,
+    QueryResultCommand,
+    QueryWorkflowJob,
+    ScheduleActivityCommand,
+    SignalWorkflowJob,
+    StartChildWorkflowCommand,
     StartTimerCommand,
     TimerFiredJob,
-    UpdateAcceptedCommand,
-    UpdateCompletedCommand,
-    UpdateRejectedCommand,
     WorkflowActivation,
     WorkflowActivationCompletion,
     WorkflowStartedJob,
 )
 from temporalio_trio.worker._clock import WorkflowClock
 from temporalio_trio.workflow import (
+    ChildWorkflowCancellationType,
+    ChildWorkflowHandle,
     Info,
-    _ContinueAsNewError,
+    ParentClosePolicy,
     _Definition,
+    _QueryDefinition,
     _Runtime,
-    _unset,
+    _SignalDefinition,
 )
 
 __all__ = [
@@ -51,6 +69,16 @@ class _WorkflowYield(BaseException):
     This is raised when the workflow needs to wait for an external event
     (like a timer firing). It's a BaseException so it won't be caught by
     normal exception handlers in workflow code.
+    """
+
+    pass
+
+
+class _WorkflowCancelled(BaseException):
+    """Signal that workflow was cancelled.
+
+    This is raised when the workflow receives a cancellation request.
+    It's a BaseException so it won't be caught by normal exception handlers.
     """
 
     pass
@@ -254,19 +282,56 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         self._random = random.Random(det.randomness_seed)
         self._time_ns: int = 0
         self._timer_seq: int = 0
+        self._activity_seq: int = 0
+        self._condition_seq: int = 0
         self._workflow_obj: object | None = None
         self._fired_timers: set[int] = set()
         self._pending_timer_id: int | None = None
+        # Track resolved activities: seq -> (result, failure)
+        self._resolved_activities: dict[int, tuple[Any, BaseException | None]] = {}
+        self._pending_activity_seq: int | None = None
         self._commands: list[
             StartTimerCommand
+            | CancelTimerCommand
             | CompleteWorkflowCommand
             | FailWorkflowCommand
-            | ContinueAsNewWorkflowCommand
-            | UpdateAcceptedCommand
-            | UpdateCompletedCommand
-            | UpdateRejectedCommand
+            | CancelWorkflowCommand
+            | ScheduleActivityCommand
+            | QueryResultCommand
+            | StartChildWorkflowCommand
+            | CancelChildWorkflowCommand
         ] = []
         self._start_args: tuple[Any, ...] | None = None
+        self._cancel_requested: bool = False
+        # Signal handling
+        self._signals: dict[str | None, _SignalDefinition] = dict(det.defn.signals)
+        self._pending_signals: list[SignalWorkflowJob] = []
+        # Query handling
+        self._queries: dict[str | None, _QueryDefinition] = dict(det.defn.queries)
+        self._pending_queries: list[QueryWorkflowJob] = []
+        # Child workflow handling
+        self._child_workflow_seq: int = 0
+        # Track child workflows waiting for start confirmation: seq -> handle
+        self._pending_child_starts: dict[int, ChildWorkflowHandle[Any, Any]] = {}
+        # Track child workflows waiting for completion: seq -> handle
+        self._pending_child_results: dict[int, ChildWorkflowHandle[Any, Any]] = {}
+        # Track resolved child workflows for replay: seq -> (result, failure)
+        self._resolved_child_workflows: dict[int, tuple[Any, BaseException | None]] = {}
+        # Track started child workflows (for determining run_id during replay): seq -> run_id
+        self._started_child_workflows: dict[int, str] = {}
+        # Current pending child workflow sequence (for yield tracking)
+        self._pending_child_seq: int | None = None
+
+        # Guest mode state (Phase 1/2)
+        self._guest_running: bool = False
+        self._workflow_outcome: outcome.Outcome | None = None
+        self._timer_events: dict[int, trio.Event] = {}
+        self._activity_events: dict[int, trio.Event] = {}
+        self._condition_events: dict[int, trio.Event] = {}
+        self._child_workflow_events: dict[int, trio.Event] = {}
+        self._pending_conditions: list[tuple[int, Callable[[], bool], trio.Event]] = []
+        self._pending_callbacks: list[Callable[[], object]] = []
+        self._guest_clock: WorkflowClock | None = None
 
     @property
     def defn(self) -> _Definition:
@@ -296,6 +361,11 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         with deterministic scheduling. Each activation updates the workflow time
         and processes all jobs in the activation.
 
+        In guest mode (Phase 2):
+        - The guest run persists across activations
+        - Jobs set events to wake the workflow
+        - Workflow resumes from where it was suspended, not from the beginning
+
         Args:
             act: The activation containing jobs to process.
 
@@ -306,7 +376,11 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         self._time_ns = act.timestamp_ns
         self._commands = []
 
-        # Process jobs to update state before running workflow
+        # Update clock if guest is running
+        if self._guest_running and self._guest_clock is not None:
+            self._guest_clock.advance_to(self._time_ns)
+
+        # Process jobs to update state and set events for waiting workflows
         has_workflow_start = False
         for job in act.jobs:
             if isinstance(job, WorkflowStartedJob):
@@ -316,24 +390,85 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 self._fired_timers.add(job.timer_id)
                 if self._pending_timer_id == job.timer_id:
                     self._pending_timer_id = None
+                # Set event to wake workflow (guest mode)
+                if job.timer_id in self._timer_events:
+                    self._timer_events[job.timer_id].set()
+            elif isinstance(job, ActivityResolvedJob):
+                # Store activity result for replay
+                self._resolved_activities[job.seq] = (job.result, job.failure)
+                if self._pending_activity_seq == job.seq:
+                    self._pending_activity_seq = None
+                # Set event to wake workflow (guest mode)
+                if job.seq in self._activity_events:
+                    self._activity_events[job.seq].set()
+            elif isinstance(job, CancelWorkflowJob):
+                self._cancel_requested = True
+                # Set ALL pending events to wake workflow for cancellation
+                for event in self._timer_events.values():
+                    event.set()
+                for event in self._activity_events.values():
+                    event.set()
+                for _, _, event in self._pending_conditions:
+                    event.set()
+                for event in self._child_workflow_events.values():
+                    event.set()
+            elif isinstance(job, SignalWorkflowJob):
+                self._pending_signals.append(job)
+            elif isinstance(job, QueryWorkflowJob):
+                self._pending_queries.append(job)
+            elif isinstance(job, ChildWorkflowStartedJob):
+                # Child workflow started - store run_id for replay
+                self._started_child_workflows[job.seq] = job.run_id
+                if self._pending_child_seq == job.seq:
+                    self._pending_child_seq = None
+                # Set event to wake workflow (guest mode)
+                if job.seq in self._child_workflow_events:
+                    self._child_workflow_events[job.seq].set()
+            elif isinstance(job, ChildWorkflowStartFailedJob):
+                # Child workflow failed to start - store as failure for replay
+                self._resolved_child_workflows[job.seq] = (
+                    None,
+                    RuntimeError(
+                        f"Child workflow '{job.workflow_type}' (id={job.workflow_id}) "
+                        f"failed to start: {job.cause}"
+                    ),
+                )
+                if self._pending_child_seq == job.seq:
+                    self._pending_child_seq = None
+                # Set event to wake workflow (guest mode)
+                if job.seq in self._child_workflow_events:
+                    self._child_workflow_events[job.seq].set()
+            elif isinstance(job, ChildWorkflowResolvedJob):
+                # Child workflow completed - store result for replay
+                self._resolved_child_workflows[job.seq] = (job.result, job.failure)
+                if self._pending_child_seq == job.seq:
+                    self._pending_child_seq = None
+                # Set event to wake workflow (guest mode)
+                if job.seq in self._child_workflow_events:
+                    self._child_workflow_events[job.seq].set()
 
         # If we have start args (either new or from previous activation), run workflow
         if self._start_args is not None:
-            # Reset timer sequence for deterministic replay
+            # Reset sequences for deterministic replay
+            # (In replay-from-beginning mode, we always re-run from the start)
             self._timer_seq = 0
+            self._activity_seq = 0
+            self._child_workflow_seq = 0
+            self._condition_seq = 0
 
-            # Set runtime context
             token = _Runtime.set_current(self)
             try:
-                # Create clock at current workflow time
+                # Use trio.run() for each activation (replay-from-beginning approach)
+                # This ensures isolation between workflow instances in the same thread.
+                # Guest mode (event-based suspension) is available but not used by default
+                # because Trio's global state prevents multiple guest runs per thread.
                 clock = WorkflowClock(self._time_ns)
 
-                # Run with trio using deterministic scheduling
                 try:
                     trio.run(
                         self._run_workflow,
-                        deterministic=True,
-                        random_seed=self._random.getrandbits(64),
+                        deterministic=True,  # type: ignore[call-arg]
+                        random_seed=self._random.getrandbits(64),  # type: ignore[call-arg]
                         clock=clock,
                     )
                 except _WorkflowYield:
@@ -343,35 +478,167 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             finally:
                 _Runtime.reset_current(token)
 
+        # Process queries after workflow has run (queries need access to workflow state)
+        # Queries are processed synchronously and should not mutate state
+        for query_job in self._pending_queries:
+            self._apply_query(query_job)
+        self._pending_queries.clear()
+
         return WorkflowActivationCompletion(commands=self._commands)
 
     async def _run_workflow(self) -> None:
         """Run the workflow from the beginning.
 
         This re-executes the workflow, with fired timers completing immediately.
+        If cancellation was requested, the workflow will raise _WorkflowCancelled
+        when it tries to wait for something (like a timer).
         """
         assert self._start_args is not None
         self._workflow_obj = self._defn.cls()
+
+        # Process pending signals before running the main workflow
+        for signal_job in self._pending_signals:
+            await self._apply_signal(signal_job)
+        self._pending_signals.clear()
+
         try:
             result = await self._defn.run_fn(self._workflow_obj, *self._start_args)
             self._commands.append(CompleteWorkflowCommand(result=result))
         except _WorkflowYield:
             # Re-raise to propagate yield signal
             raise
-        except _ContinueAsNewError as err:
-            # Workflow requested continue-as-new
+        except _WorkflowCancelled:
+            # Workflow was cancelled - emit cancel command
+            self._commands.append(CancelWorkflowCommand())
+        except Exception as e:
+            self._commands.append(FailWorkflowCommand(exception=e))
+
+    # Guest mode methods (Phase 1)
+
+    def _schedule_sync(self, fn: Callable[[], object]) -> None:
+        """Callback scheduler for guest mode.
+
+        Called by Trio guest run via `run_sync_soon_threadsafe` to schedule
+        callbacks on the host. These callbacks are processed synchronously
+        during `_drive_guest_run()`.
+
+        Args:
+            fn: The callback function to schedule.
+        """
+        self._pending_callbacks.append(fn)
+
+    def _on_workflow_done(self, main_outcome: outcome.Outcome) -> None:
+        """Done callback for guest mode.
+
+        Called when the Trio guest run completes (either successfully or
+        with an exception). Stores the outcome and marks guest as no longer
+        running.
+
+        Args:
+            main_outcome: The outcome of the guest run (Value or Error).
+        """
+        self._workflow_outcome = main_outcome
+        self._guest_running = False
+
+    def _start_guest_run(self) -> None:
+        """Start the Trio guest run for this workflow.
+
+        This initializes the guest mode by calling `trio.lowlevel.start_guest_run()`
+        with the workflow's main coroutine. The guest run will execute until it
+        suspends waiting for events or completes.
+
+        Uses deterministic scheduling and a seeded random number generator
+        to ensure replay consistency.
+        """
+        self._guest_running = True
+
+        # Create the workflow clock for time control and store for later updates
+        self._guest_clock = WorkflowClock(self._time_ns)
+
+        # Start the guest run
+        trio.lowlevel.start_guest_run(
+            self._run_workflow,
+            run_sync_soon_threadsafe=self._schedule_sync,
+            done_callback=self._on_workflow_done,
+            deterministic=True,  # type: ignore[call-arg]
+            random_seed=self._random.getrandbits(64),  # type: ignore[call-arg]
+            clock=self._guest_clock,
+        )
+
+    def _drive_guest_run(self) -> None:
+        """Process pending callbacks from the Trio guest run.
+
+        This method runs the guest run until it suspends waiting for events.
+        It processes callbacks scheduled by `_schedule_sync()` in a loop
+        until no more callbacks are pending.
+
+        Note: The guest run may complete during callback processing,
+        which will be signaled via `_on_workflow_done()`.
+        """
+        # Process any pending callbacks from Trio
+        while self._pending_callbacks:
+            callbacks = self._pending_callbacks
+            self._pending_callbacks = []
+            for cb in callbacks:
+                cb()
+
+    async def _apply_signal(self, job: SignalWorkflowJob) -> None:
+        """Apply a signal to the workflow.
+
+        Args:
+            job: The signal job containing signal name and arguments.
+        """
+        defn = self._signals.get(job.signal_name) or self._signals.get(None)
+        if defn is None:
+            # Buffer signal for later (dynamic handler may be added)
+            logger.warning(f"No handler for signal '{job.signal_name}', ignoring")
+            return
+
+        handler = defn.fn
+        if defn.is_method:
+            handler = handler.__get__(self._workflow_obj, type(self._workflow_obj))
+
+        result = handler(*job.args)
+        if inspect.iscoroutine(result):
+            await result
+
+    def _apply_query(self, job: QueryWorkflowJob) -> None:
+        """Apply a query to the workflow (synchronous, read-only).
+
+        Query handlers must be synchronous and should not mutate workflow state.
+        The result is sent back to the query caller via a QueryResultCommand.
+
+        Args:
+            job: The query job containing query type and arguments.
+        """
+        try:
+            defn = self._queries.get(job.query_type) or self._queries.get(None)
+            if defn is None:
+                known = sorted([k for k in self._queries.keys() if k])
+                raise RuntimeError(
+                    f"Query handler for '{job.query_type}' not found. "
+                    f"Known queries: [{', '.join(known)}]"
+                )
+
+            handler = defn.fn
+            if defn.is_method:
+                handler = handler.__get__(self._workflow_obj, type(self._workflow_obj))
+
+            result = handler(*job.args)
+
             self._commands.append(
-                ContinueAsNewWorkflowCommand(
-                    workflow=err.workflow,
-                    args=err.workflow_args,
-                    task_queue=err.task_queue,
-                    run_timeout=err.run_timeout,
-                    task_timeout=err.task_timeout,
-                    memo=err.memo,
+                QueryResultCommand(
+                    query_id=job.query_id,
+                    result=result,
                 )
             )
         except Exception as e:
-            self._commands.append(FailWorkflowCommand(exception=e))
+            self._commands.append(
+                QueryResultCommand(
+                    query_id=job.query_id,
+                    error=str(e),
+                )
+            )
 
     # _Runtime implementation
 
@@ -399,21 +666,25 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
 
         Args:
             duration: Sleep duration in seconds.
-            summary: Optional description for debugging (currently unused).
+            summary: Optional human-readable description for UI/CLI visibility.
         """
         timer_id = self._timer_seq
         self._timer_seq += 1
 
         # Check if this timer has already fired (replay)
         if timer_id in self._fired_timers:
-            # Timer already fired, continue immediately
             return
+
+        # Check for cancellation before waiting for timer
+        if self._cancel_requested:
+            raise _WorkflowCancelled()
 
         # Timer hasn't fired yet - create command and yield
         self._commands.append(
             StartTimerCommand(
                 timer_id=timer_id,
                 duration_ms=int(duration * 1000),
+                summary=summary,
             )
         )
         self._pending_timer_id = timer_id
@@ -421,102 +692,269 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         # Yield control - workflow will re-run when timer fires
         raise _WorkflowYield()
 
-    # For backward compatibility with tests that access internal state
-    @property
-    def _pending_timers(self) -> dict[int, Any]:
-        """Get pending timers (for test compatibility).
-
-        Returns:
-            Dict with pending timer ID if any.
-        """
-        if self._pending_timer_id is not None:
-            return {self._pending_timer_id: None}
-        return {}
-
-    def workflow_random(self) -> Random:
-        """Get the deterministic random number generator for this workflow.
-
-        Returns:
-            The seeded random instance for this workflow execution.
-        """
-        return self._random
-
-    def workflow_memo(self) -> Mapping[str, Any]:
-        """Get all memo values for this workflow.
-
-        In the POC, memo values are already converted Python objects stored
-        in Info.raw_memo. In the full SDK, this would convert raw Payload
-        objects using the payload converter.
-
-        Returns:
-            Mapping of memo keys to values.
-        """
-        return self._info.raw_memo
-
-    def workflow_memo_value(
-        self, key: str, default: Any, *, type_hint: type | None
+    async def workflow_execute_activity(
+        self,
+        activity: str | Callable[..., Any],
+        *args: Any,
+        task_queue: str | None = None,
+        schedule_to_close_timeout: timedelta | None = None,
+        schedule_to_start_timeout: timedelta | None = None,
+        start_to_close_timeout: timedelta | None = None,
+        heartbeat_timeout: timedelta | None = None,
+        retry_policy: temporalio.common.RetryPolicy | None = None,
+        activity_id: str | None = None,
     ) -> Any:
-        """Get a specific memo value.
+        """Execute an activity and wait for its result.
+
+        If this activity has already resolved (during replay), returns immediately.
+        Otherwise, creates a schedule activity command and yields back to the
+        activation loop.
 
         Args:
-            key: The memo key to retrieve.
-            default: Default value if key not found (use _unset to raise KeyError).
-            type_hint: Optional type hint for conversion (currently unused in POC).
+            activity: Activity name or function reference.
+            *args: Arguments to pass to the activity.
+            task_queue: Task queue to run the activity on. Defaults to workflow's queue.
+            schedule_to_close_timeout: Max time for activity from schedule to completion.
+            schedule_to_start_timeout: Max time waiting for worker to pick up activity.
+            start_to_close_timeout: Max time for activity execution.
+            heartbeat_timeout: Max time between heartbeats.
+            retry_policy: Retry policy for the activity.
+            activity_id: Optional unique identifier for the activity.
 
         Returns:
-            The memo value.
+            The activity result.
 
         Raises:
-            KeyError: If key not found and no default provided.
+            RuntimeError: If the activity fails or is cancelled.
         """
-        memo = self._info.raw_memo
-        if key in memo:
-            return memo[key]
-        if default is _unset:
-            raise KeyError(f"Memo key {key!r} not found")
-        return default
+        # Validate that at least one timeout is set
+        if schedule_to_close_timeout is None and start_to_close_timeout is None:
+            raise ValueError(
+                "At least one of schedule_to_close_timeout or start_to_close_timeout "
+                "must be set for activity execution"
+            )
 
-    def workflow_continue_as_new(
+        # Get activity name from string or callable
+        if isinstance(activity, str):
+            activity_type = activity
+        else:
+            # Try to get name from activity definition
+            defn = getattr(activity, "__temporal_activity_definition", None)
+            if defn is not None:
+                activity_type = defn.name
+            else:
+                # Fallback to function name
+                activity_type = getattr(activity, "__name__", str(activity))
+
+        # Get sequence number for this activity
+        seq = self._activity_seq
+        self._activity_seq += 1
+
+        # Check if this activity has already resolved (replay)
+        if seq in self._resolved_activities:
+            result, failure = self._resolved_activities[seq]
+            if failure is not None:
+                raise failure
+            return result
+
+        # Check for cancellation before scheduling activity
+        if self._cancel_requested:
+            raise _WorkflowCancelled()
+
+        # Generate activity ID if not provided
+        if activity_id is None:
+            activity_id = str(seq)
+
+        # Activity hasn't resolved yet - create command and yield
+        self._commands.append(
+            ScheduleActivityCommand(
+                seq=seq,
+                activity_id=activity_id,
+                activity_type=activity_type,
+                args=tuple(args),
+                task_queue=task_queue,
+                schedule_to_close_timeout=schedule_to_close_timeout,
+                schedule_to_start_timeout=schedule_to_start_timeout,
+                start_to_close_timeout=start_to_close_timeout,
+                heartbeat_timeout=heartbeat_timeout,
+                retry_policy=retry_policy,
+            )
+        )
+        self._pending_activity_seq = seq
+
+        # Yield control - workflow will re-run when activity resolves
+        raise _WorkflowYield()
+
+    async def workflow_start_child_workflow(
         self,
+        workflow: str | type,
         *args: Any,
-        workflow: str | Callable | None,
+        id: str,
         task_queue: str | None,
+        cancellation_type: ChildWorkflowCancellationType,
+        parent_close_policy: ParentClosePolicy,
+        execution_timeout: timedelta | None,
         run_timeout: timedelta | None,
         task_timeout: timedelta | None,
-        memo: Mapping[str, Any] | None,
-    ) -> NoReturn:
-        """Continue the workflow as a new execution.
+        id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
+        retry_policy: temporalio.common.RetryPolicy | None,
+    ) -> ChildWorkflowHandle[Any, Any]:
+        """Start a child workflow and return a handle.
+
+        If this child workflow has already started or completed (during replay),
+        returns immediately with the appropriate state. Otherwise, creates a
+        start child workflow command and yields back to the activation loop.
 
         Args:
-            *args: Arguments for the new workflow execution.
-            workflow: Workflow type or name, or None for same workflow.
-            task_queue: Task queue or None for same task queue.
-            run_timeout: Run timeout or None for same timeout.
-            task_timeout: Task timeout or None for same timeout.
-            memo: Memo or None for same memo.
+            workflow: Workflow class or type name.
+            *args: Arguments to pass to the workflow.
+            id: Unique workflow ID.
+            task_queue: Task queue (defaults to parent's).
+            cancellation_type: How child reacts to parent cancellation.
+            parent_close_policy: What happens when parent closes.
+            execution_timeout: Total timeout including retries.
+            run_timeout: Timeout for a single run.
+            task_timeout: Timeout for a single workflow task.
+            id_reuse_policy: How existing IDs are treated.
+            retry_policy: Retry policy for the workflow.
+
+        Returns:
+            A handle to the started child workflow.
 
         Raises:
-            _ContinueAsNewError: Always raised to signal continue-as-new.
+            RuntimeError: If the child workflow fails to start.
         """
-        # Resolve workflow name from callable if needed
-        workflow_name: str | None = None
-        if workflow is not None:
-            if isinstance(workflow, str):
-                workflow_name = workflow
-            else:
-                # It's a callable - try to get the workflow definition
-                defn = _Definition.from_class(workflow)
-                if defn:
-                    workflow_name = defn.name
-                else:
-                    # Fallback to function/class name
-                    workflow_name = getattr(workflow, "__name__", str(workflow))
+        # Get workflow name from class or string
+        if isinstance(workflow, str):
+            workflow_type = workflow
+        else:
+            # Try to get name from workflow definition
+            from temporalio_trio.workflow import _Definition
 
-        raise _ContinueAsNewError(
-            workflow=workflow_name,
-            workflow_args=args,
-            task_queue=task_queue,
-            run_timeout=run_timeout,
-            task_timeout=task_timeout,
-            memo=memo,
+            defn = _Definition.from_class(workflow)
+            if defn is not None:
+                workflow_type = defn.name
+            else:
+                # Fallback to class name
+                workflow_type = getattr(workflow, "__name__", str(workflow))
+
+        # Get sequence number for this child workflow
+        seq = self._child_workflow_seq
+        self._child_workflow_seq += 1
+
+        # Create handle for this child workflow
+        handle: ChildWorkflowHandle[Any, Any] = ChildWorkflowHandle(
+            seq=seq,
+            id=id,
+            workflow_type=workflow_type,
         )
+
+        # Check if this child workflow has already resolved (replay)
+        if seq in self._resolved_child_workflows:
+            result, failure = self._resolved_child_workflows[seq]
+
+            # Check if child started - if not in _started_child_workflows but in
+            # _resolved_child_workflows, it's a start failure - raise immediately
+            if seq not in self._started_child_workflows:
+                # Start failure - raise immediately from start_child_workflow
+                if failure is not None:
+                    raise failure
+                # Shouldn't happen, but handle gracefully
+                raise RuntimeError("Child workflow failed to start with unknown error")
+
+            # Child started and resolved - set result/failure on handle
+            handle._set_started(self._started_child_workflows[seq])
+            if failure is not None:
+                handle._set_failure(failure)
+            else:
+                handle._set_result(result)
+            return handle
+
+        # Check if this child workflow has started but not completed
+        if seq in self._started_child_workflows:
+            handle._set_started(self._started_child_workflows[seq])
+            # Still need to wait for completion - yield
+            self._pending_child_seq = seq
+            raise _WorkflowYield()
+
+        # Check for cancellation before starting child workflow
+        if self._cancel_requested:
+            raise _WorkflowCancelled()
+
+        # Child workflow hasn't started yet - create command and yield
+        self._commands.append(
+            StartChildWorkflowCommand(
+                seq=seq,
+                workflow_id=id,
+                workflow_type=workflow_type,
+                args=tuple(args),
+                task_queue=task_queue,
+                execution_timeout=execution_timeout,
+                run_timeout=run_timeout,
+                task_timeout=task_timeout,
+                parent_close_policy=parent_close_policy.value,
+                cancellation_type=cancellation_type.value,
+                retry_policy=retry_policy,
+                id_reuse_policy=id_reuse_policy.value,
+            )
+        )
+        self._pending_child_seq = seq
+
+        # Yield control - workflow will re-run when child workflow starts/completes
+        raise _WorkflowYield()
+
+    async def workflow_wait_condition(
+        self,
+        fn: Callable[[], bool],
+        *,
+        timeout: float | None = None,
+        timeout_summary: str | None = None,
+    ) -> None:
+        """Wait until condition returns True or timeout expires.
+
+        Replay model: Each activation re-runs, condition is checked inline.
+
+        Args:
+            fn: A callable returning True when condition is met.
+            timeout: Optional maximum wait time in seconds.
+            timeout_summary: Optional description for Temporal UI.
+
+        Raises:
+            TimeoutError: If timeout expires before condition becomes true.
+        """
+        cond_seq = self._condition_seq
+        self._condition_seq += 1
+
+        # Determine timer_id deterministically (same on every activation)
+        timer_id: int | None = None
+        if timeout is not None:
+            timer_id = self._timer_seq
+            self._timer_seq += 1
+
+        # Check if condition is satisfied now
+        if fn():
+            # Cancel timeout timer if exists and hasn't fired
+            if timer_id is not None and timer_id not in self._fired_timers:
+                self._commands.append(CancelTimerCommand(timer_id=timer_id))
+            return
+
+        # Check if timeout timer fired
+        if timer_id is not None and timer_id in self._fired_timers:
+            raise TimeoutError("Condition timed out")
+
+        # Create timer command (Core SDK deduplicates by seq)
+        if timer_id is not None:
+            assert timeout is not None  # timer_id is only set if timeout is set
+            self._commands.append(
+                StartTimerCommand(
+                    timer_id=timer_id,
+                    duration_ms=int(timeout * 1000),
+                    summary=timeout_summary,
+                )
+            )
+
+        # Check for cancellation
+        if self._cancel_requested:
+            raise _WorkflowCancelled()
+
+        raise _WorkflowYield()

@@ -6,45 +6,92 @@ This module mirrors temporalio.workflow from the SDK.
 from __future__ import annotations
 
 import inspect
-import uuid
 from abc import ABC, abstractmethod
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from enum import Enum
-from functools import partial
-from random import Random
-from typing import Any, Awaitable, Callable, Mapping, NoReturn, Sequence, TypeVar
+from datetime import timedelta
+from enum import IntEnum
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Generic, Sequence, TypeVar
+from uuid import uuid4
+
+import temporalio.common
+
+if TYPE_CHECKING:
+    pass
 
 __all__ = [
     "defn",
     "run",
-    "update",
+    "signal",
+    "query",
     "sleep",
     "time",
     "time_ns",
-    "now",
     "info",
+    "execute_activity",
+    "wait_condition",
+    "start_child_workflow",
+    "execute_child_workflow",
     "Info",
-    "random",
-    "uuid4",
-    "memo",
-    "memo_value",
-    "continue_as_new",
-    "ContinueAsNewError",
-    "HandlerUnfinishedPolicy",
+    "ChildWorkflowHandle",
+    "ChildWorkflowCancellationType",
+    "ParentClosePolicy",
     "_Runtime",
     "_Definition",
-    "_UpdateDefinition",
+    "_SignalDefinition",
+    "_QueryDefinition",
     "_NotInWorkflowContextError",
 ]
 
 # Type variable for decorator
 F = TypeVar("F", bound=Callable[..., Any])
 T = TypeVar("T")
+SelfType = TypeVar("SelfType")
+ReturnType = TypeVar("ReturnType")
 
-# Sentinel for unset values
-_unset = object()
+
+# =============================================================================
+# Child Workflow Enums
+# =============================================================================
+
+
+class ChildWorkflowCancellationType(IntEnum):
+    """How a child workflow reacts to cancellation of its parent.
+
+    Mirrors temporalio.workflow.ChildWorkflowCancellationType from the SDK.
+    """
+
+    ABANDON = 0
+    """Do not request cancellation of the child workflow if already scheduled."""
+
+    TRY_CANCEL = 1
+    """Initiate a cancellation request and immediately report cancellation to the parent."""
+
+    WAIT_CANCELLATION_COMPLETED = 2
+    """Wait for child cancellation completion before reporting cancellation."""
+
+    WAIT_CANCELLATION_REQUESTED = 3
+    """Request cancellation and wait for confirmation that the request was received."""
+
+
+class ParentClosePolicy(IntEnum):
+    """What happens to a child workflow when the parent workflow closes.
+
+    Mirrors temporalio.workflow.ParentClosePolicy from the SDK.
+    """
+
+    UNSPECIFIED = 0
+    """Let the server set the default policy."""
+
+    TERMINATE = 1
+    """Terminate the child workflow when the parent closes."""
+
+    ABANDON = 2
+    """Do nothing to the child workflow when the parent closes."""
+
+    REQUEST_CANCEL = 3
+    """Request cancellation of the child workflow when the parent closes."""
+
 
 # Context variable for current runtime (Trio doesn't have event loops like asyncio)
 _current_runtime: ContextVar[_Runtime | None] = ContextVar(
@@ -52,149 +99,10 @@ _current_runtime: ContextVar[_Runtime | None] = ContextVar(
 )
 
 
-class HandlerUnfinishedPolicy(Enum):
-    """Actions taken if a workflow terminates with running handlers.
-
-    Mirrors temporalio.workflow.HandlerUnfinishedPolicy from the SDK.
-
-    Policy defining actions taken when a workflow exits while update or signal
-    handlers are running. The workflow exit may be due to successful return,
-    failure, cancellation, or continue-as-new.
-    """
-
-    WARN_AND_ABANDON = 1
-    """Issue a warning in addition to abandoning."""
-
-    ABANDON = 2
-    """Abandon the handler.
-
-    In the case of an update handler this means that the client will receive
-    an error rather than the update result.
-    """
-
-
-@dataclass
-class _UpdateDefinition:
-    """Update handler definition metadata.
-
-    Mirrors temporalio.workflow._UpdateDefinition from the SDK.
-
-    Stores metadata about a method decorated with @workflow.update.
-    """
-
-    name: str | None
-    """Update name, or None if this is a dynamic update handler."""
-
-    fn: Callable[..., Any | Awaitable[Any]]
-    """The update handler function."""
-
-    is_method: bool
-    """Whether this is a method (True) or standalone function (False)."""
-
-    unfinished_policy: HandlerUnfinishedPolicy = (
-        HandlerUnfinishedPolicy.WARN_AND_ABANDON
-    )
-    """Policy for what happens if workflow terminates with running handler."""
-
-    description: str | None = None
-    """Optional description for this update handler."""
-
-    validator: Callable[..., None] | None = None
-    """Optional validator function called before the handler."""
-
-    def set_validator(self, validator_fn: Callable[..., None]) -> None:
-        """Set the validator function for this update handler.
-
-        Args:
-            validator_fn: The validator function to call before the handler.
-        """
-        object.__setattr__(self, "validator", validator_fn)
-
-    def bind_fn(self, obj: Any) -> Callable[..., Any]:
-        """Bind the handler function to an object instance.
-
-        Args:
-            obj: The workflow instance to bind to.
-
-        Returns:
-            Bound method callable.
-        """
-        return getattr(obj, self.fn.__name__)
-
-    def bind_validator(self, obj: Any) -> Callable[..., None] | None:
-        """Bind the validator function to an object instance.
-
-        Args:
-            obj: The workflow instance to bind to.
-
-        Returns:
-            Bound validator method callable, or None if no validator.
-        """
-        if self.validator is None:
-            return None
-        return getattr(obj, self.validator.__name__)
-
-
 class _NotInWorkflowContextError(RuntimeError):
     """Raised when workflow API is called outside workflow context."""
 
     pass
-
-
-class ContinueAsNewError(BaseException):
-    """Error thrown by continue_as_new().
-
-    Mirrors temporalio.workflow.ContinueAsNewError from the SDK.
-
-    This should not be caught, but instead be allowed to throw out of the
-    workflow which then triggers the continue as new. This should never be
-    instantiated directly.
-
-    Note: This is a BaseException (not Exception) so it won't be caught by
-    generic `except Exception:` handlers, ensuring the continue-as-new request
-    propagates correctly.
-    """
-
-    def __init__(self, *args: object) -> None:
-        """Direct instantiation is disabled. Use continue_as_new()."""
-        if type(self) == ContinueAsNewError:
-            raise RuntimeError("Cannot instantiate ContinueAsNewError directly")
-        super().__init__(*args)
-
-
-class _ContinueAsNewError(ContinueAsNewError):
-    """Internal continue-as-new error with command data.
-
-    This is the actual error raised by continue_as_new(). It contains all
-    the data needed to generate a ContinueAsNewWorkflowCommand.
-    """
-
-    def __init__(
-        self,
-        workflow: str | None,
-        workflow_args: Sequence[Any],
-        task_queue: str | None,
-        run_timeout: timedelta | None,
-        task_timeout: timedelta | None,
-        memo: Mapping[str, Any] | None,
-    ) -> None:
-        """Initialize the continue-as-new error.
-
-        Args:
-            workflow: Workflow type name or None for same workflow.
-            workflow_args: Arguments for the new workflow execution.
-            task_queue: Task queue or None for same task queue.
-            run_timeout: Run timeout or None for same timeout.
-            task_timeout: Task timeout or None for same timeout.
-            memo: Memo or None for same memo.
-        """
-        super().__init__("Continue as new")
-        self.workflow = workflow
-        self.workflow_args = workflow_args
-        self.task_queue = task_queue
-        self.run_timeout = run_timeout
-        self.task_timeout = task_timeout
-        self.memo = memo
 
 
 class _Runtime(ABC):
@@ -284,66 +192,123 @@ class _Runtime(ABC):
         ...
 
     @abstractmethod
-    def workflow_random(self) -> Random:
-        """Get the deterministic random number generator for this workflow.
-
-        Returns:
-            The seeded random instance for this workflow execution.
-        """
-        ...
-
-    @abstractmethod
-    def workflow_memo(self) -> Mapping[str, Any]:
-        """Get all memo values for this workflow.
-
-        Returns:
-            Mapping of memo keys to values.
-        """
-        ...
-
-    @abstractmethod
-    def workflow_memo_value(
-        self, key: str, default: Any, *, type_hint: type | None
+    async def workflow_execute_activity(
+        self,
+        activity: str | Callable[..., Any],
+        *args: Any,
+        task_queue: str | None = None,
+        schedule_to_close_timeout: timedelta | None = None,
+        schedule_to_start_timeout: timedelta | None = None,
+        start_to_close_timeout: timedelta | None = None,
+        heartbeat_timeout: timedelta | None = None,
+        retry_policy: temporalio.common.RetryPolicy | None = None,
+        activity_id: str | None = None,
     ) -> Any:
-        """Get a specific memo value.
+        """Execute an activity and wait for its result.
 
         Args:
-            key: The memo key to retrieve.
-            default: Default value if key not found (use _unset to raise KeyError).
-            type_hint: Optional type hint for conversion.
+            activity: Activity name or function reference.
+            *args: Arguments to pass to the activity.
+            task_queue: Task queue to run the activity on. Defaults to workflow's queue.
+            schedule_to_close_timeout: Max time for activity from schedule to completion.
+            schedule_to_start_timeout: Max time waiting for worker to pick up activity.
+            start_to_close_timeout: Max time for activity execution.
+            heartbeat_timeout: Max time between heartbeats.
+            retry_policy: Retry policy for the activity.
+            activity_id: Optional unique identifier for the activity.
 
         Returns:
-            The memo value.
+            The activity result.
 
         Raises:
-            KeyError: If key not found and no default provided.
+            RuntimeError: If the activity fails or is cancelled.
         """
         ...
 
     @abstractmethod
-    def workflow_continue_as_new(
+    async def workflow_start_child_workflow(
         self,
+        workflow: str | type,
         *args: Any,
-        workflow: str | Callable | None,
+        id: str,
         task_queue: str | None,
+        cancellation_type: ChildWorkflowCancellationType,
+        parent_close_policy: ParentClosePolicy,
+        execution_timeout: timedelta | None,
         run_timeout: timedelta | None,
         task_timeout: timedelta | None,
-        memo: Mapping[str, Any] | None,
-    ) -> NoReturn:
-        """Continue the workflow as a new execution.
+        id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
+        retry_policy: temporalio.common.RetryPolicy | None,
+    ) -> "ChildWorkflowHandle[Any, Any]":
+        """Start a child workflow and return a handle.
 
         Args:
-            *args: Arguments for the new workflow execution.
-            workflow: Workflow type or name, or None for same workflow.
-            task_queue: Task queue or None for same task queue.
-            run_timeout: Run timeout or None for same timeout.
-            task_timeout: Task timeout or None for same timeout.
-            memo: Memo or None for same memo.
+            workflow: Workflow class or type name.
+            *args: Arguments to pass to the workflow.
+            id: Unique workflow ID.
+            task_queue: Task queue (defaults to parent's).
+            cancellation_type: How child reacts to parent cancellation.
+            parent_close_policy: What happens when parent closes.
+            execution_timeout: Total timeout including retries.
+            run_timeout: Timeout for a single run.
+            task_timeout: Timeout for a single workflow task.
+            id_reuse_policy: How existing IDs are treated.
+            retry_policy: Retry policy for the workflow.
 
-        Raises:
-            _ContinueAsNewError: Always raised to signal continue-as-new.
+        Returns:
+            A handle to the started child workflow.
         """
         ...
+
+    @abstractmethod
+    async def workflow_wait_condition(
+        self,
+        fn: Callable[[], bool],
+        *,
+        timeout: float | None = None,
+        timeout_summary: str | None = None,
+    ) -> None:
+        """Wait until condition returns True or timeout expires.
+
+        Args:
+            fn: A callable returning True when condition is met.
+            timeout: Optional maximum wait time in seconds.
+            timeout_summary: Optional description for Temporal UI.
+
+        Raises:
+            TimeoutError: If timeout expires before condition becomes true.
+        """
+        ...
+
+
+@dataclass
+class _SignalDefinition:
+    """Signal handler definition metadata."""
+
+    name: str | None  # None for dynamic handlers
+    fn: Callable[..., None | Awaitable[None]]
+    is_method: bool
+    description: str | None = None
+
+    @staticmethod
+    def from_fn(fn: Callable) -> "_SignalDefinition | None":
+        """Get signal definition from a function if it has one."""
+        return getattr(fn, "__temporal_signal_definition", None)
+
+
+@dataclass
+class _QueryDefinition:
+    """Query handler definition metadata."""
+
+    name: str | None  # None for dynamic handlers
+    fn: Callable[..., Any]
+    is_method: bool
+    description: str | None = None
+
+    @staticmethod
+    def from_fn(fn: Callable) -> "_QueryDefinition | None":
+        """Get query definition from a function if it has one."""
+        return getattr(fn, "__temporal_query_definition", None)
 
 
 @dataclass
@@ -366,8 +331,11 @@ class _Definition:
     run_fn: Callable[..., Awaitable[Any]]
     """The method decorated with @workflow.run."""
 
-    updates: Mapping[str | None, _UpdateDefinition] = field(default_factory=dict)
-    """Update handlers, keyed by name (None for dynamic handler)."""
+    signals: dict[str | None, _SignalDefinition] = field(default_factory=dict)
+    """Signal handlers for this workflow, keyed by signal name (None for dynamic)."""
+
+    queries: dict[str | None, _QueryDefinition] = field(default_factory=dict)
+    """Query handlers for this workflow, keyed by query name (None for dynamic)."""
 
     _ATTR_NAME: str = "__temporal_workflow_definition"
 
@@ -439,94 +407,120 @@ def run(fn: F) -> F:
     return fn
 
 
-def update(
-    fn: F | None = None,
+def signal(
+    fn: Callable | None = None,
     *,
     name: str | None = None,
     dynamic: bool = False,
-    unfinished_policy: HandlerUnfinishedPolicy = HandlerUnfinishedPolicy.WARN_AND_ABANDON,
     description: str | None = None,
-) -> F | Callable[[F], F]:
-    """Decorator for workflow update handler method.
+) -> Any:
+    """Decorator for workflow signal handler methods.
 
-    Mirrors @temporalio.workflow.update from the SDK.
-
-    This is used on any async or non-async method that you wish to be called
-    upon receiving an update. If a function overrides one with this decorator,
-    it too must be decorated.
-
-    You may optionally define a validator method that will be called before
-    this handler. Specify the validator with ``@update_handler_function.validator``.
-
-    Update methods can only have positional parameters. The handler may return
-    a serializable value which will be sent back to the caller of the update.
+    Signal handlers can be sync or async and receive arguments from the signal sender.
 
     Example:
         @workflow.defn
         class MyWorkflow:
-            @workflow.update
-            async def my_update(self, value: str) -> str:
-                return f"Updated: {value}"
+            @workflow.signal
+            def my_signal(self, value: int) -> None:
+                self.value = value
 
-            @my_update.validator
-            def validate_my_update(self, value: str) -> None:
-                if not value:
-                    raise ValueError("value cannot be empty")
-
-            @workflow.run
-            async def run(self) -> None:
+            @workflow.signal(name="custom-name")
+            async def another_signal(self) -> None:
                 pass
 
     Args:
-        fn: The function to decorate.
-        name: Update name. Defaults to method ``__name__``. Cannot be present
-            when ``dynamic`` is present.
-        dynamic: If true, this handles all updates not otherwise handled.
-            Cannot be present when ``name`` is present.
-        unfinished_policy: Actions taken if a workflow terminates with
-            a running instance of this handler.
-        description: A short description of the update.
-
-    Returns:
-        The decorated method with a ``validator`` attribute for setting validator.
+        fn: The function to decorate (when used without parentheses)
+        name: Custom signal name. Defaults to function name.
+        dynamic: If True, this is a dynamic handler for any signal name.
+        description: Optional description for the signal.
     """
 
-    def decorator(
-        update_name: str | None,
-        unfinished_policy: HandlerUnfinishedPolicy,
-        fn: F,
-    ) -> F:
-        if not update_name and not dynamic:
-            update_name = fn.__name__
-        defn = _UpdateDefinition(
-            name=update_name,
+    def decorator(fn: Callable) -> Callable:
+        if dynamic:
+            signal_name = None
+        elif name:
+            signal_name = name
+        else:
+            signal_name = fn.__name__
+
+        defn = _SignalDefinition(
+            name=signal_name,
             fn=fn,
             is_method=True,
-            unfinished_policy=unfinished_policy,
             description=description,
         )
-        setattr(fn, "_update_defn", defn)
-        setattr(fn, "validator", partial(_update_validator, defn))
+        setattr(fn, "__temporal_signal_definition", defn)
         return fn
 
-    if fn is None:
-        if name is not None and dynamic:
-            raise ValueError("Cannot provide both name and dynamic=True")
-        return partial(decorator, name, unfinished_policy)  # type: ignore
-    else:
-        return decorator(fn.__name__, unfinished_policy, fn)  # type: ignore
-
-
-def _update_validator(
-    update_def: _UpdateDefinition, fn: Callable[..., None] | None = None
-) -> Callable[..., None] | None:
-    """Decorator for a workflow update validator method.
-
-    Internal helper used to implement the @handler.validator pattern.
-    """
     if fn is not None:
-        update_def.set_validator(fn)
-    return fn
+        return decorator(fn)
+    return decorator
+
+
+def query(
+    fn: Callable | None = None,
+    *,
+    name: str | None = None,
+    dynamic: bool = False,
+    description: str | None = None,
+) -> Any:
+    """Decorator for workflow query handler methods.
+
+    Query handlers must be synchronous (not async) and should not mutate workflow state.
+    They return a value that is sent back to the query caller.
+
+    Example:
+        @workflow.defn
+        class MyWorkflow:
+            def __init__(self):
+                self.status = "starting"
+
+            @workflow.query
+            def get_status(self) -> str:
+                return self.status
+
+            @workflow.query(name="custom-query")
+            def another_query(self, param: int) -> int:
+                return param * 2
+
+    Args:
+        fn: The function to decorate (when used without parentheses)
+        name: Custom query name. Defaults to function name.
+        dynamic: If True, this is a dynamic handler for any query name.
+        description: Optional description for the query.
+
+    Raises:
+        ValueError: If the function is async (queries must be synchronous)
+    """
+
+    def decorator(fn: Callable) -> Callable:
+        # Queries must not be async
+        if inspect.iscoroutinefunction(fn):
+            raise ValueError(
+                f"Query handler '{fn.__name__}' must be synchronous (not async). "
+                "Queries are read-only and must complete immediately."
+            )
+
+        if dynamic:
+            query_name = None
+        elif name:
+            query_name = name
+        else:
+            query_name = fn.__name__
+
+        defn = _QueryDefinition(
+            name=query_name,
+            fn=fn,
+            is_method=True,
+            description=description,
+        )
+        setattr(fn, "__temporal_query_definition", defn)
+        return fn
+
+    if fn is not None:
+        return decorator(fn)
+    return decorator
 
 
 def defn(cls: type | None = None, *, name: str | None = None) -> Any:
@@ -565,12 +559,11 @@ def defn(cls: type | None = None, *, name: str | None = None) -> Any:
     """
 
     def decorator(cls: type) -> type:
-        # Find the @workflow.run method and @workflow.update methods
         run_fn: Callable[..., Awaitable[Any]] | None = None
-        updates: dict[str | None, _UpdateDefinition] = {}
+        signals: dict[str | None, _SignalDefinition] = {}
+        queries: dict[str | None, _QueryDefinition] = {}
 
         for attr_name in dir(cls):
-            # Skip private/magic attributes
             if attr_name.startswith("_"):
                 continue
 
@@ -586,28 +579,33 @@ def defn(cls: type | None = None, *, name: str | None = None) -> Any:
                     )
                 run_fn = method
 
-            # Check for update handlers
-            update_defn = getattr(method, "_update_defn", None)
-            if update_defn is not None:
-                if update_defn.name in updates:
-                    defn_name = update_defn.name or "<dynamic>"
+            # Collect signal handlers
+            signal_defn = _SignalDefinition.from_fn(method)
+            if signal_defn is not None:
+                if signal_defn.name in signals:
                     raise ValueError(
-                        f"Workflow class {cls.__name__} has multiple @workflow.update "
-                        f"methods for '{defn_name}'"
+                        f"Duplicate signal handler for '{signal_defn.name}'"
                     )
-                updates[update_defn.name] = update_defn
+                signals[signal_defn.name] = signal_defn
+
+            # Collect query handlers
+            query_defn = _QueryDefinition.from_fn(method)
+            if query_defn is not None:
+                if query_defn.name in queries:
+                    raise ValueError(f"Duplicate query handler for '{query_defn.name}'")
+                queries[query_defn.name] = query_defn
 
         if run_fn is None:
             raise ValueError(
                 f"Workflow class {cls.__name__} must have a @workflow.run method"
             )
 
-        # Create and attach definition
         definition = _Definition(
             name=name or cls.__name__,
             cls=cls,
             run_fn=run_fn,
-            updates=updates,
+            signals=signals,
+            queries=queries,
         )
         setattr(cls, _Definition._ATTR_NAME, definition)
         return cls
@@ -694,160 +692,112 @@ def info() -> Info:
     return _Runtime.current().workflow_info()
 
 
-def now() -> datetime:
-    """Get current workflow time as a datetime.
-
-    Mirrors temporalio.workflow.now from the SDK.
-
-    This is the workflow equivalent of datetime.now(timezone.utc).
-    Returns a timezone-aware datetime in UTC.
-
-    Returns:
-        UTC datetime for the current workflow time.
-
-    Raises:
-        _NotInWorkflowContextError: If not in a workflow context.
-    """
-    return datetime.fromtimestamp(time(), timezone.utc)
-
-
-def random() -> Random:
-    """Get a deterministic pseudo-random number generator.
-
-    Mirrors temporalio.workflow.random from the SDK.
-
-    Note: This random number generator is not cryptographically safe and
-    should not be used for security purposes. It is seeded deterministically
-    to ensure replay safety.
-
-    Returns:
-        The deterministically-seeded pseudo-random number generator.
-
-    Raises:
-        _NotInWorkflowContextError: If not in a workflow context.
-    """
-    return _Runtime.current().workflow_random()
-
-
-def uuid4() -> uuid.UUID:
-    """Get a new, determinism-safe v4 UUID.
-
-    Mirrors temporalio.workflow.uuid4 from the SDK.
-
-    This uses the deterministic random() function to generate a UUID that
-    is safe for replay.
-
-    Note: This UUID is not cryptographically safe and should not be used
-    for security purposes.
-
-    Returns:
-        A deterministically-seeded v4 UUID.
-
-    Raises:
-        _NotInWorkflowContextError: If not in a workflow context.
-    """
-    return uuid.UUID(bytes=random().getrandbits(16 * 8).to_bytes(16, "big"), version=4)
-
-
-def memo() -> Mapping[str, Any]:
-    """Get current workflow's memo values.
-
-    Mirrors temporalio.workflow.memo from the SDK.
-
-    Returns all memo values that were set when the workflow was started
-    or updated via upsert_memo.
-
-    Returns:
-        Mapping of all memo keys and their values.
-
-    Raises:
-        _NotInWorkflowContextError: If not in a workflow context.
-    """
-    return _Runtime.current().workflow_memo()
-
-
-def memo_value(
-    key: str,
-    default: Any = _unset,
-    *,
-    type_hint: type | None = None,
-) -> Any:
-    """Get a specific memo value.
-
-    Mirrors temporalio.workflow.memo_value from the SDK.
-
-    Args:
-        key: Key to get memo value for.
-        default: Default to use if key is not present. If unset, a
-            KeyError is raised when the key does not exist.
-        type_hint: Type hint to use when converting (currently unused in POC).
-
-    Returns:
-        Memo value for the given key.
-
-    Raises:
-        KeyError: Key not present and default not set.
-        _NotInWorkflowContextError: If not in a workflow context.
-    """
-    return _Runtime.current().workflow_memo_value(key, default, type_hint=type_hint)
-
-
-def continue_as_new(
-    arg: Any = _unset,
-    *,
-    args: Sequence[Any] = [],
-    workflow: str | Callable | None = None,
+async def execute_activity(
+    activity: str | Callable[..., Any],
+    *args: Any,
     task_queue: str | None = None,
-    run_timeout: timedelta | None = None,
-    task_timeout: timedelta | None = None,
-    memo: Mapping[str, Any] | None = None,
-) -> NoReturn:
-    """Stop the workflow immediately and continue as new.
+    schedule_to_close_timeout: timedelta | None = None,
+    schedule_to_start_timeout: timedelta | None = None,
+    start_to_close_timeout: timedelta | None = None,
+    heartbeat_timeout: timedelta | None = None,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    activity_id: str | None = None,
+) -> Any:
+    """Execute an activity and wait for its result.
 
-    Mirrors temporalio.workflow.continue_as_new from the SDK.
+    Mirrors temporalio.workflow.execute_activity from the SDK.
 
-    This function never returns. It always raises a ContinueAsNewError which
-    should not be caught, but allowed to propagate out of the workflow to
-    trigger the continue-as-new behavior.
+    This schedules an activity for execution and waits for it to complete.
+    At least one of ``schedule_to_close_timeout`` or ``start_to_close_timeout``
+    must be provided.
 
     Args:
-        arg: Single argument to the continued workflow.
-        args: Multiple arguments to the continued workflow. Cannot be set if arg
-            is provided.
-        workflow: Specific workflow to continue to. Can be a workflow class,
-            workflow function, or workflow name string. Defaults to the current
-            workflow type.
-        task_queue: Task queue to run the workflow on. Defaults to the current
+        activity: Activity name (string) or function reference decorated with
+            @activity.defn.
+        *args: Arguments to pass to the activity.
+        task_queue: Task queue to run the activity on. Defaults to the current
             workflow's task queue.
-        run_timeout: Timeout of a single workflow run. Defaults to the current
-            workflow's run timeout.
-        task_timeout: Timeout of a single workflow task. Defaults to the current
-            workflow's task timeout.
-        memo: Memo for the workflow. Defaults to the current workflow's memo.
+        schedule_to_close_timeout: Max amount of time the activity can take from
+            first being scheduled to being completed. This is inclusive of all
+            retries.
+        schedule_to_start_timeout: Max amount of time the activity can take to
+            be started from first being scheduled.
+        start_to_close_timeout: Max amount of time a single activity run can
+            take from when it starts to when it completes. This is per retry.
+        heartbeat_timeout: How frequently an activity must invoke heartbeat
+            while running before it is considered timed out.
+        retry_policy: How an activity is retried on failure. If unset, a
+            server-defined default is used. Set maximum attempts to 1 to disable
+            retries.
+        activity_id: Optional unique identifier for the activity.
 
     Returns:
-        Never returns, always raises ContinueAsNewError.
+        The result of the activity execution.
 
     Raises:
-        ContinueAsNewError: Always raised by this function.
-        ValueError: If both arg and args are provided.
+        RuntimeError: If the activity fails or is cancelled.
         _NotInWorkflowContextError: If not in a workflow context.
     """
-    # Handle arg vs args
-    if arg is not _unset:
-        if args:
-            raise ValueError("Cannot specify both arg and args")
-        final_args: Sequence[Any] = [arg]
-    else:
-        final_args = args
-
-    _Runtime.current().workflow_continue_as_new(
-        *final_args,
-        workflow=workflow,
+    return await _Runtime.current().workflow_execute_activity(
+        activity,
+        *args,
         task_queue=task_queue,
-        run_timeout=run_timeout,
-        task_timeout=task_timeout,
-        memo=memo,
+        schedule_to_close_timeout=schedule_to_close_timeout,
+        schedule_to_start_timeout=schedule_to_start_timeout,
+        start_to_close_timeout=start_to_close_timeout,
+        heartbeat_timeout=heartbeat_timeout,
+        retry_policy=retry_policy,
+        activity_id=activity_id,
+    )
+
+
+async def wait_condition(
+    fn: Callable[[], bool],
+    *,
+    timeout: timedelta | float | None = None,
+    timeout_summary: str | None = None,
+) -> None:
+    """Wait until a condition becomes true.
+
+    The condition function is evaluated after each signal is processed.
+    If the condition becomes true, execution continues immediately.
+    If a timeout is specified and expires first, TimeoutError is raised.
+
+    Mirrors temporalio.workflow.wait_condition from the SDK.
+
+    Args:
+        fn: A callable returning True when condition is met.
+            Must be deterministic and side-effect free.
+        timeout: Optional maximum wait time (timedelta or seconds).
+        timeout_summary: Optional description for Temporal UI.
+
+    Raises:
+        TimeoutError: If timeout expires before condition becomes true.
+        CancelledError: If workflow is cancelled while waiting.
+
+    Example:
+        # Wait for approval signal
+        await workflow.wait_condition(lambda: self._approved)
+
+        # Wait with timeout
+        try:
+            await workflow.wait_condition(
+                lambda: self._approved,
+                timeout=timedelta(hours=1),
+            )
+        except TimeoutError:
+            # Handle timeout
+            pass
+    """
+    runtime = _Runtime.current()
+
+    if isinstance(timeout, timedelta):
+        timeout = timeout.total_seconds()
+
+    await runtime.workflow_wait_condition(
+        fn,
+        timeout=timeout,
+        timeout_summary=timeout_summary,
     )
 
 
@@ -871,9 +821,281 @@ class Info:
     task_queue: str
     """Task queue the workflow is running on."""
 
-    raw_memo: Mapping[str, Any] = field(default_factory=dict)
-    """Raw memo values for the workflow.
 
-    In the full SDK, this contains Payload objects that need conversion.
-    For the POC, this contains already-converted Python values.
+# =============================================================================
+# Child Workflow Handle
+# =============================================================================
+
+
+class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
+    """Handle for interacting with a started child workflow.
+
+    Mirrors temporalio.workflow.ChildWorkflowHandle from the SDK.
+
+    This handle is returned by :py:func:`start_child_workflow` and provides
+    methods to get the result, signal the child, and access its metadata.
+
+    Example:
+        handle = await workflow.start_child_workflow(
+            ChildWorkflow.run,
+            "arg",
+            id="child-1",
+        )
+        # Wait for result
+        result = await handle.result()
+        # Or just await the handle
+        result = await handle
     """
+
+    def __init__(
+        self,
+        seq: int,
+        id: str,
+        workflow_type: str,
+        first_execution_run_id: str | None = None,
+    ) -> None:
+        """Initialize a child workflow handle.
+
+        Args:
+            seq: Internal sequence number.
+            id: Workflow ID.
+            workflow_type: Type name of the child workflow.
+            first_execution_run_id: Run ID of the first execution (if known).
+        """
+        self._seq = seq
+        self._id = id
+        self._workflow_type = workflow_type
+        self._first_execution_run_id = first_execution_run_id
+        self._result: ReturnType | None = None
+        self._failure: BaseException | None = None
+        self._completed = False
+
+    @property
+    def id(self) -> str:
+        """Workflow ID of the child workflow."""
+        return self._id
+
+    @property
+    def workflow_type(self) -> str:
+        """Type name of the child workflow."""
+        return self._workflow_type
+
+    @property
+    def first_execution_run_id(self) -> str | None:
+        """Run ID of the first execution (available after started)."""
+        return self._first_execution_run_id
+
+    async def result(self) -> ReturnType:
+        """Wait for and return the result of the child workflow.
+
+        Returns:
+            The child workflow's return value.
+
+        Raises:
+            RuntimeError: If the child workflow failed or was cancelled.
+        """
+        # This will be called after the workflow has completed
+        # The actual waiting is handled by the workflow instance
+        if self._failure:
+            raise self._failure
+        return self._result  # type: ignore[return-value]
+
+    async def signal(
+        self,
+        signal: str | Callable,
+        arg: Any = temporalio.common._arg_unset,
+        *,
+        args: Sequence[Any] = [],
+    ) -> None:
+        """Send a signal to the child workflow.
+
+        Args:
+            signal: Signal name or decorated method reference.
+            arg: Single argument to the signal.
+            args: Multiple arguments (cannot be set if arg is set).
+        """
+        # TODO: Implement signal external workflow
+        raise NotImplementedError("Child workflow signaling not yet implemented")
+
+    def __await__(self):
+        """Support `await handle` syntax.
+
+        This is a shortcut for `await handle.result()`.
+        """
+        return self.result().__await__()
+
+    def _set_started(self, run_id: str) -> None:
+        """Mark the child workflow as started with the given run ID.
+
+        Internal method called by the workflow instance.
+        """
+        self._first_execution_run_id = run_id
+
+    def _set_result(self, result: Any) -> None:
+        """Set the successful result of the child workflow.
+
+        Internal method called by the workflow instance.
+        """
+        self._result = result
+        self._completed = True
+
+    def _set_failure(self, failure: BaseException) -> None:
+        """Set the failure of the child workflow.
+
+        Internal method called by the workflow instance.
+        """
+        self._failure = failure
+        self._completed = True
+
+
+# =============================================================================
+# Child Workflow Public API
+# =============================================================================
+
+
+async def start_child_workflow(
+    workflow: type | str,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    id: str | None = None,
+    task_queue: str | None = None,
+    cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
+    execution_timeout: timedelta | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    id_reuse_policy: temporalio.common.WorkflowIDReusePolicy = temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+) -> ChildWorkflowHandle[Any, Any]:
+    """Start a child workflow and return a handle.
+
+    Mirrors temporalio.workflow.start_child_workflow from the SDK.
+
+    This starts a child workflow and returns a handle that can be used to
+    wait for the result, send signals, or get metadata.
+
+    Example:
+        # Start and wait for result
+        handle = await workflow.start_child_workflow(
+            ChildWorkflow.run,
+            "arg1",
+            id="child-1",
+        )
+        result = await handle.result()
+
+        # Or use execute_child_workflow for simpler cases
+        result = await workflow.execute_child_workflow(
+            ChildWorkflow.run,
+            "arg1",
+            id="child-1",
+        )
+
+    Args:
+        workflow: Workflow class decorated with @workflow.defn, or workflow
+            type name as a string.
+        arg: Single argument to the workflow.
+        args: Multiple arguments. Cannot be set if arg is set.
+        id: Unique workflow ID. Defaults to a UUID.
+        task_queue: Task queue to run the child on. Defaults to the parent
+            workflow's task queue.
+        cancellation_type: How the child workflow should react when the parent
+            workflow is cancelled.
+        parent_close_policy: What happens to the child when the parent closes.
+        execution_timeout: Total timeout including retries and continue-as-new.
+        run_timeout: Timeout for a single run (not including retries).
+        task_timeout: Timeout for a single workflow task.
+        id_reuse_policy: How existing workflow IDs are handled.
+        retry_policy: Retry policy for the workflow.
+
+    Returns:
+        A handle to the started child workflow.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+        RuntimeError: If the child workflow fails to start.
+    """
+    return await _Runtime.current().workflow_start_child_workflow(
+        workflow,
+        *temporalio.common._arg_or_args(arg, args),
+        id=id or str(uuid4()),
+        task_queue=task_queue,
+        cancellation_type=cancellation_type,
+        parent_close_policy=parent_close_policy,
+        execution_timeout=execution_timeout,
+        run_timeout=run_timeout,
+        task_timeout=task_timeout,
+        id_reuse_policy=id_reuse_policy,
+        retry_policy=retry_policy,
+    )
+
+
+async def execute_child_workflow(
+    workflow: type | str,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    id: str | None = None,
+    task_queue: str | None = None,
+    cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
+    execution_timeout: timedelta | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    id_reuse_policy: temporalio.common.WorkflowIDReusePolicy = temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+) -> Any:
+    """Start a child workflow and wait for its result.
+
+    Mirrors temporalio.workflow.execute_child_workflow from the SDK.
+
+    This is a convenience method equivalent to:
+        handle = await start_child_workflow(...)
+        return await handle.result()
+
+    Example:
+        result = await workflow.execute_child_workflow(
+            ChildWorkflow.run,
+            "arg1",
+            id="child-1",
+        )
+
+    Args:
+        workflow: Workflow class decorated with @workflow.defn, or workflow
+            type name as a string.
+        arg: Single argument to the workflow.
+        args: Multiple arguments. Cannot be set if arg is set.
+        id: Unique workflow ID. Defaults to a UUID.
+        task_queue: Task queue to run the child on. Defaults to the parent
+            workflow's task queue.
+        cancellation_type: How the child workflow should react when the parent
+            workflow is cancelled.
+        parent_close_policy: What happens to the child when the parent closes.
+        execution_timeout: Total timeout including retries and continue-as-new.
+        run_timeout: Timeout for a single run (not including retries).
+        task_timeout: Timeout for a single workflow task.
+        id_reuse_policy: How existing workflow IDs are handled.
+        retry_policy: Retry policy for the workflow.
+
+    Returns:
+        The result of the child workflow.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+        RuntimeError: If the child workflow fails.
+    """
+    handle = await start_child_workflow(
+        workflow,
+        arg,
+        args=args,
+        id=id,
+        task_queue=task_queue,
+        cancellation_type=cancellation_type,
+        parent_close_policy=parent_close_policy,
+        execution_timeout=execution_timeout,
+        run_timeout=run_timeout,
+        task_timeout=task_timeout,
+        id_reuse_policy=id_reuse_policy,
+        retry_policy=retry_policy,
+    )
+    return await handle.result()

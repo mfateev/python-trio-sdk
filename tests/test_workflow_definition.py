@@ -1,8 +1,17 @@
 """Tests for workflow definition and decorators (Phase 1)."""
 
+from datetime import timedelta
+from typing import Any, Callable
+
 import pytest
+import temporalio.common
 
 from temporalio_trio import workflow
+from temporalio_trio.workflow import (
+    ChildWorkflowCancellationType,
+    ChildWorkflowHandle,
+    ParentClosePolicy,
+)
 
 
 class TestWorkflowRunDecorator:
@@ -183,27 +192,44 @@ class TestRuntimeClass:
                     task_queue="mock-queue",
                 )
 
-            def workflow_random(self) -> workflow.Random:
-                raise NotImplementedError
-
-            def workflow_memo(self) -> workflow.Mapping[str, workflow.Any]:
-                raise NotImplementedError
-
-            def workflow_memo_value(
-                self, key: str, default: workflow.Any, *, type_hint: type | None
-            ) -> workflow.Any:
-                raise NotImplementedError
-
-            def workflow_continue_as_new(
+            async def workflow_execute_activity(
                 self,
-                *args: workflow.Any,
-                workflow: str | type | None,
+                activity: str | Callable[..., Any],
+                *args: Any,
+                task_queue: str | None = None,
+                schedule_to_close_timeout: timedelta | None = None,
+                schedule_to_start_timeout: timedelta | None = None,
+                start_to_close_timeout: timedelta | None = None,
+                heartbeat_timeout: timedelta | None = None,
+                retry_policy: temporalio.common.RetryPolicy | None = None,
+                activity_id: str | None = None,
+            ) -> Any:
+                pass
+
+            async def workflow_start_child_workflow(
+                self,
+                workflow: str | type,
+                *args: Any,
+                id: str,
                 task_queue: str | None,
-                run_timeout: workflow.timedelta | None,
-                task_timeout: workflow.timedelta | None,
-                memo: workflow.Mapping[str, workflow.Any] | None,
-            ) -> workflow.NoReturn:
-                raise NotImplementedError
+                cancellation_type: ChildWorkflowCancellationType,
+                parent_close_policy: ParentClosePolicy,
+                execution_timeout: timedelta | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> ChildWorkflowHandle[Any, Any]:
+                raise NotImplementedError()
+
+            async def workflow_wait_condition(
+                self,
+                fn: Callable[[], bool],
+                *,
+                timeout: float | None = None,
+                timeout_summary: str | None = None,
+            ) -> None:
+                pass
 
         mock = MockRuntime()
 
@@ -242,27 +268,44 @@ class TestRuntimeClass:
                     task_queue="mock-queue",
                 )
 
-            def workflow_random(self) -> workflow.Random:
-                raise NotImplementedError
-
-            def workflow_memo(self) -> workflow.Mapping[str, workflow.Any]:
-                raise NotImplementedError
-
-            def workflow_memo_value(
-                self, key: str, default: workflow.Any, *, type_hint: type | None
-            ) -> workflow.Any:
-                raise NotImplementedError
-
-            def workflow_continue_as_new(
+            async def workflow_execute_activity(
                 self,
-                *args: workflow.Any,
-                workflow: str | type | None,
+                activity: str | Callable[..., Any],
+                *args: Any,
+                task_queue: str | None = None,
+                schedule_to_close_timeout: timedelta | None = None,
+                schedule_to_start_timeout: timedelta | None = None,
+                start_to_close_timeout: timedelta | None = None,
+                heartbeat_timeout: timedelta | None = None,
+                retry_policy: temporalio.common.RetryPolicy | None = None,
+                activity_id: str | None = None,
+            ) -> Any:
+                pass
+
+            async def workflow_start_child_workflow(
+                self,
+                workflow: str | type,
+                *args: Any,
+                id: str,
                 task_queue: str | None,
-                run_timeout: workflow.timedelta | None,
-                task_timeout: workflow.timedelta | None,
-                memo: workflow.Mapping[str, workflow.Any] | None,
-            ) -> workflow.NoReturn:
-                raise NotImplementedError
+                cancellation_type: ChildWorkflowCancellationType,
+                parent_close_policy: ParentClosePolicy,
+                execution_timeout: timedelta | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> ChildWorkflowHandle[Any, Any]:
+                raise NotImplementedError()
+
+            async def workflow_wait_condition(
+                self,
+                fn: Callable[[], bool],
+                *,
+                timeout: float | None = None,
+                timeout_summary: str | None = None,
+            ) -> None:
+                pass
 
         mock1 = MockRuntime("mock1")
         mock2 = MockRuntime("mock2")
@@ -315,27 +358,44 @@ class TestPublicAPI:
                     task_queue="mock-queue",
                 )
 
-            def workflow_random(self) -> workflow.Random:
-                raise NotImplementedError
-
-            def workflow_memo(self) -> workflow.Mapping[str, workflow.Any]:
-                raise NotImplementedError
-
-            def workflow_memo_value(
-                self, key: str, default: workflow.Any, *, type_hint: type | None
-            ) -> workflow.Any:
-                raise NotImplementedError
-
-            def workflow_continue_as_new(
+            async def workflow_execute_activity(
                 self,
-                *args: workflow.Any,
-                workflow: str | type | None,
+                activity: str | Callable[..., Any],
+                *args: Any,
+                task_queue: str | None = None,
+                schedule_to_close_timeout: timedelta | None = None,
+                schedule_to_start_timeout: timedelta | None = None,
+                start_to_close_timeout: timedelta | None = None,
+                heartbeat_timeout: timedelta | None = None,
+                retry_policy: temporalio.common.RetryPolicy | None = None,
+                activity_id: str | None = None,
+            ) -> Any:
+                pass
+
+            async def workflow_start_child_workflow(
+                self,
+                workflow: str | type,
+                *args: Any,
+                id: str,
                 task_queue: str | None,
-                run_timeout: workflow.timedelta | None,
-                task_timeout: workflow.timedelta | None,
-                memo: workflow.Mapping[str, workflow.Any] | None,
-            ) -> workflow.NoReturn:
-                raise NotImplementedError
+                cancellation_type: ChildWorkflowCancellationType,
+                parent_close_policy: ParentClosePolicy,
+                execution_timeout: timedelta | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> ChildWorkflowHandle[Any, Any]:
+                raise NotImplementedError()
+
+            async def workflow_wait_condition(
+                self,
+                fn: Callable[[], bool],
+                *,
+                timeout: float | None = None,
+                timeout_summary: str | None = None,
+            ) -> None:
+                pass
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
@@ -376,27 +436,44 @@ class TestPublicAPI:
                     task_queue="mock-queue",
                 )
 
-            def workflow_random(self) -> workflow.Random:
-                raise NotImplementedError
-
-            def workflow_memo(self) -> workflow.Mapping[str, workflow.Any]:
-                raise NotImplementedError
-
-            def workflow_memo_value(
-                self, key: str, default: workflow.Any, *, type_hint: type | None
-            ) -> workflow.Any:
-                raise NotImplementedError
-
-            def workflow_continue_as_new(
+            async def workflow_execute_activity(
                 self,
-                *args: workflow.Any,
-                workflow: str | type | None,
+                activity: str | Callable[..., Any],
+                *args: Any,
+                task_queue: str | None = None,
+                schedule_to_close_timeout: timedelta | None = None,
+                schedule_to_start_timeout: timedelta | None = None,
+                start_to_close_timeout: timedelta | None = None,
+                heartbeat_timeout: timedelta | None = None,
+                retry_policy: temporalio.common.RetryPolicy | None = None,
+                activity_id: str | None = None,
+            ) -> Any:
+                pass
+
+            async def workflow_start_child_workflow(
+                self,
+                workflow: str | type,
+                *args: Any,
+                id: str,
                 task_queue: str | None,
-                run_timeout: workflow.timedelta | None,
-                task_timeout: workflow.timedelta | None,
-                memo: workflow.Mapping[str, workflow.Any] | None,
-            ) -> workflow.NoReturn:
-                raise NotImplementedError
+                cancellation_type: ChildWorkflowCancellationType,
+                parent_close_policy: ParentClosePolicy,
+                execution_timeout: timedelta | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> ChildWorkflowHandle[Any, Any]:
+                raise NotImplementedError()
+
+            async def workflow_wait_condition(
+                self,
+                fn: Callable[[], bool],
+                *,
+                timeout: float | None = None,
+                timeout_summary: str | None = None,
+            ) -> None:
+                pass
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)

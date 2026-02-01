@@ -7,11 +7,15 @@ Warning:
     This package is experimental and not ready for production use.
 """
 
-from temporalio_trio import workflow
+from temporalio_trio import activity, client, testing, worker, workflow
 
 __version__ = "0.1.0"
 
 __all__ = [
     "__version__",
+    "activity",
+    "client",
+    "testing",
     "workflow",
+    "worker",
 ]
