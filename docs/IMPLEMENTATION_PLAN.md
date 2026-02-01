@@ -12,21 +12,21 @@ This document outlines the phased implementation plan for the Trio-based Tempora
 | 2 | COMPLETE | Workflow instance with full feature set |
 | 3 | COMPLETE | Time, clock, and activation handling |
 | 4 | COMPLETE | Runner and public API |
-| 5 | BLOCKED | Tests written, awaiting Trio deterministic fork |
+| 5 | COMPLETE | All 236 tests passing |
 
-### Blocking Issue
+### Trio Fork Dependency
 
-Tests requiring `trio.run(deterministic=True)` fail because the standard Trio library
-doesn't support the `deterministic` parameter. This requires installing the Trio fork
-with deterministic scheduling support:
+This SDK requires the Trio fork with deterministic scheduling support.
+The dependency is configured in `pyproject.toml`:
 
-```bash
-pip install git+https://github.com/mfateev/trio.git@temporal-deterministic-scheduling
+```toml
+"trio @ git+https://github.com/mfateev/trio.git@temporal-deterministic-scheduling"
 ```
 
-**Test Results (with standard Trio):**
-- 195 tests pass (unit tests for components)
-- 41 tests fail (activation/execution tests requiring deterministic mode)
+This enables `trio.run(deterministic=True, fifo=True, random_seed=...)` for
+workflow replay determinism.
+
+**Test Results:** 236 tests pass
 
 ---
 
@@ -53,7 +53,7 @@ pip install git+https://github.com/mfateev/trio.git@temporal-deterministic-sched
 | 2 | Workflow Instance | `WorkflowInstanceDetails`, `TrioWorkflowInstance` | COMPLETE |
 | 3 | Time & Clock | `WorkflowClock`, history events, time control | COMPLETE |
 | 4 | Runner & Execution | `WorkflowRunner`, `TrioWorkflowRunner`, public API | COMPLETE |
-| 5 | Replay Verification | Replay tests, parallel execution tests | BLOCKED |
+| 5 | Replay Verification | Replay tests, parallel execution tests | COMPLETE |
 
 ---
 
@@ -181,11 +181,11 @@ Timer handling uses replay-safe pattern:
 
 ---
 
-## Phase 5: Replay Verification - BLOCKED
+## Phase 5: Replay Verification - COMPLETE
 
 **Goal:** Verify deterministic replay and parallel execution.
 
-**Status:** Tests are written and ready. Blocked on Trio deterministic fork.
+**Status:** All tests passing with Trio fork.
 
 ### Test Files
 
@@ -206,8 +206,8 @@ Timer handling uses replay-safe pattern:
 - [x] Implement parallel execution test
 - [x] Verify determinism with same seed
 - [x] Verify isolation between parallel workflows
-- [ ] Pass `poe lint`
-- [ ] Pass `poe test` - **BLOCKED: Requires Trio deterministic fork**
+- [x] Pass `poe lint`
+- [x] Pass `poe test` - All 236 tests pass
 
 ---
 
@@ -261,24 +261,17 @@ dependencies = [
 
 ## Success Metrics
 
-After completing all phases:
+All phases complete:
 
-1. **Unit Tests:** All tests pass (195 currently passing)
-2. **Integration Tests:** All activation tests pass (41 blocked on Trio fork)
-3. **Linting:** `poe lint` passes (pyright, mypy, ruff)
-4. **Replay:** Same history produces identical results
-5. **Parallelism:** Multiple workflows run concurrently without interference
-6. **API Compatibility:** Public API matches Temporal SDK patterns
+1. **Unit Tests:** All 236 tests pass
+2. **Linting:** `poe lint` passes (pyright, mypy, ruff)
+3. **Replay:** Same history produces identical results
+4. **Parallelism:** Multiple workflows run concurrently without interference
+5. **API Compatibility:** Public API matches Temporal SDK patterns
 
 ---
 
 ## Next Steps
-
-### Immediate (Unblock Phase 5)
-
-1. **Install Trio Fork** - Set up deterministic scheduling support
-2. **Run Full Test Suite** - Verify all 236 tests pass
-3. **Document Fork Setup** - Add instructions to README
 
 ### Post-POC
 
