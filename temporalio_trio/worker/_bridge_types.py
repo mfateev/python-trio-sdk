@@ -132,6 +132,7 @@ def bridge_to_poc_activation(
     return WorkflowActivation(
         jobs=poc_jobs,
         timestamp_ns=timestamp_ns,
+        run_id=bridge_act.run_id,
     )
 
 

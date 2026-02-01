@@ -344,9 +344,7 @@ class TestWorkflowStateCommandCollection:
         state.runtime = runtime
 
         # Add some commands
-        runtime.commands.append(
-            RuntimeStartTimerCommand(seq=1, start_to_fire_timeout_ms=1000)
-        )
+        runtime.commands.append(RuntimeStartTimerCommand(timer_id=1, duration_ms=1000))
         runtime.commands.append(CompleteWorkflowCommand(result="done"))
 
         async def signal_ready() -> None:

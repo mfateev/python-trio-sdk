@@ -550,8 +550,8 @@ class TestWorkflowSleep:
         assert len(runtime.commands) == 1
         cmd = runtime.commands[0]
         assert isinstance(cmd, StartTimerCommand)
-        assert cmd.seq == 1
-        assert cmd.start_to_fire_timeout_ms == 5000
+        assert cmd.timer_id == 1
+        assert cmd.duration_ms == 5000
 
     @pytest.mark.trio
     async def test_workflow_sleep_suspends_on_event(self) -> None:
@@ -741,9 +741,9 @@ class TestMultipleTimers:
         # Should have three commands
         assert len(runtime.commands) == 3
         assert all(isinstance(cmd, StartTimerCommand) for cmd in runtime.commands)
-        assert runtime.commands[0].seq == 1
-        assert runtime.commands[1].seq == 2
-        assert runtime.commands[2].seq == 3
+        assert runtime.commands[0].timer_id == 1
+        assert runtime.commands[1].timer_id == 2
+        assert runtime.commands[2].timer_id == 3
 
         # Times should be recorded
         assert times == [1_000_000_000, 3_000_000_000, 6_000_000_000]
@@ -849,17 +849,17 @@ class TestStartTimerCommand:
 
     def test_start_timer_command_creation(self) -> None:
         """Test StartTimerCommand can be created with required fields."""
-        cmd = StartTimerCommand(seq=1, start_to_fire_timeout_ms=5000)
+        cmd = StartTimerCommand(timer_id=1, duration_ms=5000)
 
-        assert cmd.seq == 1
-        assert cmd.start_to_fire_timeout_ms == 5000
+        assert cmd.timer_id == 1
+        assert cmd.duration_ms == 5000
 
     def test_start_timer_command_equality(self) -> None:
         """Test StartTimerCommand equality comparison."""
-        cmd1 = StartTimerCommand(seq=1, start_to_fire_timeout_ms=5000)
-        cmd2 = StartTimerCommand(seq=1, start_to_fire_timeout_ms=5000)
-        cmd3 = StartTimerCommand(seq=2, start_to_fire_timeout_ms=5000)
-        cmd4 = StartTimerCommand(seq=1, start_to_fire_timeout_ms=10000)
+        cmd1 = StartTimerCommand(timer_id=1, duration_ms=5000)
+        cmd2 = StartTimerCommand(timer_id=1, duration_ms=5000)
+        cmd3 = StartTimerCommand(timer_id=2, duration_ms=5000)
+        cmd4 = StartTimerCommand(timer_id=1, duration_ms=10000)
 
         assert cmd1 == cmd2
         assert cmd1 != cmd3
@@ -868,20 +868,20 @@ class TestStartTimerCommand:
     def test_start_timer_command_duration_conversion(self) -> None:
         """Test StartTimerCommand handles various duration values."""
         # 1 second
-        cmd1 = StartTimerCommand(seq=1, start_to_fire_timeout_ms=1000)
-        assert cmd1.start_to_fire_timeout_ms == 1000
+        cmd1 = StartTimerCommand(timer_id=1, duration_ms=1000)
+        assert cmd1.duration_ms == 1000
 
         # Sub-second (500ms)
-        cmd2 = StartTimerCommand(seq=2, start_to_fire_timeout_ms=500)
-        assert cmd2.start_to_fire_timeout_ms == 500
+        cmd2 = StartTimerCommand(timer_id=2, duration_ms=500)
+        assert cmd2.duration_ms == 500
 
         # Multiple seconds (30s)
-        cmd3 = StartTimerCommand(seq=3, start_to_fire_timeout_ms=30000)
-        assert cmd3.start_to_fire_timeout_ms == 30000
+        cmd3 = StartTimerCommand(timer_id=3, duration_ms=30000)
+        assert cmd3.duration_ms == 30000
 
         # Very long duration (1 hour)
-        cmd4 = StartTimerCommand(seq=4, start_to_fire_timeout_ms=3600000)
-        assert cmd4.start_to_fire_timeout_ms == 3600000
+        cmd4 = StartTimerCommand(timer_id=4, duration_ms=3600000)
+        assert cmd4.duration_ms == 3600000
 
 
 # Phase 4 Tests: Activity Methods

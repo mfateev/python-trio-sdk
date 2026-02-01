@@ -46,7 +46,7 @@ from temporalio_trio.worker._runtime import (
     set_current_runtime,
 )
 from temporalio_trio.worker._workflow_state import WorkflowState
-from temporalio_trio.workflow import _Definition
+from temporalio_trio.workflow import _Definition, _Runtime
 
 if TYPE_CHECKING:
     from temporalio_trio._async_bridge import TrioBridgeWrapper
@@ -232,6 +232,29 @@ class SingleThreadWorker:
             await self._send_empty_completion(run_id)
             return
 
+        # Check if this is a workflow start/replay
+        has_workflow_start = any(
+            isinstance(job, WorkflowStartedJob) for job in activation.jobs
+        )
+
+        if has_workflow_start and run_id in self._workflow_states:
+            # Replay scenario: evict old state and start fresh
+            logger.debug(f"Replay detected for {run_id}, evicting old state")
+            old_state = self._workflow_states[run_id]
+            # Cancel the old workflow task if running
+            if old_state.runtime and old_state.runtime.nursery:
+                old_state.runtime.nursery.cancel_scope.cancel()
+            del self._workflow_states[run_id]
+            # Fall through to create new state
+
+        # Handle empty activations for non-existent workflows (cleanup after completion)
+        if not has_workflow_start and run_id not in self._workflow_states:
+            logger.debug(
+                f"Empty activation for completed workflow {run_id}, sending empty completion"
+            )
+            await self._send_empty_completion(run_id)
+            return
+
         if run_id not in self._workflow_states:
             # New workflow - create state and spawn task
             state = WorkflowState(run_id=run_id)
@@ -343,8 +366,9 @@ class SingleThreadWorker:
         )
         state.runtime = runtime
 
-        # Set runtime as current
-        token = set_current_runtime(runtime)
+        # Set runtime as current (both _Runtime and legacy _runtime module)
+        token = _Runtime.set_current(runtime)
+        legacy_token = set_current_runtime(runtime)
         try:
             # Apply initial activation jobs
             self._apply_activation(runtime, initial_activation)
@@ -377,6 +401,16 @@ class SingleThreadWorker:
                     # Apply activation jobs
                     self._apply_activation(runtime, activation)
 
+                    # Yield to scheduler to let woken tasks run
+                    await trio.sleep(0)
+
+                    # If the workflow didn't signal commands ready (e.g., empty activation
+                    # or no jobs that woke up suspended tasks), signal it now
+                    # Check by seeing if commands_ready event is not set (no one called signal_commands_ready)
+                    if not state.commands_ready.is_set() and not state.is_complete:
+                        # Signal commands ready with current commands (may be empty)
+                        state.signal_commands_ready()
+
         except Exception as e:
             # Workflow task failed
             runtime.commands.append(FailWorkflowCommand(exception=e))
@@ -384,7 +418,8 @@ class SingleThreadWorker:
             state.signal_commands_ready()
 
         finally:
-            reset_current_runtime(token)
+            _Runtime.reset_current(token)
+            reset_current_runtime(legacy_token)
 
     async def _execute_workflow_main(
         self,

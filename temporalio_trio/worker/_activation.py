@@ -165,6 +165,7 @@ class WorkflowActivation:
     Attributes:
         jobs: List of jobs to process in this activation.
         timestamp_ns: Current workflow time in nanoseconds for this activation.
+        run_id: Unique identifier for this workflow run (optional for tests).
     """
 
     jobs: list  # Generic list - actual type is WorkflowJob defined at bottom of file
@@ -172,6 +173,9 @@ class WorkflowActivation:
 
     timestamp_ns: int
     """Current workflow time in nanoseconds for this activation."""
+
+    run_id: str = ""
+    """Unique identifier for this workflow run (set by bridge, optional for unit tests)."""
 
 
 # =============================================================================
