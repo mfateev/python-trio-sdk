@@ -102,6 +102,7 @@ Invariants:
 | 11-13 | Signals & Queries | [03_signals_queries.md](03_signals_queries.md) | External communication with workflows |
 | 14-15 | Child Workflows | [04_child_workflows.md](04_child_workflows.md) | Spawning and managing child workflows |
 | 16-19 | Advanced | [05_advanced.md](05_advanced.md) | Failure, continue-as-new, external signals, search attributes |
+| 20 | Parallel Workflows | [06_parallel_workflows.md](06_parallel_workflows.md) | Multiple concurrent workflows, run_id routing |
 
 ## Activation Job Types
 
