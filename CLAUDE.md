@@ -8,6 +8,10 @@ This is an experimental implementation of the Temporal Python SDK using [Trio](h
 
 **Status**: Experimental, not ready for production use.
 
+## Sprite Checkpoints (DO NOT USE)
+
+Do not create Sprite environment checkpoints. All code is saved when pushed to git. Git commits and pushes are the source of truth for code persistence.
+
 ## Git Workflow (IMPORTANT)
 
 **The `main` branch is protected.** All changes must go through pull requests.
