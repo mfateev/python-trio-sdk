@@ -116,6 +116,7 @@ class TrioBridgeWrapper:
         identity: Optional[str] = None,
         max_cached_workflows: int = 1000,
         max_concurrent_workflow_task_polls: int = 5,
+        sticky_queue_schedule_to_start_timeout_millis: int = 10_000,
         timeout: Optional[float] = None,
     ) -> None:
         """Initialize the bridge worker with Temporal configuration.
@@ -130,6 +131,9 @@ class TrioBridgeWrapper:
             identity: Worker identity (optional, defaults to "trio-worker")
             max_cached_workflows: Maximum cached workflows (default: 1000)
             max_concurrent_workflow_task_polls: Max concurrent polls (default: 5)
+            sticky_queue_schedule_to_start_timeout_millis: How long a workflow task is
+                allowed to sit on the sticky queue before it is timed out and moved
+                to the non-sticky queue. In milliseconds. (default: 10000 = 10s)
             timeout: Optional timeout in seconds
 
         Raises:
@@ -156,6 +160,7 @@ class TrioBridgeWrapper:
             "identity": identity or "",
             "max_cached_workflows": max_cached_workflows,
             "max_concurrent_workflow_task_polls": max_concurrent_workflow_task_polls,
+            "sticky_queue_schedule_to_start_timeout_millis": sticky_queue_schedule_to_start_timeout_millis,
         }
 
         event = trio.Event()

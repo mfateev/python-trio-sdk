@@ -376,6 +376,95 @@ uv run pytest tests/ --log-cli-level=DEBUG
 uv run pytest -x tests/
 ```
 
+## Implementing New SDK-Core Features (CRITICAL)
+
+**Two rules for implementing new features:**
+
+1. **Follow sdk-python patterns** - Always check how the official SDK implements a feature first
+2. **Validate bridge behavior** - Write a bridge test to understand SDK-Core's protocol
+
+### Rule 1: Follow sdk-python Implementation
+
+**ALWAYS check sdk-python first** before implementing any feature. The trio SDK should mirror the official SDK as closely as possible - the only difference should be Trio vs asyncio.
+
+**Reference locations in sdk-python:**
+- `temporalio/workflow.py` - Public workflow API
+- `temporalio/worker/_workflow_instance.py` - Workflow execution, replay handling
+- `temporalio/worker/_replayer.py` - Replay logic
+- `temporalio/worker/_worker.py` - Worker implementation
+
+**Process:**
+1. Find the equivalent feature in sdk-python
+2. Read and understand how it works
+3. Implement the same logic with Trio primitives
+4. Match the behavior exactly (edge cases, error handling, etc.)
+
+**Why this matters:**
+- sdk-python is battle-tested and handles edge cases we might miss
+- Consistent behavior across SDKs is important for users
+- Less chance of introducing bugs by "inventing" solutions
+
+### Rule 2: Validate Bridge Behavior First
+
+**Before implementing any new SDK-Core interaction, ALWAYS validate the bridge behavior first.**
+
+### Bridge-First Development Workflow
+
+When adding support for new Temporal features (queries, signals, activities, timers, etc.):
+
+1. **Write a bridge pattern test FIRST** in `tests/bridge_patterns/`
+   - These tests interact directly with SDK-Core via the bridge
+   - They document the exact activation/completion protocol
+   - They reveal what jobs SDK-Core sends and expects
+
+2. **Run the bridge test** to observe SDK-Core behavior
+   - What jobs are in the activation?
+   - What is the expected completion structure?
+   - What happens on error/edge cases?
+
+3. **Document findings** in the test and gap analysis
+   - Protocol details that aren't obvious from reading code
+   - Edge cases discovered during testing
+
+4. **Then implement** the feature in the SDK
+   - Now you know exactly what bridge interaction to implement
+   - You have a working reference test
+
+### Why Bridge-First?
+
+- **SDK-Core is the source of truth** for the activation/completion protocol
+- **Assumptions are dangerous** - the protocol may not work as expected
+- **Bridge tests are fast** - no SDK overhead, direct verification
+- **Documentation as tests** - bridge tests document the protocol
+
+### Example: Query on Completed Workflow
+
+**Wrong approach:**
+```
+1. Assume SDK-Core sends initialize_workflow + query jobs
+2. Implement feature in SDK
+3. Write E2E test
+4. E2E test fails mysteriously
+5. Debug for hours wondering what SDK-Core actually sends
+```
+
+**Right approach:**
+```
+1. Write bridge test: test_bridge_query_on_completed_workflow
+2. Run test, observe: What does SDK-Core actually send?
+3. Document the protocol in the test
+4. Implement feature matching observed behavior
+5. E2E test passes
+```
+
+### Bridge Pattern Test Location
+
+All bridge pattern tests go in `tests/bridge_patterns/`:
+- `test_bridge_activities.py` - Activity patterns
+- `test_bridge_signals_queries.py` - Signal/query patterns
+- `test_bridge_eviction_replay.py` - Eviction/replay patterns
+- etc.
+
 ## Bridge Development
 
 ### Modifying Rust Bridge

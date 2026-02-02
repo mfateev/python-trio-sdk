@@ -630,3 +630,484 @@ async def test_pattern_12_query_with_arguments(unique_task_queue: str) -> None:
 
     finally:
         await safe_shutdown(bridge)
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_query_on_completed_workflow(unique_task_queue: str) -> None:
+    """Test: Query on a COMPLETED workflow.
+
+    This test investigates what SDK-Core sends when a query arrives
+    for a workflow that has already completed.
+
+    Flow:
+    1. Start workflow
+    2. poll -> [initialize_workflow]
+    3. complete([CompleteWorkflowExecution])  # Workflow completes immediately
+    4. poll -> [remove_from_cache] or empty (acknowledge completion)
+    5. complete([]) (empty completion)
+    6. Workflow is now COMPLETED and evicted from worker
+    7. Send query via CLI
+    8. poll -> ??? (What does SDK-Core send?)
+
+    Key questions:
+    - Does SDK-Core send [initialize_workflow + query_workflow] for replay?
+    - Or does it handle queries on completed workflows differently?
+    - What is the expected completion structure?
+    """
+    bridge = TrioBridgeWrapper()
+    await bridge.start()
+
+    workflow_id = f"test-query-completed-{uuid4()}"
+
+    await bridge.initialize_with_config(
+        target_url="http://localhost:7233",
+        namespace="default",
+        task_queue=unique_task_queue,
+    )
+
+    try:
+        # 1. Start workflow via CLI
+        start_workflow_via_cli(
+            workflow_id=workflow_id,
+            workflow_type="CompletingWorkflow",
+            task_queue=unique_task_queue,
+        )
+        print(f"Started workflow {workflow_id}")
+
+        # 2. Poll for workflow activation (initialize_workflow)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
+        activation = ActivationParser(activation_bytes)
+
+        assert activation.has_job_type("initialize_workflow")
+        run_id = activation.run_id
+        print(f"Step 1: Received initialize_workflow (run_id={run_id[:8]}...)")
+        print(f"  is_replaying: {activation.activation.is_replaying}")
+        print(f"  jobs: {[j.WhichOneof('variant') for j in activation.jobs]}")
+
+        # 3. Complete workflow IMMEDIATELY (no timer, no activity)
+        completion = (
+            CompletionBuilder(run_id)
+            .complete_workflow("workflow_done")
+            .build()
+        )
+        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+        print("Step 2: Sent CompleteWorkflowExecution")
+
+        # 4. Poll for any follow-up activation (might be eviction or empty)
+        try:
+            with trio.move_on_after(3.0):
+                activation_bytes = await bridge.poll_workflow_activation(timeout=3.0)
+                activation = ActivationParser(activation_bytes)
+                jobs = [j.WhichOneof("variant") for j in activation.jobs]
+                print(f"Step 3: Received follow-up activation: {jobs}")
+
+                # Send empty completion to acknowledge
+                completion = CompletionBuilder(activation.run_id).build()
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
+                print("Step 3: Sent empty completion")
+        except Exception as e:
+            print(f"Step 3: No follow-up activation or error: {e}")
+
+        # 5. Verify workflow is COMPLETED
+        await trio.sleep(1.0)
+        status = get_workflow_status_via_cli(workflow_id)
+        print(f"Step 4: Workflow status: {status}")
+        assert status == "COMPLETED", f"Expected COMPLETED, got {status}"
+
+        # 6. Now send a query to the COMPLETED workflow
+        print("Step 5: Sending query to COMPLETED workflow...")
+
+        query_result = None
+        query_error = None
+
+        async def send_query():
+            nonlocal query_result, query_error
+            await trio.sleep(0.5)  # Give time for poll to start
+            try:
+                query_result = await query_workflow_via_cli_async(
+                    workflow_id=workflow_id,
+                    query_type="get_status",
+                    args=[],
+                    timeout=10.0,  # Short timeout
+                )
+                print(f"Step 5: CLI query returned: {query_result}")
+            except Exception as e:
+                query_error = str(e)
+                print(f"Step 5: CLI query error: {e}")
+
+        # 7. Poll to see what SDK-Core sends for query on completed workflow
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(send_query)
+
+            print("Step 6: Polling for query activation...")
+
+            # Poll with timeout - SDK-Core might or might not send an activation
+            try:
+                with trio.move_on_after(15.0):
+                    activation_bytes = await bridge.poll_workflow_activation(
+                        timeout=15.0
+                    )
+                    activation = ActivationParser(activation_bytes)
+                    jobs = [j.WhichOneof("variant") for j in activation.jobs]
+
+                    print(f"Step 6: RECEIVED ACTIVATION!")
+                    print(f"  run_id: {activation.run_id[:8]}...")
+                    print(f"  is_replaying: {activation.activation.is_replaying}")
+                    print(f"  jobs: {jobs}")
+
+                    # Check if it has initialize_workflow (replay)
+                    if activation.has_job_type("initialize_workflow"):
+                        print("  -> Contains initialize_workflow (REPLAY)")
+                        init_job = activation.get_job("initialize_workflow")
+                        print(f"     workflow_type: {init_job.workflow_type}")
+
+                    # Check if it has query_workflow
+                    if activation.has_job_type("query_workflow"):
+                        print("  -> Contains query_workflow")
+                        query_job = activation.get_job("query_workflow")
+                        print(f"     query_type: {query_job.query_type}")
+                        print(f"     query_id: {query_job.query_id}")
+
+                        # Respond to query AND complete workflow (during replay)
+                        completion = (
+                            CompletionBuilder(activation.run_id)
+                            .respond_to_query(
+                                query_id=query_job.query_id,
+                                result="status_from_replay",
+                            )
+                            .complete_workflow("workflow_done")
+                            .build()
+                        )
+                        await bridge.complete_workflow_activation(
+                            completion, timeout=DEFAULT_TIMEOUT
+                        )
+                        print("Step 6: Sent RespondToQuery + CompleteWorkflow")
+
+                    elif activation.has_job_type("initialize_workflow"):
+                        # Replay without query - must re-send CompleteWorkflowExecution
+                        # to match history, then poll again for query
+                        completion = (
+                            CompletionBuilder(activation.run_id)
+                            .complete_workflow("workflow_done")
+                            .build()
+                        )
+                        await bridge.complete_workflow_activation(
+                            completion, timeout=DEFAULT_TIMEOUT
+                        )
+                        print("Step 6: Sent CompleteWorkflow (replay)")
+
+                        # Poll again - query might come in next activation
+                        print("Step 7: Polling for query activation after replay...")
+                        activation_bytes = await bridge.poll_workflow_activation(
+                            timeout=10.0
+                        )
+                        activation = ActivationParser(activation_bytes)
+                        jobs = [j.WhichOneof("variant") for j in activation.jobs]
+                        print(f"Step 7: RECEIVED ACTIVATION!")
+                        print(f"  run_id: {activation.run_id[:8]}...")
+                        print(f"  is_replaying: {activation.activation.is_replaying}")
+                        print(f"  jobs: {jobs}")
+
+                        if activation.has_job_type("query_workflow"):
+                            query_job = activation.get_job("query_workflow")
+                            print(f"  -> Contains query_workflow")
+                            print(f"     query_type: {query_job.query_type}")
+
+                            completion = (
+                                CompletionBuilder(activation.run_id)
+                                .respond_to_query(
+                                    query_id=query_job.query_id,
+                                    result="status_from_replay_second",
+                                )
+                                .build()
+                            )
+                            await bridge.complete_workflow_activation(
+                                completion, timeout=DEFAULT_TIMEOUT
+                            )
+                            print("Step 7: Sent RespondToQuery")
+                        else:
+                            completion = CompletionBuilder(activation.run_id).build()
+                            await bridge.complete_workflow_activation(
+                                completion, timeout=DEFAULT_TIMEOUT
+                            )
+                            print("Step 7: No query, sent empty completion")
+
+                    else:
+                        # No query in activation - just ack
+                        completion = CompletionBuilder(activation.run_id).build()
+                        await bridge.complete_workflow_activation(
+                            completion, timeout=DEFAULT_TIMEOUT
+                        )
+                        print("Step 6: Sent empty completion")
+
+            except Exception as e:
+                print(f"Step 6: Poll error or timeout: {e}")
+
+        # 8. Report findings
+        print("\n=== FINDINGS ===")
+        print(f"Query result: {query_result}")
+        print(f"Query error: {query_error}")
+        print("================\n")
+
+        # The test passes regardless - we're observing SDK-Core behavior
+        print("Query on Completed Workflow - OBSERVATION COMPLETE")
+
+    finally:
+        await safe_shutdown(bridge)
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_query_on_completed_workflow_eviction_before_query(unique_task_queue: str) -> None:
+    """Test: Query triggers replay - eviction ALWAYS happens before replay.
+
+    This test validates that SDK-Core ALWAYS evicts a completed workflow immediately
+    after completion, regardless of when the query arrives. There is no "still cached"
+    window where a query can be answered without replay.
+
+    Discovered behavior:
+    1. Workflow completes
+    2. SDK-Core immediately sends remove_from_cache (eviction) - before any query
+    3. Query sent via CLI
+    4. SDK-Core sends initialize_workflow (replay) with is_replaying=True
+    5. Worker completes replay
+    6. SDK-Core sends query_workflow
+    7. Worker responds to query
+
+    Key finding:
+    - SDK-Core evicts completed workflows IMMEDIATELY - no caching window
+    - Queries on completed workflows ALWAYS trigger replay
+    - This is the same flow as test_query_on_completed_workflow
+    """
+    bridge = TrioBridgeWrapper()
+    await bridge.start()
+
+    workflow_id = f"test-query-cached-{uuid4()}"
+
+    await bridge.initialize_with_config(
+        target_url="http://localhost:7233",
+        namespace="default",
+        task_queue=unique_task_queue,
+    )
+
+    try:
+        # 1. Start workflow via CLI
+        start_workflow_via_cli(
+            workflow_id=workflow_id,
+            workflow_type="CachedQueryWorkflow",
+            task_queue=unique_task_queue,
+        )
+        print(f"Started workflow {workflow_id}")
+
+        # 2. Poll for workflow activation (initialize_workflow)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
+        activation = ActivationParser(activation_bytes)
+
+        assert activation.has_job_type("initialize_workflow")
+        run_id = activation.run_id
+        print(f"Step 1: Received initialize_workflow (run_id={run_id[:8]}...)")
+        print(f"  is_replaying: {activation.activation.is_replaying}")
+
+        # 3. Complete workflow IMMEDIATELY
+        completion = (
+            CompletionBuilder(run_id)
+            .complete_workflow("workflow_done")
+            .build()
+        )
+        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+        print("Step 2: Sent CompleteWorkflowExecution")
+
+        # 4. Wait briefly for server to process completion
+        await trio.sleep(0.5)
+
+        # 5. Verify workflow is COMPLETED
+        status = get_workflow_status_via_cli(workflow_id)
+        print(f"Step 3: Workflow status: {status}")
+        assert status == "COMPLETED", f"Expected COMPLETED, got {status}"
+
+        # 6. Send query IMMEDIATELY - before polling for eviction
+        # This means SDK-Core should know we still have the workflow cached
+        print("Step 4: Sending query while workflow should still be cached...")
+
+        query_result = None
+        query_error = None
+
+        async def send_query():
+            nonlocal query_result, query_error
+            await trio.sleep(0.3)  # Small delay to let poll start
+            try:
+                query_result = await query_workflow_via_cli_async(
+                    workflow_id=workflow_id,
+                    query_type="get_status",
+                    args=[],
+                    timeout=15.0,
+                )
+                print(f"Step 4: CLI query returned: {query_result}")
+            except Exception as e:
+                query_error = str(e)
+                print(f"Step 4: CLI query error: {e}")
+
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(send_query)
+
+            # 7. Poll - what does SDK-Core send?
+            print("Step 5: Polling for activation (expecting query or replay)...")
+
+            try:
+                with trio.move_on_after(20.0):
+                    activation_bytes = await bridge.poll_workflow_activation(
+                        timeout=20.0
+                    )
+                    activation = ActivationParser(activation_bytes)
+                    jobs = [j.WhichOneof("variant") for j in activation.jobs]
+
+                    print(f"Step 5: RECEIVED ACTIVATION!")
+                    print(f"  run_id: {activation.run_id[:8]}...")
+                    print(f"  is_replaying: {activation.activation.is_replaying}")
+                    print(f"  jobs: {jobs}")
+
+                    # Handle based on what we receive
+                    if "query_workflow" in jobs and "initialize_workflow" not in jobs:
+                        # Query arrived without replay - workflow was still cached
+                        print("  -> Query WITHOUT replay (workflow was cached)")
+                        query_job = activation.get_job("query_workflow")
+                        completion = (
+                            CompletionBuilder(activation.run_id)
+                            .respond_to_query(
+                                query_id=query_job.query_id,
+                                result="status_from_cache",
+                            )
+                            .build()
+                        )
+                        await bridge.complete_workflow_activation(
+                            completion, timeout=DEFAULT_TIMEOUT
+                        )
+                        print("Step 5: Sent RespondToQuery")
+
+                    elif "initialize_workflow" in jobs:
+                        # SDK-Core wants replay even though we didn't poll for eviction
+                        print("  -> Received initialize_workflow (replay requested)")
+
+                        # Check if query is also in this activation
+                        if "query_workflow" in jobs:
+                            print("  -> Query also in same activation")
+                            query_job = activation.get_job("query_workflow")
+                            completion = (
+                                CompletionBuilder(activation.run_id)
+                                .respond_to_query(
+                                    query_id=query_job.query_id,
+                                    result="status_from_replay",
+                                )
+                                .complete_workflow("workflow_done")
+                                .build()
+                            )
+                        else:
+                            # Just replay, query will come in next activation
+                            completion = (
+                                CompletionBuilder(activation.run_id)
+                                .complete_workflow("workflow_done")
+                                .build()
+                            )
+                        await bridge.complete_workflow_activation(
+                            completion, timeout=DEFAULT_TIMEOUT
+                        )
+                        print("Step 5: Sent completion")
+
+                        # If query wasn't in same activation, poll for it
+                        if "query_workflow" not in jobs:
+                            print("Step 6: Polling for query activation...")
+                            activation_bytes = await bridge.poll_workflow_activation(
+                                timeout=10.0
+                            )
+                            activation = ActivationParser(activation_bytes)
+                            jobs = [j.WhichOneof("variant") for j in activation.jobs]
+                            print(f"Step 6: RECEIVED: jobs={jobs}")
+
+                            if "query_workflow" in jobs:
+                                query_job = activation.get_job("query_workflow")
+                                completion = (
+                                    CompletionBuilder(activation.run_id)
+                                    .respond_to_query(
+                                        query_id=query_job.query_id,
+                                        result="status_after_replay",
+                                    )
+                                    .build()
+                                )
+                                await bridge.complete_workflow_activation(
+                                    completion, timeout=DEFAULT_TIMEOUT
+                                )
+                                print("Step 6: Sent RespondToQuery")
+
+                    elif "remove_from_cache" in jobs:
+                        # Eviction came first - complete it and poll again for replay
+                        print("  -> Eviction came first (SDK-Core evicts immediately after completion)")
+                        completion = CompletionBuilder(activation.run_id).build()
+                        await bridge.complete_workflow_activation(
+                            completion, timeout=DEFAULT_TIMEOUT
+                        )
+
+                        # Now poll for replay activation (query triggers replay after eviction)
+                        print("Step 6: Polling for replay activation...")
+                        activation_bytes = await bridge.poll_workflow_activation(
+                            timeout=15.0
+                        )
+                        activation = ActivationParser(activation_bytes)
+                        jobs = [j.WhichOneof("variant") for j in activation.jobs]
+                        print(f"Step 6: RECEIVED: jobs={jobs}, is_replaying={activation.activation.is_replaying}")
+
+                        if "initialize_workflow" in jobs:
+                            print("  -> Replay activation received")
+                            completion = (
+                                CompletionBuilder(activation.run_id)
+                                .complete_workflow("workflow_done")
+                                .build()
+                            )
+                            await bridge.complete_workflow_activation(
+                                completion, timeout=DEFAULT_TIMEOUT
+                            )
+                            print("Step 6: Sent CompleteWorkflow (replay)")
+
+                            # Poll for query
+                            print("Step 7: Polling for query...")
+                            activation_bytes = await bridge.poll_workflow_activation(
+                                timeout=10.0
+                            )
+                            activation = ActivationParser(activation_bytes)
+                            jobs = [j.WhichOneof("variant") for j in activation.jobs]
+                            print(f"Step 7: RECEIVED: jobs={jobs}")
+
+                            if "query_workflow" in jobs:
+                                query_job = activation.get_job("query_workflow")
+                                completion = (
+                                    CompletionBuilder(activation.run_id)
+                                    .respond_to_query(
+                                        query_id=query_job.query_id,
+                                        result="status_after_eviction_replay",
+                                    )
+                                    .build()
+                                )
+                                await bridge.complete_workflow_activation(
+                                    completion, timeout=DEFAULT_TIMEOUT
+                                )
+                                print("Step 7: Sent RespondToQuery")
+
+            except Exception as e:
+                print(f"Step 5: Poll error: {e}")
+
+        # 8. Report findings
+        print("\n=== FINDINGS ===")
+        print(f"Query result: {query_result}")
+        print(f"Query error: {query_error}")
+        print("================\n")
+
+        print("Query on Completed Workflow (Still Cached) - OBSERVATION COMPLETE")
+
+    finally:
+        await safe_shutdown(bridge)

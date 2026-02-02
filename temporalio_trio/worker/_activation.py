@@ -184,6 +184,15 @@ class WorkflowActivation:
     run_id: str = ""
     """Unique identifier for this workflow run (set by bridge, optional for unit tests)."""
 
+    remove_from_cache: bool = False
+    """Whether this is a cache eviction activation."""
+
+    is_replaying: bool = False
+    """Whether this activation is replaying from history."""
+
+    randomness_seed: int | None = None
+    """Random seed for deterministic execution."""
+
 
 # =============================================================================
 # Completion Commands (to Temporal server)

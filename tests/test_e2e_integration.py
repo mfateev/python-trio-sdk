@@ -13,6 +13,7 @@ Or skip them with:
 import json
 import subprocess
 import time
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -531,6 +532,8 @@ async def test_e2e_query_triggers_replay(trio_client):
         client=trio_client,
         task_queue=task_queue,
         workflows=[QueryableWorkflow],
+        # Default max_cached_workflows=1000 (enables sticky queues)
+        # Default sticky timeout is 10s, but replay should happen when query arrives
     )
 
     async with trio.open_nursery() as nursery:
@@ -575,7 +578,8 @@ async def test_e2e_query_triggers_replay(trio_client):
             await trio.sleep(1)
 
             # Send query - this triggers replay since workflow is not in cache
-            query_result = _query_workflow_query_via_cli(
+            # Use async version to avoid blocking Trio event loop while worker polls
+            query_result = await _query_workflow_query_via_cli_async(
                 workflow_id=workflow_id,
                 namespace=namespace,
                 query_type="get_counter",
@@ -636,19 +640,61 @@ def _query_workflow_query_via_cli(
             check=True,
         )
 
-        # Parse JSON output
+        # Parse output - CLI may return JSON or text
         output = result.stdout.strip()
-        if output:
-            # The CLI returns the query result as JSON
+        if not output:
+            return None
+
+        # Try to parse as JSON, fall back to raw value
+        try:
             return json.loads(output)
-        return None
+        except json.JSONDecodeError:
+            # CLI returns text like "Query result:\n  QueryResult  20"
+            # Extract the value from the end
+            lines = output.split("\n")
+            for line in reversed(lines):
+                line = line.strip()
+                # Look for "QueryResult" followed by value
+                if "QueryResult" in line:
+                    parts = line.split("QueryResult", 1)
+                    if len(parts) > 1:
+                        value_str = parts[1].strip()
+                        try:
+                            return json.loads(value_str)
+                        except json.JSONDecodeError:
+                            return value_str
+            # Fall back to returning the raw output
+            return output
 
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Query failed: {e.stderr if e.stderr else e.stdout}") from e
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Failed to parse query result: {e}") from e
     except Exception as e:
         raise RuntimeError(f"Unexpected error executing query: {e}") from e
+
+
+async def _query_workflow_query_via_cli_async(
+    workflow_id: str,
+    namespace: str,
+    query_type: str,
+    args: list | None = None,
+) -> Any:
+    """Query a workflow using Temporal CLI (async version).
+
+    This version runs the subprocess in a separate thread to avoid blocking
+    the Trio event loop, allowing the worker to continue polling for activations.
+
+    Args:
+        workflow_id: The workflow ID to query
+        namespace: Temporal namespace
+        query_type: The query handler name
+        args: Optional arguments for the query
+
+    Returns:
+        The query result
+    """
+    return await trio.to_thread.run_sync(
+        lambda: _query_workflow_query_via_cli(workflow_id, namespace, query_type, args)
+    )
 
 
 @pytest.mark.temporal_server

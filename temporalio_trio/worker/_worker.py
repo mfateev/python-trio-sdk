@@ -272,6 +272,9 @@ class Worker:
                 identity=self._identity,
                 max_cached_workflows=self._max_cached_workflows,
                 max_concurrent_workflow_task_polls=self._max_concurrent_workflow_task_polls,
+                sticky_queue_schedule_to_start_timeout_millis=int(
+                    self._sticky_queue_schedule_to_start_timeout.total_seconds() * 1000
+                ),
             )
 
             # Note: Skipping bridge validation - not implemented in Rust bridge yet

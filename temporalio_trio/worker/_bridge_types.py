@@ -48,6 +48,10 @@ from temporalio_trio.worker._activation import (
     WorkflowActivationCompletion,
     WorkflowStartedJob,
 )
+from temporalio_trio.worker._runtime import (
+    QueryFailureCommand,
+    QuerySuccessCommand,
+)
 
 __all__ = [
     "bridge_to_poc_activation",
@@ -89,6 +93,7 @@ def bridge_to_poc_activation(
         | ChildWorkflowResolvedJob
         | SignalExternalResolvedJob
     ] = []
+    is_eviction = False
     for job in bridge_act.jobs:
         # Check which job type this is (oneof field)
         job_type = job.WhichOneof("variant")
@@ -130,8 +135,8 @@ def bridge_to_poc_activation(
                 )
             )
         elif job_type == "remove_from_cache":
-            # Eviction jobs are handled separately in the bridge worker
-            # They should not be passed to the workflow instance
+            # Track eviction - this activation is a cache eviction request
+            is_eviction = True
             continue
         else:
             # Unsupported job types - raise error with helpful message
@@ -140,10 +145,18 @@ def bridge_to_poc_activation(
                 f"Please file an issue if this is needed."
             )
 
+    # Get randomness_seed safely - it may not be present on all activations
+    randomness_seed = getattr(bridge_act, "randomness_seed", None)
+    if randomness_seed == 0:
+        randomness_seed = None  # 0 is the protobuf default for unset
+
     return WorkflowActivation(
         jobs=poc_jobs,
         timestamp_ns=timestamp_ns,
         run_id=bridge_act.run_id,
+        remove_from_cache=is_eviction,
+        is_replaying=bridge_act.is_replaying,
+        randomness_seed=randomness_seed,
     )
 
 
@@ -579,6 +592,18 @@ def poc_to_bridge_completion(
             else:
                 payload = data_converter.payload_converter.to_payload(cmd.result)
                 bridge_cmd.respond_to_query.succeeded.response.CopyFrom(payload)
+
+        elif isinstance(cmd, QuerySuccessCommand):
+            # Convert QuerySuccessCommand to RespondToQuery with success
+            bridge_cmd.respond_to_query.query_id = cmd.query_id
+            payload = data_converter.payload_converter.to_payload(cmd.result)
+            bridge_cmd.respond_to_query.succeeded.response.CopyFrom(payload)
+
+        elif isinstance(cmd, QueryFailureCommand):
+            # Convert QueryFailureCommand to RespondToQuery with failure
+            bridge_cmd.respond_to_query.query_id = cmd.query_id
+            error_msg = str(cmd.error) if cmd.error else "Query handler failed"
+            bridge_cmd.respond_to_query.failed.message = error_msg
 
         elif isinstance(cmd, StartChildWorkflowCommand):
             # Convert StartChildWorkflowCommand to StartChildWorkflowExecution

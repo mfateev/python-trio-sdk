@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use prost::Message;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use temporalio_client::ClientOptions;
 use temporalio_common::errors::PollError;
 use temporalio_common::protos::coresdk::workflow_completion::WorkflowActivationCompletion;
@@ -24,6 +25,10 @@ pub struct WorkerInitConfig {
     pub max_cached_workflows: usize,
     #[serde(default = "default_max_concurrent_polls")]
     pub max_concurrent_workflow_task_polls: usize,
+    /// How long a workflow task is allowed to sit on the sticky queue before it is timed out
+    /// and moved to the non-sticky queue. Value in milliseconds.
+    #[serde(default = "default_sticky_queue_schedule_to_start_timeout_millis")]
+    pub sticky_queue_schedule_to_start_timeout_millis: u64,
 }
 
 fn default_max_cached_workflows() -> usize {
@@ -32,6 +37,10 @@ fn default_max_cached_workflows() -> usize {
 
 fn default_max_concurrent_polls() -> usize {
     5
+}
+
+fn default_sticky_queue_schedule_to_start_timeout_millis() -> u64 {
+    10_000 // 10 seconds, matches SDK-Core default
 }
 
 /// Wrapper around the Temporal SDK Core Worker that provides thread-safe access
@@ -91,6 +100,9 @@ impl CoreWorkerHandle {
             .namespace(config.namespace.clone())
             .task_queue(config.task_queue.clone())
             .max_cached_workflows(config.max_cached_workflows)
+            .sticky_queue_schedule_to_start_timeout(Duration::from_millis(
+                config.sticky_queue_schedule_to_start_timeout_millis,
+            ))
             .versioning_strategy(WorkerVersioningStrategy::None {
                 build_id: "trio-worker".to_string(),
             })

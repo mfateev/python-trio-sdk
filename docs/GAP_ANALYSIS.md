@@ -317,6 +317,50 @@ query_job.headers   # Same structure
 
 ---
 
+### 3.6 Query on Completed Workflow (Replay-Based Query)
+
+**What happens:**
+- Workflow completes and is removed from worker's cache (`_workflow_states`)
+- Client sends a query to the completed workflow
+- Server re-delivers history to worker with `initialize_workflow` + `query` jobs
+- Worker must replay workflow from start to answer the query
+
+**SDK implementation:**
+- `SingleThreadWorker` removes workflows from `_workflow_states` after completion
+- When a query activation arrives for a completed workflow, the worker receives:
+  - `initialize_workflow` job (replay starts fresh)
+  - `query` job in the same activation
+- **Gap**: The worker doesn't handle queries arriving during replay properly
+
+**Evidence from E2E test `test_e2e_query_triggers_replay`:**
+```
+# Workflow completes successfully
+# Query sent via CLI after completion
+# Query times out - worker doesn't respond
+# Log shows: "Empty activation for completed workflow... sending empty completion"
+```
+
+**Root cause:**
+- After replaying and completing, the worker sends empty completion
+- The query job gets lost because workflow is immediately completed again
+- No mechanism to answer queries during the "empty activation after completion" phase
+
+**How SDK-Python handles this:**
+- Workflow instance stays in memory longer, or
+- Replay activation processes query before completion, or
+- Multi-pass activation handling: complete workflow, then answer query
+
+**Required fix:**
+1. When activation contains both `initialize_workflow` and `query` jobs:
+   - Replay workflow to restore state
+   - Process query and generate `RespondToQuery` response
+   - Include query response in completion (even if workflow completes)
+2. Ensure query handling occurs before workflow removal from cache
+
+**Priority: P2** - Queries on completed workflows are a real-world pattern (e.g., checking final state).
+
+---
+
 ## 4. Missing Convenience APIs
 
 These aren't protocol gaps but missing developer-facing APIs:
@@ -378,6 +422,7 @@ def get_external_workflow_handle(
 | Cancel workflow | Pattern 15 | test_worker.py | None |
 | Signal workflow | Patterns 11, 11-multi | test_worker.py | None |
 | Query workflow | Patterns 12, 12-args, 13 | test_worker.py | None |
+| Query after completion | - | test_e2e_integration | Replay-based query |
 | Schedule activity | Patterns 8, 9, 10 | test_worker.py | None |
 | Activity result | Patterns 8, 9 | test_worker.py | None |
 | Activity failure | Pattern 9 | Limited | Error type |
@@ -406,10 +451,11 @@ def get_external_workflow_handle(
 4. **Activity cancellation flow** - Required for graceful shutdown
 
 ### P2 - Medium Priority
-5. **Replay edge cases** - Multi-job activations, `is_replaying` flag handling (SDK-Core handles most of it)
-6. **UpsertSearchAttributes** - Required for visibility
-7. **Headers propagation** - Required for distributed tracing
-8. **Child workflow start failure handling** - Edge case but important
+5. **Query on completed workflow** - Required for checking final state after completion
+6. **Replay edge cases** - Multi-job activations, `is_replaying` flag handling (SDK-Core handles most of it)
+7. **UpsertSearchAttributes** - Required for visibility
+8. **Headers propagation** - Required for distributed tracing
+9. **Child workflow start failure handling** - Edge case but important
 
 ### P3 - Low Priority
 9. **Parallel workflow tests** - SDK likely handles correctly
@@ -424,7 +470,7 @@ def get_external_workflow_handle(
 | Missing commands | 3 | ContinueAsNew, SignalExternal, UpsertSearchAttrs |
 | Missing job handlers | 1 | resolve_signal_external_workflow |
 | Incomplete handlers | 1 | ActivityCancelledJob defined but unused |
-| Architectural gaps | 3 | Error types, headers, multi-job activations |
+| Architectural gaps | 4 | Error types, headers, multi-job activations, query-on-completed |
 | Missing APIs | 4 | continue_as_new(), signal_external_workflow(), etc. |
 
 **Key Insight: SDK-Core Handles Replay**

@@ -68,6 +68,9 @@ class WorkflowState:
     is_complete: bool = False
     """Whether the workflow has completed (success, failure, or cancelled)."""
 
+    completion_result: Any = None
+    """The result of the workflow execution (stored for replay without re-execution)."""
+
     def deliver_activation(self, activation: WorkflowActivation) -> None:
         """Deliver an activation to the workflow task.
 

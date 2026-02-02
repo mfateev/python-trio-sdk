@@ -484,8 +484,10 @@ class TestSingleThreadWorkerExecution:
             # Shutdown
             worker.shutdown()
 
-        # Workflow should have completed
-        assert "run-123" not in worker._workflow_states
+        # Workflow completed but state remains until eviction (matches sdk-python)
+        # The state is only removed when remove_from_cache is received
+        assert "run-123" in worker._workflow_states
+        assert worker._workflow_states["run-123"].is_complete
 
     @pytest.mark.trio
     async def test_timer_workflow_execution(self) -> None:
@@ -558,8 +560,11 @@ class TestSingleThreadWorkerExecution:
             # Shutdown
             worker.shutdown()
 
-        # All workflows should have completed
-        assert len(worker._workflow_states) == 0
+        # Workflows completed but state remains until eviction (matches sdk-python)
+        # State is only removed when remove_from_cache is received
+        assert len(worker._workflow_states) == 3
+        for i in range(3):
+            assert worker._workflow_states[f"run-{i}"].is_complete
 
     @pytest.mark.trio
     async def test_activation_delivery_to_existing_workflow(self) -> None:
@@ -2343,10 +2348,24 @@ class TestSingleThreadWorkerEviction:
             bridge.add_activation(timer_activation)
 
             await trio.sleep(0.1)
-            # Workflow should be completed and removed
+            # Workflow completed but state remains until eviction (matches sdk-python)
+            assert run_id in worker._workflow_states
+            assert worker._workflow_states[run_id].is_complete
+
+            # Phase 2: Send eviction to clear the state
+            eviction_activation = _create_activation(
+                jobs=[],
+                timestamp_ns=2_500_000_000,
+                run_id=run_id,
+            )
+            eviction_activation.remove_from_cache = True  # type: ignore
+            bridge.add_activation(eviction_activation)
+
+            await trio.sleep(0.1)
+            # Now workflow state should be removed after eviction
             assert run_id not in worker._workflow_states
 
-            # Phase 2: Later, workflow needs to replay (e.g., for a query)
+            # Phase 3: Later, workflow needs to replay (e.g., for a query)
             # SDK-Core sends full replay activation
             replay_activation = _create_activation(
                 jobs=[
