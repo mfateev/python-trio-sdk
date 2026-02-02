@@ -2125,3 +2125,389 @@ class TestSingleThreadWorkerCancellation:
 
             # Shutdown
             worker.shutdown()
+
+
+# =============================================================================
+# Eviction and Reactivation Tests (Critical for Replay)
+# =============================================================================
+
+
+class TestSingleThreadWorkerEviction:
+    """Tests for workflow eviction and reactivation.
+
+    These tests verify the worker correctly handles cache eviction and
+    subsequent reactivation (replay). SDK-Core handles command deduplication
+    during replay - the SDK's job is to:
+    1. Delete workflow state on eviction
+    2. Create fresh workflow instances on reactivation
+    3. Handle multi-job activations correctly (e.g., initialize + fire_timer)
+    """
+
+    @pytest.mark.trio
+    async def test_eviction_deletes_workflow_state(self) -> None:
+        """Test that eviction properly removes workflow from cache."""
+        bridge = MockBridge()
+        worker = SingleThreadWorker(
+            bridge=bridge,  # type: ignore
+            task_queue="test-queue",
+            workflows=[TimerWorkflow],
+        )
+
+        # Start workflow
+        initial_activation = _create_activation(
+            jobs=[WorkflowStartedJob(workflow_type="TimerWorkflow", args=(1.0,))],
+            timestamp_ns=1_000_000_000,
+            run_id="run-evict",
+        )
+        bridge.add_activation(initial_activation)
+
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(worker.run)
+
+            # Wait for workflow to start and block on timer
+            await trio.sleep(0.1)
+            assert "run-evict" in worker._workflow_states
+
+            # Send eviction activation
+            eviction_activation = _create_activation(
+                jobs=[],
+                timestamp_ns=2_000_000_000,
+                run_id="run-evict",
+            )
+            # Mark as eviction
+            eviction_activation.remove_from_cache = True  # type: ignore
+            bridge.add_activation(eviction_activation)
+
+            await trio.sleep(0.1)
+
+            # Workflow state should be deleted
+            assert "run-evict" not in worker._workflow_states
+
+            # Shutdown
+            worker.shutdown()
+
+    @pytest.mark.trio
+    async def test_reactivation_creates_fresh_instance(self) -> None:
+        """Test that reactivation after eviction creates a fresh workflow instance.
+
+        This simulates the replay scenario where:
+        1. Workflow starts and sets a timer
+        2. Workflow is evicted (cache pressure, continue-as-new, etc.)
+        3. Timer fires, triggering reactivation
+        4. SDK-Core sends initialize_workflow + fire_timer in same activation
+        5. Worker creates fresh instance and processes both jobs
+        """
+        bridge = MockBridge()
+        worker = SingleThreadWorker(
+            bridge=bridge,  # type: ignore
+            task_queue="test-queue",
+            workflows=[TimerWorkflow],
+        )
+
+        # Step 1: Start workflow
+        initial_activation = _create_activation(
+            jobs=[WorkflowStartedJob(workflow_type="TimerWorkflow", args=(1.0,))],
+            timestamp_ns=1_000_000_000,
+            run_id="run-replay",
+        )
+        bridge.add_activation(initial_activation)
+
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(worker.run)
+
+            # Wait for workflow to start
+            await trio.sleep(0.1)
+            assert "run-replay" in worker._workflow_states
+
+            # Step 2: Send eviction
+            eviction_activation = _create_activation(
+                jobs=[],
+                timestamp_ns=2_000_000_000,
+                run_id="run-replay",
+            )
+            eviction_activation.remove_from_cache = True  # type: ignore
+            bridge.add_activation(eviction_activation)
+
+            await trio.sleep(0.1)
+            assert "run-replay" not in worker._workflow_states
+
+            # Step 3: Reactivation with initialize_workflow (fresh start)
+            # In real scenario, SDK-Core sends this when timer fires and
+            # workflow is no longer in cache
+            reactivation = _create_activation(
+                jobs=[WorkflowStartedJob(workflow_type="TimerWorkflow", args=(1.0,))],
+                timestamp_ns=3_000_000_000,
+                run_id="run-replay",
+            )
+            # Mark as replay
+            reactivation.is_replaying = True  # type: ignore
+            bridge.add_activation(reactivation)
+
+            await trio.sleep(0.1)
+
+            # Fresh instance should be created
+            assert "run-replay" in worker._workflow_states
+
+            # Shutdown
+            worker.shutdown()
+
+    @pytest.mark.trio
+    async def test_multi_job_activation_during_replay(self) -> None:
+        """Test handling of multi-job activations during replay.
+
+        During replay, SDK-Core may send multiple jobs in one activation:
+        - initialize_workflow (to start the workflow)
+        - fire_timer (already resolved from history)
+
+        The worker must:
+        1. Create fresh workflow instance
+        2. Apply all jobs in order
+        3. Let workflow progress to completion
+        """
+        bridge = MockBridge()
+        worker = SingleThreadWorker(
+            bridge=bridge,  # type: ignore
+            task_queue="test-queue",
+            workflows=[TimerWorkflow],
+        )
+
+        # Replay activation with both initialize_workflow and fire_timer
+        # This happens when workflow was evicted after setting timer,
+        # and SDK-Core replays the entire workflow to catch up
+        replay_activation = _create_activation(
+            jobs=[
+                WorkflowStartedJob(workflow_type="TimerWorkflow", args=(1.0,)),
+                TimerFiredJob(timer_id=1),
+            ],
+            timestamp_ns=2_000_000_000,
+            run_id="run-multi-job",
+        )
+        replay_activation.is_replaying = True  # type: ignore
+        bridge.add_activation(replay_activation)
+
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(worker.run)
+
+            # Wait for workflow to process both jobs
+            await trio.sleep(0.2)
+
+            # Workflow should complete (timer fired immediately during replay)
+            # Note: It may or may not still be in states depending on completion timing
+            # The key is that no error occurred processing both jobs
+
+            # Shutdown
+            worker.shutdown()
+
+    @pytest.mark.trio
+    async def test_eviction_then_full_replay_sequence(self) -> None:
+        """Test complete eviction → replay → completion sequence.
+
+        This tests the full cycle:
+        1. Workflow starts, sets timer, produces StartTimer command
+        2. Timer fires, workflow completes
+        3. Workflow is evicted
+        4. Something triggers reactivation (e.g., query)
+        5. SDK-Core sends replay activation with all history
+        6. Workflow replays and reaches same state
+        """
+        bridge = MockBridge()
+        worker = SingleThreadWorker(
+            bridge=bridge,  # type: ignore
+            task_queue="test-queue",
+            workflows=[TimerWorkflow],
+        )
+
+        run_id = "run-full-sequence"
+
+        # Phase 1: Initial execution
+        initial_activation = _create_activation(
+            jobs=[WorkflowStartedJob(workflow_type="TimerWorkflow", args=(1.0,))],
+            timestamp_ns=1_000_000_000,
+            run_id=run_id,
+        )
+        bridge.add_activation(initial_activation)
+
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(worker.run)
+
+            # Wait for workflow to start
+            await trio.sleep(0.1)
+            assert run_id in worker._workflow_states
+
+            # Fire timer - workflow completes
+            timer_activation = _create_activation(
+                jobs=[TimerFiredJob(timer_id=1)],
+                timestamp_ns=2_000_000_000,
+                run_id=run_id,
+            )
+            bridge.add_activation(timer_activation)
+
+            await trio.sleep(0.1)
+            # Workflow should be completed and removed
+            assert run_id not in worker._workflow_states
+
+            # Phase 2: Later, workflow needs to replay (e.g., for a query)
+            # SDK-Core sends full replay activation
+            replay_activation = _create_activation(
+                jobs=[
+                    WorkflowStartedJob(workflow_type="TimerWorkflow", args=(1.0,)),
+                    TimerFiredJob(timer_id=1),
+                ],
+                timestamp_ns=3_000_000_000,
+                run_id=run_id,
+            )
+            replay_activation.is_replaying = True  # type: ignore
+            bridge.add_activation(replay_activation)
+
+            await trio.sleep(0.2)
+
+            # Workflow replayed and completed again
+            # (may or may not be in states depending on timing)
+
+            # Shutdown
+            worker.shutdown()
+
+    @pytest.mark.trio
+    async def test_sequential_evictions_same_workflow(self) -> None:
+        """Test multiple eviction/reactivation cycles for same workflow."""
+        bridge = MockBridge()
+        worker = SingleThreadWorker(
+            bridge=bridge,  # type: ignore
+            task_queue="test-queue",
+            workflows=[MultiTimerWorkflow],
+        )
+
+        run_id = "run-multi-evict"
+
+        # Start workflow
+        initial_activation = _create_activation(
+            jobs=[WorkflowStartedJob(workflow_type="MultiTimerWorkflow", args=())],
+            timestamp_ns=1_000_000_000,
+            run_id=run_id,
+        )
+        bridge.add_activation(initial_activation)
+
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(worker.run)
+
+            # Wait for workflow to start
+            await trio.sleep(0.1)
+            assert run_id in worker._workflow_states
+
+            # First eviction
+            eviction1 = _create_activation(
+                jobs=[],
+                timestamp_ns=2_000_000_000,
+                run_id=run_id,
+            )
+            eviction1.remove_from_cache = True  # type: ignore
+            bridge.add_activation(eviction1)
+
+            await trio.sleep(0.1)
+            assert run_id not in worker._workflow_states
+
+            # First reactivation
+            reactivation1 = _create_activation(
+                jobs=[WorkflowStartedJob(workflow_type="MultiTimerWorkflow", args=())],
+                timestamp_ns=3_000_000_000,
+                run_id=run_id,
+            )
+            reactivation1.is_replaying = True  # type: ignore
+            bridge.add_activation(reactivation1)
+
+            await trio.sleep(0.1)
+            assert run_id in worker._workflow_states
+
+            # Second eviction
+            eviction2 = _create_activation(
+                jobs=[],
+                timestamp_ns=4_000_000_000,
+                run_id=run_id,
+            )
+            eviction2.remove_from_cache = True  # type: ignore
+            bridge.add_activation(eviction2)
+
+            await trio.sleep(0.1)
+            assert run_id not in worker._workflow_states
+
+            # Second reactivation with partial replay
+            reactivation2 = _create_activation(
+                jobs=[
+                    WorkflowStartedJob(workflow_type="MultiTimerWorkflow", args=()),
+                    TimerFiredJob(timer_id=1),  # First timer already fired
+                ],
+                timestamp_ns=5_000_000_000,
+                run_id=run_id,
+            )
+            reactivation2.is_replaying = True  # type: ignore
+            bridge.add_activation(reactivation2)
+
+            await trio.sleep(0.1)
+            assert run_id in worker._workflow_states
+
+            # Shutdown
+            worker.shutdown()
+
+    @pytest.mark.trio
+    async def test_eviction_during_activity_wait(self) -> None:
+        """Test eviction while workflow is waiting for activity."""
+        bridge = MockBridge()
+        worker = SingleThreadWorker(
+            bridge=bridge,  # type: ignore
+            task_queue="test-queue",
+            workflows=[ActivityWorkflow],
+        )
+
+        run_id = "run-evict-activity"
+
+        # Start workflow
+        initial_activation = _create_activation(
+            jobs=[
+                WorkflowStartedJob(
+                    workflow_type="ActivityWorkflow", args=("my_activity",)
+                )
+            ],
+            timestamp_ns=1_000_000_000,
+            run_id=run_id,
+        )
+        bridge.add_activation(initial_activation)
+
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(worker.run)
+
+            # Wait for workflow to block on activity
+            await trio.sleep(0.1)
+            assert run_id in worker._workflow_states
+
+            # Evict while waiting for activity
+            eviction = _create_activation(
+                jobs=[],
+                timestamp_ns=2_000_000_000,
+                run_id=run_id,
+            )
+            eviction.remove_from_cache = True  # type: ignore
+            bridge.add_activation(eviction)
+
+            await trio.sleep(0.1)
+            assert run_id not in worker._workflow_states
+
+            # Reactivate with activity already resolved
+            replay_activation = _create_activation(
+                jobs=[
+                    WorkflowStartedJob(
+                        workflow_type="ActivityWorkflow", args=("my_activity",)
+                    ),
+                    ActivityResolvedJob(seq=1, result="activity done!"),
+                ],
+                timestamp_ns=3_000_000_000,
+                run_id=run_id,
+            )
+            replay_activation.is_replaying = True  # type: ignore
+            bridge.add_activation(replay_activation)
+
+            await trio.sleep(0.2)
+
+            # Workflow should complete (activity result was in replay)
+
+            # Shutdown
+            worker.shutdown()

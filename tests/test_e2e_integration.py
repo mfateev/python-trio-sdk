@@ -469,6 +469,271 @@ def _get_workflow_history_via_cli(workflow_id: str, namespace: str) -> dict[str,
         raise RuntimeError(f"Unexpected error getting history: {e}") from e
 
 
+# =============================================================================
+# Eviction and Replay E2E Tests
+# =============================================================================
+
+
+@workflow.defn
+class QueryableWorkflow:
+    """Workflow with query handler for testing eviction/replay."""
+
+    def __init__(self) -> None:
+        self.counter = 0
+        self.status = "initial"
+
+    @workflow.run
+    async def run(self) -> str:
+        """Execute workflow with state updates."""
+        self.status = "started"
+        self.counter = 10
+
+        # Short sleep to simulate work
+        await workflow.sleep(0.1)
+
+        self.status = "after_sleep"
+        self.counter = 20
+
+        return f"completed with counter={self.counter}"
+
+    @workflow.query
+    def get_counter(self) -> int:
+        """Return current counter value."""
+        return self.counter
+
+    @workflow.query
+    def get_status(self) -> str:
+        """Return current status."""
+        return self.status
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_e2e_query_triggers_replay(trio_client):
+    """Test that querying a completed workflow triggers replay.
+
+    This test validates the eviction/replay behavior:
+    1. Workflow executes and completes
+    2. Workflow is evicted from cache (after completion)
+    3. Query arrives, triggering replay
+    4. Query returns correct result (proving replay worked)
+
+    Note: Queries trigger replay because completed workflows are
+    not kept in the worker's cache indefinitely. When SDK-Core
+    needs to answer a query for a workflow not in cache, it
+    replays from history.
+    """
+    namespace = "default"
+    task_queue = f"trio-e2e-replay-queue-{int(time.time())}"
+    workflow_id = f"test-replay-{int(time.time())}"
+
+    worker = Worker(
+        client=trio_client,
+        task_queue=task_queue,
+        workflows=[QueryableWorkflow],
+    )
+
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(worker.run)
+
+        # Give worker time to start
+        await trio.sleep(3)
+
+        try:
+            # Start workflow
+            print(f"Starting workflow {workflow_id}...")
+            _start_workflow_via_cli(
+                workflow_id=workflow_id,
+                workflow_type="QueryableWorkflow",
+                task_queue=task_queue,
+                namespace=namespace,
+                args=[],
+            )
+
+            # Wait for workflow completion
+            max_wait = 30
+            start_time_test = time.time()
+            while time.time() - start_time_test < max_wait:
+                cli_result = _query_workflow_via_cli(workflow_id, namespace)
+                status = cli_result.get("status", "UNKNOWN")
+
+                if status == "COMPLETED":
+                    break
+                elif status in ["FAILED", "TERMINATED", "CANCELLED"]:
+                    raise RuntimeError(f"Workflow ended with status: {status}")
+
+                await trio.sleep(0.5)
+            else:
+                raise TimeoutError(
+                    f"Workflow did not complete within {max_wait} seconds"
+                )
+
+            print(f"Workflow {workflow_id} completed, now sending query...")
+
+            # Wait a moment to ensure workflow is evicted from cache
+            # (completed workflows are typically removed immediately)
+            await trio.sleep(1)
+
+            # Send query - this triggers replay since workflow is not in cache
+            query_result = _query_workflow_query_via_cli(
+                workflow_id=workflow_id,
+                namespace=namespace,
+                query_type="get_counter",
+            )
+
+            # Verify query returned correct result
+            # After replay, counter should be at final value (20)
+            assert query_result == 20, f"Expected counter=20, got {query_result}"
+
+            print(f"✅ Query returned correct value: {query_result}")
+            print("✅ E2E replay test passed - query triggered replay successfully")
+
+        finally:
+            worker.shutdown()
+            await trio.sleep(0.5)
+            nursery.cancel_scope.cancel()
+
+
+def _query_workflow_query_via_cli(
+    workflow_id: str, namespace: str, query_type: str, args: list[Any] | None = None
+) -> Any:
+    """Execute a query on a workflow using Temporal CLI.
+
+    Args:
+        workflow_id: The workflow ID to query
+        namespace: Temporal namespace
+        query_type: The query handler name
+        args: Optional arguments for the query
+
+    Returns:
+        The query result
+
+    Raises:
+        RuntimeError: If CLI query fails
+    """
+    try:
+        cmd = [
+            TEMPORAL_CLI_PATH,
+            "workflow",
+            "query",
+            "--workflow-id",
+            workflow_id,
+            "--namespace",
+            namespace,
+            "--type",
+            query_type,
+        ]
+
+        if args:
+            for arg in args:
+                cmd.extend(["--input", json.dumps(arg)])
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+
+        # Parse JSON output
+        output = result.stdout.strip()
+        if output:
+            # The CLI returns the query result as JSON
+            return json.loads(output)
+        return None
+
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Query failed: {e.stderr if e.stderr else e.stdout}") from e
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Failed to parse query result: {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"Unexpected error executing query: {e}") from e
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_e2e_multiple_workflows_cache_pressure(trio_client):
+    """Test that multiple workflows can be processed without cache issues.
+
+    This test runs multiple concurrent workflows to verify:
+    1. Worker handles multiple workflows correctly
+    2. Cache management doesn't break under load
+    3. Each workflow completes independently
+
+    This indirectly tests eviction by creating cache pressure.
+    """
+    namespace = "default"
+    task_queue = f"trio-e2e-cache-queue-{int(time.time())}"
+    workflow_count = 5
+
+    worker = Worker(
+        client=trio_client,
+        task_queue=task_queue,
+        workflows=[SimpleTimerWorkflow],
+    )
+
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(worker.run)
+
+        # Give worker time to start
+        await trio.sleep(3)
+
+        try:
+            # Start multiple workflows
+            workflow_ids = []
+            for i in range(workflow_count):
+                wf_id = f"test-cache-{int(time.time())}-{i}"
+                workflow_ids.append(wf_id)
+
+                print(f"Starting workflow {wf_id}...")
+                _start_workflow_via_cli(
+                    workflow_id=wf_id,
+                    workflow_type="SimpleTimerWorkflow",
+                    task_queue=task_queue,
+                    namespace=namespace,
+                    args=[0.5],  # Short sleep
+                )
+
+            # Wait for all workflows to complete
+            max_wait = 60
+            start_time_test = time.time()
+            completed = set()
+
+            while (
+                len(completed) < workflow_count
+                and time.time() - start_time_test < max_wait
+            ):
+                for wf_id in workflow_ids:
+                    if wf_id in completed:
+                        continue
+
+                    cli_result = _query_workflow_via_cli(wf_id, namespace)
+                    status = cli_result.get("status", "UNKNOWN")
+
+                    if status == "COMPLETED":
+                        completed.add(wf_id)
+                        print(f"Workflow {wf_id} completed")
+                    elif status in ["FAILED", "TERMINATED", "CANCELLED"]:
+                        raise RuntimeError(
+                            f"Workflow {wf_id} ended with status: {status}"
+                        )
+
+                await trio.sleep(0.5)
+
+            assert len(completed) == workflow_count, (
+                f"Only {len(completed)}/{workflow_count} workflows completed"
+            )
+
+            print(f"✅ All {workflow_count} workflows completed successfully")
+            print("✅ E2E cache pressure test passed")
+
+        finally:
+            worker.shutdown()
+            await trio.sleep(0.5)
+            nursery.cancel_scope.cancel()
+
+
 if __name__ == "__main__":
     # Allow running tests directly for debugging
     print("Running E2E integration tests...")

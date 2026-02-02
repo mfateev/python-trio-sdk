@@ -156,7 +156,9 @@ async def test_eviction_replay_timer_behavior(unique_task_queue: str) -> None:
                     await bridge.complete_workflow_activation(
                         completion, timeout=DEFAULT_TIMEOUT
                     )
-                    print("  -> Completion sent successfully (no error = dedupe works!)")
+                    print(
+                        "  -> Completion sent successfully (no error = dedupe works!)"
+                    )
 
             elif activation.has_job_type("fire_timer"):
                 print("  -> Timer fired! (no eviction occurred)")
@@ -555,9 +557,7 @@ async def test_is_replaying_flag(unique_task_queue: str) -> None:
 
         # Complete
         completion = (
-            CompletionBuilder(activation.run_id)
-            .complete_workflow("done")
-            .build()
+            CompletionBuilder(activation.run_id).complete_workflow("done").build()
         )
         await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
 
