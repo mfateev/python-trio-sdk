@@ -30,24 +30,48 @@ git checkout task/trio-asyncio
 # 1. Create or switch to feature branch
 git checkout -b feature/description
 
-# 2. Make changes, test, lint
-uv run pytest -v -m "not temporal_server"
+# 2. Make changes, lint, format
 uv run poe lint
 uv run poe format
 
-# 3. Commit changes
+# 3. Run ALL tests including E2E (REQUIRED before push)
+temporal server start-dev &  # Start Temporal server if not running
+uv run pytest -v             # Run ALL tests (unit + E2E)
+
+# 4. Commit changes (only after all tests pass)
 git add <files>
 git commit -m "feat(component): description"
 
-# 4. Push branch
+# 5. Push branch
 git push -u origin feature/description
 
-# 5. Create PR to merge into main
+# 6. Create PR to merge into main
 gh pr create --base main --title "Description" --body "Details"
 ```
 
+### Pre-Push Requirements (CRITICAL)
+
+**NEVER push without running ALL tests first.** This includes E2E tests.
+
+```bash
+# Start Temporal server (required for E2E tests)
+temporal server start-dev &
+
+# Run ALL tests - this is MANDATORY before every push
+uv run pytest -v
+
+# Verify all tests pass before pushing
+# Zero failures allowed - fix issues before pushing
+```
+
+**Why E2E tests are mandatory:**
+- Unit tests alone miss integration issues
+- E2E tests validate real server behavior
+- Bugs caught by E2E tests are harder to debug later
+- The SDK must work end-to-end, not just in isolation
+
 ### Pull Request Requirements
-- All tests must pass
+- **All tests must pass** (unit AND E2E)
 - Code must be linted and formatted
 - PR description should explain the changes
 - Use `gh pr create` to create PRs from the command line
