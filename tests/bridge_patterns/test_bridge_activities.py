@@ -16,16 +16,16 @@ from uuid import uuid4
 
 import pytest
 import temporalio.bridge.proto
-import temporalio.bridge.proto.activity_task.activity_task_pb2 as activity_task_pb
 import temporalio.bridge.proto.activity_result.activity_result_pb2 as activity_result_pb
+import temporalio.bridge.proto.activity_task.activity_task_pb2 as activity_task_pb
 import trio
 
 from temporalio_trio._async_bridge import TrioBridgeWrapper
 
 from .conftest import (
+    DEFAULT_TIMEOUT,
     ActivationParser,
     CompletionBuilder,
-    DEFAULT_TIMEOUT,
     get_workflow_status_via_cli,
     poll_and_handle_eviction,
     safe_shutdown,
@@ -73,7 +73,9 @@ async def test_pattern_8_activity_execution_success(unique_task_queue: str) -> N
         )
 
         # 2. Poll for workflow activation (initialize_workflow)
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("initialize_workflow"), (
@@ -130,7 +132,9 @@ async def test_pattern_8_activity_execution_success(unique_task_queue: str) -> N
         print("Pattern 8: Completed activity with result")
 
         # 6. Poll for workflow activation (resolve_activity)
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("resolve_activity"), (
@@ -144,16 +148,22 @@ async def test_pattern_8_activity_execution_success(unique_task_queue: str) -> N
         # Verify resolve_activity structure
         assert resolve_job.seq == 1
         result_status = resolve_job.result.WhichOneof("status")
-        assert result_status == "completed", f"Expected 'completed', got '{result_status}'"
+        assert result_status == "completed", (
+            f"Expected 'completed', got '{result_status}'"
+        )
 
         # Decode and verify result
         if resolve_job.result.completed.result.ByteSize() > 0:
-            result_value = activation.decode_payload(resolve_job.result.completed.result)
+            result_value = activation.decode_payload(
+                resolve_job.result.completed.result
+            )
             print(f"Pattern 8: Activity result: {result_value}")
             assert result_value == "activity_result_value"
 
         # 7. Complete workflow
-        completion = CompletionBuilder(run_id).complete_workflow("workflow_done").build()
+        completion = (
+            CompletionBuilder(run_id).complete_workflow("workflow_done").build()
+        )
         await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
         print("Pattern 8: Sent CompleteWorkflowExecution")
 
@@ -207,7 +217,9 @@ async def test_pattern_9_activity_failure(unique_task_queue: str) -> None:
         )
 
         # 2. Poll for workflow activation (initialize_workflow)
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("initialize_workflow")
@@ -240,7 +252,9 @@ async def test_pattern_9_activity_failure(unique_task_queue: str) -> None:
         activity_completion = activity_result_pb.ActivityExecutionResult()
         activity_completion.failed.failure.message = "Activity intentionally failed"
         activity_completion.failed.failure.source = "PythonSDK"
-        activity_completion.failed.failure.application_failure_info.type = "RuntimeError"
+        activity_completion.failed.failure.application_failure_info.type = (
+            "RuntimeError"
+        )
         activity_completion.failed.failure.application_failure_info.non_retryable = True
 
         activity_task_completion = temporalio.bridge.proto.ActivityTaskCompletion()
@@ -253,7 +267,9 @@ async def test_pattern_9_activity_failure(unique_task_queue: str) -> None:
         print("Pattern 9: Completed activity with failure")
 
         # 6. Poll for workflow activation (resolve_activity with failure)
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("resolve_activity"), (
@@ -346,7 +362,9 @@ async def test_pattern_10_activity_cancellation(unique_task_queue: str) -> None:
         )
 
         # 2. Poll for workflow activation (initialize_workflow)
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("initialize_workflow")
@@ -377,7 +395,9 @@ async def test_pattern_10_activity_cancellation(unique_task_queue: str) -> None:
         print("Pattern 10: Received activity task (activity running)")
 
         # 5. Poll for timer to fire (wakes up workflow)
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("fire_timer"), (
@@ -387,9 +407,7 @@ async def test_pattern_10_activity_cancellation(unique_task_queue: str) -> None:
         print("Pattern 10: Timer fired, workflow woke up")
 
         # 6. Send RequestCancelActivity
-        completion = (
-            CompletionBuilder(run_id).request_cancel_activity(seq=1).build()
-        )
+        completion = CompletionBuilder(run_id).request_cancel_activity(seq=1).build()
         await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
         print("Pattern 10: Sent RequestCancelActivity(seq=1)")
 
@@ -408,7 +426,9 @@ async def test_pattern_10_activity_cancellation(unique_task_queue: str) -> None:
         print("Pattern 10: Completed activity with cancelled status")
 
         # 8. Poll for workflow activation (resolve_activity with cancelled)
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("resolve_activity"), (
@@ -422,7 +442,9 @@ async def test_pattern_10_activity_cancellation(unique_task_queue: str) -> None:
         # Verify cancelled structure
         assert resolve_job.seq == 1
         result_status = resolve_job.result.WhichOneof("status")
-        assert result_status == "cancelled", f"Expected 'cancelled', got '{result_status}'"
+        assert result_status == "cancelled", (
+            f"Expected 'cancelled', got '{result_status}'"
+        )
 
         # Check cancellation details
         cancel_failure = resolve_job.result.cancelled.failure
@@ -476,15 +498,17 @@ async def test_pattern_8_activity_with_retry(unique_task_queue: str) -> None:
         )
 
         # Poll and get run_id
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
         run_id = activation.run_id
 
         # Schedule activity with retry policy
         # Using low-level protobuf to set retry policy
+        import google.protobuf.duration_pb2
         import temporalio.bridge.proto.workflow_commands.workflow_commands_pb2 as cmd_pb
         import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
-        import google.protobuf.duration_pb2
 
         completion = comp_pb.WorkflowActivationCompletion()
         completion.run_id = run_id
@@ -522,7 +546,9 @@ async def test_pattern_8_activity_with_retry(unique_task_queue: str) -> None:
         # Fail first attempt
         activity_completion = activity_result_pb.ActivityExecutionResult()
         activity_completion.failed.failure.message = "Temporary failure"
-        activity_completion.failed.failure.application_failure_info.non_retryable = False
+        activity_completion.failed.failure.application_failure_info.non_retryable = (
+            False
+        )
 
         activity_task_completion = temporalio.bridge.proto.ActivityTaskCompletion()
         activity_task_completion.task_token = activity_task.task_token
@@ -555,7 +581,9 @@ async def test_pattern_8_activity_with_retry(unique_task_queue: str) -> None:
         )
 
         # Poll for resolve_activity
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("resolve_activity")

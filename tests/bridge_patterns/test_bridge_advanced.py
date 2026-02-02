@@ -20,9 +20,9 @@ import trio
 from temporalio_trio._async_bridge import TrioBridgeWrapper
 
 from .conftest import (
+    DEFAULT_TIMEOUT,
     ActivationParser,
     CompletionBuilder,
-    DEFAULT_TIMEOUT,
     get_workflow_status_via_cli,
     safe_shutdown,
     signal_workflow_via_cli,
@@ -66,7 +66,9 @@ async def test_pattern_16_workflow_failure(unique_task_queue: str) -> None:
         )
 
         # 2. Poll for initialization
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("initialize_workflow")
@@ -74,15 +76,17 @@ async def test_pattern_16_workflow_failure(unique_task_queue: str) -> None:
         print("Pattern 16: Received initialize_workflow")
 
         # 3. Fail the workflow with detailed error
-        import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
         import temporalio.bridge.proto.workflow_commands.workflow_commands_pb2 as cmd_pb
+        import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
 
         completion = comp_pb.WorkflowActivationCompletion()
         completion.run_id = run_id
         completion.successful.SetInParent()
 
         cmd = cmd_pb.WorkflowCommand()
-        cmd.fail_workflow_execution.failure.message = "Workflow failed due to business logic error"
+        cmd.fail_workflow_execution.failure.message = (
+            "Workflow failed due to business logic error"
+        )
         cmd.fail_workflow_execution.failure.source = "PythonSDK"
         cmd.fail_workflow_execution.failure.stack_trace = (
             "Traceback (most recent call last):\n"
@@ -92,7 +96,9 @@ async def test_pattern_16_workflow_failure(unique_task_queue: str) -> None:
         )
         # Set application failure info
         cmd.fail_workflow_execution.failure.application_failure_info.type = "ValueError"
-        cmd.fail_workflow_execution.failure.application_failure_info.non_retryable = True
+        cmd.fail_workflow_execution.failure.application_failure_info.non_retryable = (
+            True
+        )
 
         completion.successful.commands.append(cmd)
         await bridge.complete_workflow_activation(
@@ -149,7 +155,9 @@ async def test_pattern_17_continue_as_new(unique_task_queue: str) -> None:
         )
 
         # 2. Poll for initialization
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("initialize_workflow")
@@ -173,12 +181,16 @@ async def test_pattern_17_continue_as_new(unique_task_queue: str) -> None:
             .build()
         )
         await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
-        print(f"Pattern 17: Sent ContinueAsNewWorkflowExecution(iteration={iteration + 1})")
+        print(
+            f"Pattern 17: Sent ContinueAsNewWorkflowExecution(iteration={iteration + 1})"
+        )
 
         # 4. Poll for new execution's initialization
         # Note: Can't easily check CONTINUED_AS_NEW status without specific run_id
         # The CLI describe returns the LATEST execution, which is the new one (RUNNING)
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         # Handle possible cache eviction before getting new execution
@@ -186,10 +198,14 @@ async def test_pattern_17_continue_as_new(unique_task_queue: str) -> None:
             print("Pattern 17: Handling cache eviction")
             evict_run_id = activation.run_id
             completion = CompletionBuilder(evict_run_id).build()
-            await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                completion, timeout=DEFAULT_TIMEOUT
+            )
 
             # Now poll for the new execution
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("initialize_workflow"), (
@@ -224,7 +240,9 @@ async def test_pattern_17_continue_as_new(unique_task_queue: str) -> None:
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_pattern_17_continue_as_new_different_type(unique_task_queue: str) -> None:
+async def test_pattern_17_continue_as_new_different_type(
+    unique_task_queue: str,
+) -> None:
     """Test Pattern 17 variant: Continue-as-new with different workflow type.
 
     Verifies that workflow can continue as a different type.
@@ -249,7 +267,9 @@ async def test_pattern_17_continue_as_new_different_type(unique_task_queue: str)
         )
 
         # Get initialization
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
         run_id = activation.run_id
         init_job = activation.get_job("initialize_workflow")
@@ -268,7 +288,9 @@ async def test_pattern_17_continue_as_new_different_type(unique_task_queue: str)
         print("Pattern 17 (type): Continuing as TypeBWorkflow")
 
         # Poll for new execution - may need to handle cache eviction
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         # Handle possible cache eviction before getting new execution
@@ -276,10 +298,14 @@ async def test_pattern_17_continue_as_new_different_type(unique_task_queue: str)
             print(f"Pattern 17 (type): Handling cache eviction")
             evict_run_id = activation.run_id
             completion = CompletionBuilder(evict_run_id).build()
-            await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                completion, timeout=DEFAULT_TIMEOUT
+            )
 
             # Now poll for the new execution
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("initialize_workflow"), (
@@ -341,7 +367,9 @@ async def test_pattern_18_signal_external_workflow(unique_task_queue: str) -> No
         )
 
         # Keep target running with timer
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
         target_run_id = activation.run_id
 
@@ -363,14 +391,16 @@ async def test_pattern_18_signal_external_workflow(unique_task_queue: str) -> No
         )
 
         # 3. Poll for signaling workflow initialization
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
         signaling_run_id = activation.run_id
         print("Pattern 18: Signaling workflow received initialize_workflow")
 
         # 4. Send SignalExternalWorkflowExecution command
-        import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
         import temporalio.bridge.proto.workflow_commands.workflow_commands_pb2 as cmd_pb
+        import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
         from temporalio.converter import DataConverter
 
         dc = DataConverter.default
@@ -388,7 +418,9 @@ async def test_pattern_18_signal_external_workflow(unique_task_queue: str) -> No
         cmd.signal_external_workflow_execution.signal_name = "external_signal"
 
         # Add signal arguments
-        signal_arg_payload = dc.payload_converter.to_payload("signal_data_from_external")
+        signal_arg_payload = dc.payload_converter.to_payload(
+            "signal_data_from_external"
+        )
         cmd.signal_external_workflow_execution.args.append(signal_arg_payload)
 
         completion.successful.commands.append(cmd)
@@ -402,13 +434,17 @@ async def test_pattern_18_signal_external_workflow(unique_task_queue: str) -> No
         target_received_signal = False
 
         for _ in range(10):
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
 
             # Check for signal resolution in signaling workflow
             if activation.has_job_type("resolve_signal_external_workflow"):
                 resolve_job = activation.get_job("resolve_signal_external_workflow")
-                print(f"Pattern 18: Received resolve_signal_external_workflow(seq={resolve_job.seq})")
+                print(
+                    f"Pattern 18: Received resolve_signal_external_workflow(seq={resolve_job.seq})"
+                )
 
                 # Check if it succeeded (failure is absent = success)
                 if resolve_job.failure.ByteSize() > 0:
@@ -448,7 +484,9 @@ async def test_pattern_18_signal_external_workflow(unique_task_queue: str) -> No
 
             # Handle other activations
             completion = CompletionBuilder(activation.run_id).build()
-            await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                completion, timeout=DEFAULT_TIMEOUT
+            )
 
             if signal_resolved and target_received_signal:
                 break
@@ -502,7 +540,9 @@ async def test_pattern_19_search_attributes(unique_task_queue: str) -> None:
         )
 
         # Get initialization
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
         run_id = activation.run_id
         print("Pattern 19: Received initialize_workflow")
@@ -510,8 +550,8 @@ async def test_pattern_19_search_attributes(unique_task_queue: str) -> None:
         # Upsert search attributes
         # Note: This uses the standard "CustomKeywordField" search attribute
         # which should be available on most Temporal server setups
-        import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
         import temporalio.bridge.proto.workflow_commands.workflow_commands_pb2 as cmd_pb
+        import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
         from temporalio.converter import DataConverter
 
         dc = DataConverter.default
@@ -527,9 +567,9 @@ async def test_pattern_19_search_attributes(unique_task_queue: str) -> None:
         keyword_payload = dc.payload_converter.to_payload("test-value-123")
         keyword_payload.metadata["encoding"] = b"json/plain"
         keyword_payload.metadata["type"] = b"Keyword"
-        cmd.upsert_workflow_search_attributes.search_attributes["CustomKeywordField"].CopyFrom(
-            keyword_payload
-        )
+        cmd.upsert_workflow_search_attributes.search_attributes[
+            "CustomKeywordField"
+        ].CopyFrom(keyword_payload)
 
         completion.successful.commands.append(cmd)
 
@@ -547,22 +587,30 @@ async def test_pattern_19_search_attributes(unique_task_queue: str) -> None:
             print("Pattern 19: Sent UpsertWorkflowSearchAttributes + timer")
         except Exception as e:
             # Search attributes might not be configured
-            print(f"Pattern 19: UpsertSearchAttributes failed (may not be configured): {e}")
+            print(
+                f"Pattern 19: UpsertSearchAttributes failed (may not be configured): {e}"
+            )
             raise
 
         # Wait for timer to fire
         # Note: This test may fail due to cache eviction issues with search attributes
         # The UpsertSearchAttributes command combined with short timers can cause
         # repeated eviction/replay cycles. This is a known limitation.
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         # Handle single cache eviction/replay if needed
         if activation.has_job_type("remove_from_cache"):
             print("Pattern 19: Handling cache eviction")
             evict_completion = CompletionBuilder(activation.run_id).build()
-            await bridge.complete_workflow_activation(evict_completion, timeout=DEFAULT_TIMEOUT)
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                evict_completion, timeout=DEFAULT_TIMEOUT
+            )
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
 
         # If we get initialize_workflow (replay), complete with just timer + workflow done
@@ -570,18 +618,26 @@ async def test_pattern_19_search_attributes(unique_task_queue: str) -> None:
             print("Pattern 19: Replaying - completing workflow directly")
             run_id = activation.run_id
             completion = (
-                CompletionBuilder(run_id).complete_workflow("search_attrs_set_replayed").build()
+                CompletionBuilder(run_id)
+                .complete_workflow("search_attrs_set_replayed")
+                .build()
             )
-            await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                completion, timeout=DEFAULT_TIMEOUT
+            )
         elif activation.has_job_type("fire_timer"):
             print("Pattern 19: Timer fired")
             # Complete workflow
             completion = (
                 CompletionBuilder(run_id).complete_workflow("search_attrs_set").build()
             )
-            await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                completion, timeout=DEFAULT_TIMEOUT
+            )
         else:
-            pytest.fail(f"Unexpected activation: {[j.WhichOneof('variant') for j in activation.jobs]}")
+            pytest.fail(
+                f"Unexpected activation: {[j.WhichOneof('variant') for j in activation.jobs]}"
+            )
         await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
 
         await trio.sleep(0.5)
@@ -622,13 +678,15 @@ async def test_pattern_16_workflow_failure_with_details(unique_task_queue: str) 
             task_queue=unique_task_queue,
         )
 
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
         run_id = activation.run_id
 
         # Fail with detailed failure info
-        import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
         import temporalio.bridge.proto.workflow_commands.workflow_commands_pb2 as cmd_pb
+        import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
         from temporalio.converter import DataConverter
 
         dc = DataConverter.default
@@ -643,7 +701,9 @@ async def test_pattern_16_workflow_failure_with_details(unique_task_queue: str) 
         cmd.fail_workflow_execution.failure.application_failure_info.type = (
             "ValidationError"
         )
-        cmd.fail_workflow_execution.failure.application_failure_info.non_retryable = True
+        cmd.fail_workflow_execution.failure.application_failure_info.non_retryable = (
+            True
+        )
 
         # Add failure details as encoded payload
         # Note: details is a Payloads message with a nested payloads repeated field

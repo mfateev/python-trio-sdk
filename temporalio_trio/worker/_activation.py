@@ -44,6 +44,13 @@ __all__ = [
     # Child workflow commands
     "StartChildWorkflowCommand",
     "CancelChildWorkflowCommand",
+    # Continue-as-new command
+    "ContinueAsNewCommand",
+    # Signal external workflow
+    "SignalExternalWorkflowCommand",
+    "SignalExternalResolvedJob",
+    # Search attribute commands
+    "UpsertSearchAttributesCommand",
 ]
 
 
@@ -576,6 +583,133 @@ class CancelChildWorkflowCommand:
 
 
 # =============================================================================
+# Signal External Workflow (for signaling other workflows)
+# =============================================================================
+
+
+@dataclass
+class SignalExternalWorkflowCommand:
+    """Command to signal an external workflow.
+
+    This command requests the Temporal server to send a signal to another
+    workflow. When the signal is delivered, the server will send a
+    SignalExternalResolvedJob.
+
+    Attributes:
+        seq: Unique sequence number for this command.
+        workflow_id: Target workflow ID to signal.
+        run_id: Optional specific run ID (empty string = current run).
+        signal_name: Name of the signal to send.
+        args: Arguments to pass with the signal.
+    """
+
+    seq: int
+    """Unique sequence number for this command."""
+
+    workflow_id: str
+    """Target workflow ID to signal."""
+
+    signal_name: str
+    """Name of the signal to send."""
+
+    run_id: str | None = None
+    """Optional specific run ID (None/empty = current run)."""
+
+    args: tuple[Any, ...] = field(default_factory=tuple)
+    """Arguments to pass with the signal."""
+
+
+@dataclass
+class SignalExternalResolvedJob:
+    """Job indicating a signal to external workflow was resolved.
+
+    This job is sent when a previously requested signal to an external
+    workflow has been delivered (success) or failed. Success is indicated
+    by the absence of the failure field.
+
+    Attributes:
+        seq: Sequence number matching SignalExternalWorkflowCommand.
+        failure: Exception if signal failed (None = success).
+    """
+
+    seq: int
+    """Sequence number matching the SignalExternalWorkflowCommand."""
+
+    failure: BaseException | None = None
+    """Exception if signal failed. None indicates success."""
+
+
+# =============================================================================
+# Search Attribute Commands (for workflow visibility)
+# =============================================================================
+
+
+@dataclass
+class UpsertSearchAttributesCommand:
+    """Command to upsert workflow search attributes.
+
+    This command updates the workflow's search attributes. Search attributes
+    are used for workflow visibility and querying. The command performs an
+    upsert operation - existing attributes are updated, new attributes are
+    added, and missing attributes remain unchanged (not deleted).
+
+    Attributes:
+        search_attributes: Map of attribute name to value. Values are typed
+            (Keyword, Int, Bool, etc.) but passed as Python values here;
+            the data_converter handles encoding to Payloads.
+
+    Note:
+        - Search attributes are eventually consistent
+        - Custom attributes must be registered with the Temporal server
+        - This command does not generate a response job (one-way command)
+    """
+
+    search_attributes: dict[str, Any]
+    """Map of attribute name to value."""
+
+
+# =============================================================================
+# Continue-As-New Command
+# =============================================================================
+
+
+@dataclass
+class ContinueAsNewCommand:
+    """Command to continue the workflow as a new execution.
+
+    This command ends the current workflow execution and immediately starts
+    a new execution with the same workflow ID but a new run ID. This is useful
+    for long-running workflows to avoid unbounded history growth.
+
+    Attributes:
+        workflow_type: Name of the workflow type to execute (can be same or different).
+        args: Arguments to pass to the new workflow execution.
+        task_queue: Task queue for the new execution (defaults to current queue).
+        run_timeout: Timeout for a single run of the new workflow.
+        task_timeout: Timeout for a single workflow task of the new workflow.
+        retry_policy: Retry policy for the new workflow.
+    """
+
+    workflow_type: str
+    """Name of the workflow type to execute (can be same or different)."""
+
+    args: tuple[Any, ...] = field(default_factory=tuple)
+    """Arguments to pass to the new workflow execution."""
+
+    task_queue: str | None = None
+    """Task queue for the new execution (defaults to current queue)."""
+
+    run_timeout: timedelta | None = None
+    """Timeout for a single run of the new workflow."""
+
+    task_timeout: timedelta | None = None
+    """Timeout for a single workflow task of the new workflow."""
+
+    retry_policy: temporalio.common.RetryPolicy | None = None
+    """Retry policy for the new workflow."""
+
+
+# =============================================================================
 # Complete Type Aliases (defined after all types are available)
 # =============================================================================
 
@@ -589,6 +723,7 @@ WorkflowJob = (
     | ChildWorkflowStartedJob
     | ChildWorkflowStartFailedJob
     | ChildWorkflowResolvedJob
+    | SignalExternalResolvedJob
 )
 """Union type for all possible activation jobs."""
 
@@ -603,5 +738,8 @@ WorkflowCommand = (
     | QueryResultCommand
     | StartChildWorkflowCommand
     | CancelChildWorkflowCommand
+    | SignalExternalWorkflowCommand
+    | UpsertSearchAttributesCommand
+    | ContinueAsNewCommand
 )
 """Union type for all possible completion commands."""

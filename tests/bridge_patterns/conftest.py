@@ -69,7 +69,9 @@ class CompletionBuilder:
         data_converter: temporalio.converter.DataConverter | None = None,
     ):
         self.run_id = run_id
-        self.data_converter = data_converter or temporalio.converter.DataConverter.default
+        self.data_converter = (
+            data_converter or temporalio.converter.DataConverter.default
+        )
         self.completion = comp_pb.WorkflowActivationCompletion()
         self.completion.run_id = run_id
         self.completion.successful.SetInParent()
@@ -275,7 +277,9 @@ class ActivationParser:
     ):
         self.activation = act_pb.WorkflowActivation()
         self.activation.ParseFromString(activation_bytes)
-        self.data_converter = data_converter or temporalio.converter.DataConverter.default
+        self.data_converter = (
+            data_converter or temporalio.converter.DataConverter.default
+        )
 
     @property
     def run_id(self) -> str:
@@ -403,7 +407,9 @@ def signal_workflow_via_cli(
         timeout=10,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to signal workflow: {result.stderr or result.stdout}")
+        raise RuntimeError(
+            f"Failed to signal workflow: {result.stderr or result.stdout}"
+        )
 
 
 def query_workflow_via_cli(
@@ -447,7 +453,9 @@ def query_workflow_via_cli(
         timeout=timeout,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to query workflow: {result.stderr or result.stdout}")
+        raise RuntimeError(
+            f"Failed to query workflow: {result.stderr or result.stdout}"
+        )
 
     # Parse output - CLI returns the result directly
     try:
@@ -476,7 +484,9 @@ async def query_workflow_via_cli_async(
         Query result as dict
     """
     return await trio.to_thread.run_sync(
-        lambda: query_workflow_via_cli(workflow_id, query_type, args, namespace, timeout)
+        lambda: query_workflow_via_cli(
+            workflow_id, query_type, args, namespace, timeout
+        )
     )
 
 
@@ -507,7 +517,9 @@ def cancel_workflow_via_cli(
         timeout=10,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to cancel workflow: {result.stderr or result.stdout}")
+        raise RuntimeError(
+            f"Failed to cancel workflow: {result.stderr or result.stdout}"
+        )
 
 
 async def poll_and_handle_eviction(

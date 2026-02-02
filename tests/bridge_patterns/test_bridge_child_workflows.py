@@ -18,9 +18,9 @@ import trio
 from temporalio_trio._async_bridge import TrioBridgeWrapper
 
 from .conftest import (
+    DEFAULT_TIMEOUT,
     ActivationParser,
     CompletionBuilder,
-    DEFAULT_TIMEOUT,
     get_workflow_status_via_cli,
     safe_shutdown,
     start_workflow_via_cli,
@@ -68,7 +68,9 @@ async def test_pattern_14_child_workflow_success(unique_task_queue: str) -> None
         )
 
         # 2. Poll for parent workflow activation (initialize_workflow)
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("initialize_workflow")
@@ -92,7 +94,9 @@ async def test_pattern_14_child_workflow_success(unique_task_queue: str) -> None
         print("Pattern 14: Sent StartChildWorkflowExecution(seq=1)")
 
         # 4. Poll for child workflow start confirmation
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         # May receive resolve_child_workflow_execution_start OR initialize_workflow for child
@@ -102,7 +106,9 @@ async def test_pattern_14_child_workflow_success(unique_task_queue: str) -> None
 
         if activation.has_job_type("resolve_child_workflow_execution_start"):
             start_job = activation.get_job("resolve_child_workflow_execution_start")
-            print(f"Pattern 14: Received resolve_child_workflow_execution_start(seq={start_job.seq})")
+            print(
+                f"Pattern 14: Received resolve_child_workflow_execution_start(seq={start_job.seq})"
+            )
 
             # Verify start confirmation structure
             assert start_job.seq == 1
@@ -114,7 +120,9 @@ async def test_pattern_14_child_workflow_success(unique_task_queue: str) -> None
 
             # Acknowledge start confirmation with empty completion
             completion = CompletionBuilder(parent_run_id).build()
-            await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                completion, timeout=DEFAULT_TIMEOUT
+            )
 
         # The child workflow task may come on the same task queue
         # We need to handle the child's workflow tasks
@@ -122,7 +130,9 @@ async def test_pattern_14_child_workflow_success(unique_task_queue: str) -> None
         # Poll until we get the child's initialize_workflow
         child_activation = None
         for _ in range(5):
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
 
             if activation.has_job_type("initialize_workflow"):
@@ -137,14 +147,18 @@ async def test_pattern_14_child_workflow_success(unique_task_queue: str) -> None
 
             if activation.has_job_type("resolve_child_workflow_execution_start"):
                 if not child_started:
-                    start_job = activation.get_job("resolve_child_workflow_execution_start")
+                    start_job = activation.get_job(
+                        "resolve_child_workflow_execution_start"
+                    )
                     child_run_id = start_job.succeeded.run_id
                     child_started = True
                     print(f"Pattern 14: Child started with run_id: {child_run_id}")
 
                 # Acknowledge with empty completion
                 completion = CompletionBuilder(parent_run_id).build()
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
 
             if activation.has_job_type("resolve_child_workflow_execution"):
                 # Child already completed (fast execution)
@@ -158,22 +172,30 @@ async def test_pattern_14_child_workflow_success(unique_task_queue: str) -> None
                 .complete_workflow("child_result_value")
                 .build()
             )
-            await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                completion, timeout=DEFAULT_TIMEOUT
+            )
             print("Pattern 14: Child completed with result")
 
         # 6. Poll for child workflow completion in parent
         for _ in range(5):
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
 
             if activation.has_job_type("resolve_child_workflow_execution"):
                 resolve_job = activation.get_job("resolve_child_workflow_execution")
-                print(f"Pattern 14: Parent received resolve_child_workflow_execution(seq={resolve_job.seq})")
+                print(
+                    f"Pattern 14: Parent received resolve_child_workflow_execution(seq={resolve_job.seq})"
+                )
 
                 # Verify completion structure
                 assert resolve_job.seq == 1
                 result_status = resolve_job.result.WhichOneof("status")
-                assert result_status == "completed", f"Expected 'completed', got '{result_status}'"
+                assert result_status == "completed", (
+                    f"Expected 'completed', got '{result_status}'"
+                )
 
                 # Decode result
                 if resolve_job.result.completed.result.ByteSize() > 0:
@@ -189,7 +211,9 @@ async def test_pattern_14_child_workflow_success(unique_task_queue: str) -> None
                     .complete_workflow("parent_done")
                     .build()
                 )
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
                 print("Pattern 14: Parent completed")
                 break
 
@@ -197,7 +221,9 @@ async def test_pattern_14_child_workflow_success(unique_task_queue: str) -> None
             if activation.run_id == parent_run_id:
                 # Parent activation, acknowledge
                 completion = CompletionBuilder(parent_run_id).build()
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
             elif activation.has_job_type("initialize_workflow"):
                 # Child's initialize - complete it
                 completion = (
@@ -205,7 +231,9 @@ async def test_pattern_14_child_workflow_success(unique_task_queue: str) -> None
                     .complete_workflow("child_result_value")
                     .build()
                 )
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
 
         await trio.sleep(0.5)
 
@@ -249,7 +277,9 @@ async def test_pattern_14_child_workflow_start_failed(unique_task_queue: str) ->
         )
 
         # Process the blocking workflow to keep it running
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
         blocking_run_id = activation.run_id
 
@@ -271,7 +301,9 @@ async def test_pattern_14_child_workflow_start_failed(unique_task_queue: str) ->
         )
 
         # Get parent activation
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("initialize_workflow")
@@ -300,7 +332,9 @@ async def test_pattern_14_child_workflow_start_failed(unique_task_queue: str) ->
         print("Pattern 14 (start fail): Sent StartChildWorkflow with REJECT_DUPLICATE")
 
         # Poll for child start failure
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         if activation.has_job_type("resolve_child_workflow_execution_start"):
@@ -356,8 +390,8 @@ async def test_pattern_15_child_workflow_cancellation(unique_task_queue: str) ->
     - CancelChildWorkflowExecution command structure
     - resolve_child_workflow_execution with cancelled status
     """
-    import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
     import temporalio.bridge.proto.workflow_commands.workflow_commands_pb2 as cmd_pb
+    import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
 
     bridge = TrioBridgeWrapper()
     await bridge.start()
@@ -380,7 +414,9 @@ async def test_pattern_15_child_workflow_cancellation(unique_task_queue: str) ->
         )
 
         # 2. Poll for parent initialization
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("initialize_workflow")
@@ -408,7 +444,9 @@ async def test_pattern_15_child_workflow_cancellation(unique_task_queue: str) ->
         cancel_sent = False
 
         for _ in range(15):
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
 
             # Check if this is the parent's resolve_child_workflow_execution_start
@@ -454,7 +492,9 @@ async def test_pattern_15_child_workflow_cancellation(unique_task_queue: str) ->
 
             # Acknowledge other activations with empty completion
             completion = CompletionBuilder(activation.run_id).build()
-            await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                completion, timeout=DEFAULT_TIMEOUT
+            )
 
         assert cancel_sent, "Should have sent cancel command"
 
@@ -463,20 +503,26 @@ async def test_pattern_15_child_workflow_cancellation(unique_task_queue: str) ->
 
         for _ in range(15):
             try:
-                activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+                activation_bytes = await bridge.poll_workflow_activation(
+                    timeout=DEFAULT_TIMEOUT
+                )
                 activation = ActivationParser(activation_bytes)
 
                 # Check for parent's resolve_child_workflow_execution
                 if activation.has_job_type("resolve_child_workflow_execution"):
                     resolve_job = activation.get_job("resolve_child_workflow_execution")
                     result_status = resolve_job.result.WhichOneof("status")
-                    print(f"Pattern 15: resolve_child_workflow_execution status: {result_status}")
+                    print(
+                        f"Pattern 15: resolve_child_workflow_execution status: {result_status}"
+                    )
 
                     if result_status == "cancelled":
                         print("Pattern 15: Child workflow cancelled successfully")
                         cancel_failure = resolve_job.result.cancelled.failure
                         if cancel_failure.message:
-                            print(f"Pattern 15: Cancel message: {cancel_failure.message}")
+                            print(
+                                f"Pattern 15: Cancel message: {cancel_failure.message}"
+                            )
                         child_cancelled = True
 
                         # 7. Complete parent workflow
@@ -533,8 +579,9 @@ async def test_pattern_15_child_workflow_cancellation(unique_task_queue: str) ->
         print(f"Pattern 15: Parent workflow status: {status}")
 
         # Child should have been cancelled (or workflow completed successfully)
-        assert child_cancelled or status == "COMPLETED", \
+        assert child_cancelled or status == "COMPLETED", (
             f"Expected child_cancelled=True or COMPLETED status, got cancelled={child_cancelled}, status={status}"
+        )
 
         print("Pattern 15: Child Workflow Cancellation - PASSED")
 
@@ -570,7 +617,9 @@ async def test_pattern_14_child_workflow_with_args(unique_task_queue: str) -> No
         )
 
         # Get parent activation
-        activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+        activation_bytes = await bridge.poll_workflow_activation(
+            timeout=DEFAULT_TIMEOUT
+        )
         activation = ActivationParser(activation_bytes)
         parent_run_id = activation.run_id
 
@@ -599,7 +648,9 @@ async def test_pattern_14_child_workflow_with_args(unique_task_queue: str) -> No
         child_args_received = None
 
         for _ in range(5):
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
 
             if activation.has_job_type("initialize_workflow"):
@@ -609,11 +660,16 @@ async def test_pattern_14_child_workflow_with_args(unique_task_queue: str) -> No
                     child_args_received = [
                         activation.decode_payload(p) for p in init_job.arguments
                     ]
-                    print(f"Pattern 14 (args): Child received args: {child_args_received}")
+                    print(
+                        f"Pattern 14 (args): Child received args: {child_args_received}"
+                    )
 
                     # Verify arguments
                     assert len(child_args_received) == 4
-                    assert child_args_received[0] == {"key": "value", "nested": {"a": 1}}
+                    assert child_args_received[0] == {
+                        "key": "value",
+                        "nested": {"a": 1},
+                    }
                     assert child_args_received[1] == [1, 2, 3]
                     assert child_args_received[2] == "string_arg"
                     assert child_args_received[3] == 42
@@ -631,13 +687,17 @@ async def test_pattern_14_child_workflow_with_args(unique_task_queue: str) -> No
 
             # Acknowledge other activations
             completion = CompletionBuilder(activation.run_id).build()
-            await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                completion, timeout=DEFAULT_TIMEOUT
+            )
 
         assert child_args_received is not None, "Child should have received arguments"
 
         # Wait for child completion in parent and complete
         for _ in range(5):
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
 
             if activation.has_job_type("resolve_child_workflow_execution"):
@@ -652,7 +712,9 @@ async def test_pattern_14_child_workflow_with_args(unique_task_queue: str) -> No
                 break
 
             completion = CompletionBuilder(activation.run_id).build()
-            await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                completion, timeout=DEFAULT_TIMEOUT
+            )
 
         print("Pattern 14 (args): Child Workflow with Arguments - PASSED")
 

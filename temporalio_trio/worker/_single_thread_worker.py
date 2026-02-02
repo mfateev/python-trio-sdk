@@ -408,7 +408,11 @@ class SingleThreadWorker:
                     # Only force-signal for truly empty activations (0 jobs).
                     # Activations with jobs that wake workflows should NOT be force-signaled
                     # because the workflow needs time to process and produce commands.
-                    if len(activation.jobs) == 0 and not state.commands_ready.is_set() and not state.is_complete:
+                    if (
+                        len(activation.jobs) == 0
+                        and not state.commands_ready.is_set()
+                        and not state.is_complete
+                    ):
                         # Empty activation (heartbeat) - signal with current commands
                         state.signal_commands_ready()
 

@@ -22,9 +22,9 @@ import trio
 from temporalio_trio._async_bridge import TrioBridgeWrapper
 
 from .conftest import (
+    DEFAULT_TIMEOUT,
     ActivationParser,
     CompletionBuilder,
-    DEFAULT_TIMEOUT,
     get_workflow_status_via_cli,
     safe_shutdown,
     start_workflow_via_cli,
@@ -82,7 +82,9 @@ async def test_pattern_20_parallel_workflows_basic(unique_task_queue: str) -> No
             if len(workflows) == 3:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
 
             if activation.has_job_type("initialize_workflow"):
@@ -98,7 +100,9 @@ async def test_pattern_20_parallel_workflows_basic(unique_task_queue: str) -> No
                     "completed": False,
                 }
                 activation_order.append(run_id)
-                print(f"Pattern 20: Received initialize for {workflow_id} (run_id={run_id[:8]}...)")
+                print(
+                    f"Pattern 20: Received initialize for {workflow_id} (run_id={run_id[:8]}...)"
+                )
 
                 # Start a short timer for each
                 completion = (
@@ -106,7 +110,9 @@ async def test_pattern_20_parallel_workflows_basic(unique_task_queue: str) -> No
                     .start_timer(seq=1, duration=timedelta(milliseconds=100))
                     .build()
                 )
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
 
         assert len(workflows) == 3, f"Expected 3 workflows, got {len(workflows)}"
         print(f"Pattern 20: Activation order: {[r[:8] for r in activation_order]}")
@@ -119,7 +125,9 @@ async def test_pattern_20_parallel_workflows_basic(unique_task_queue: str) -> No
             if not pending:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
             run_id = activation.run_id
 
@@ -134,7 +142,9 @@ async def test_pattern_20_parallel_workflows_basic(unique_task_queue: str) -> No
                     .complete_workflow(f"result-{run_id[:8]}")
                     .build()
                 )
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
                 workflows[run_id]["completed"] = True
 
         print(f"Pattern 20: Timer fire order: {[r[:8] for r in timer_fire_order]}")
@@ -144,10 +154,14 @@ async def test_pattern_20_parallel_workflows_basic(unique_task_queue: str) -> No
 
         for wf_id in workflow_ids:
             status = get_workflow_status_via_cli(wf_id)
-            assert status == "COMPLETED", f"Workflow {wf_id} expected COMPLETED, got {status}"
+            assert status == "COMPLETED", (
+                f"Workflow {wf_id} expected COMPLETED, got {status}"
+            )
 
         print("Pattern 20: All 3 workflows completed successfully")
-        print(f"Pattern 20: Activation order matched timer fire order: {activation_order == timer_fire_order}")
+        print(
+            f"Pattern 20: Activation order matched timer fire order: {activation_order == timer_fire_order}"
+        )
 
         print("Pattern 20: Parallel Workflows Basic - PASSED")
 
@@ -157,7 +171,9 @@ async def test_pattern_20_parallel_workflows_basic(unique_task_queue: str) -> No
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_pattern_20_parallel_workflows_interleaved_completion(unique_task_queue: str) -> None:
+async def test_pattern_20_parallel_workflows_interleaved_completion(
+    unique_task_queue: str,
+) -> None:
     """Test Pattern 20: Parallel Workflows with Interleaved Completion.
 
     Scenario: Start 3 workflows with different timer durations,
@@ -198,7 +214,9 @@ async def test_pattern_20_parallel_workflows_interleaved_completion(unique_task_
             if len(workflows) == 3:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
 
             if activation.has_job_type("initialize_workflow"):
@@ -207,7 +225,9 @@ async def test_pattern_20_parallel_workflows_interleaved_completion(unique_task_
                 workflow_id = init_job.workflow_id
 
                 # Find which index this workflow is
-                idx = next(i for i, wid in enumerate(workflow_ids) if wid == workflow_id)
+                idx = next(
+                    i for i, wid in enumerate(workflow_ids) if wid == workflow_id
+                )
                 duration_ms = timer_durations[idx]
 
                 workflows[run_id] = {
@@ -215,7 +235,9 @@ async def test_pattern_20_parallel_workflows_interleaved_completion(unique_task_
                     "index": idx,
                     "duration_ms": duration_ms,
                 }
-                print(f"Pattern 20: Workflow {idx} initialized with {duration_ms}ms timer")
+                print(
+                    f"Pattern 20: Workflow {idx} initialized with {duration_ms}ms timer"
+                )
 
                 # Start timer with workflow-specific duration
                 completion = (
@@ -223,7 +245,9 @@ async def test_pattern_20_parallel_workflows_interleaved_completion(unique_task_
                     .start_timer(seq=1, duration=timedelta(milliseconds=duration_ms))
                     .build()
                 )
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
 
         assert len(workflows) == 3
 
@@ -234,21 +258,25 @@ async def test_pattern_20_parallel_workflows_interleaved_completion(unique_task_
             if len(completion_order) == 3:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
             run_id = activation.run_id
 
             if activation.has_job_type("fire_timer"):
                 idx = workflows[run_id]["index"]
                 completion_order.append(idx)
-                print(f"Pattern 20: Workflow {idx} ({workflows[run_id]['duration_ms']}ms) timer fired")
+                print(
+                    f"Pattern 20: Workflow {idx} ({workflows[run_id]['duration_ms']}ms) timer fired"
+                )
 
                 completion = (
-                    CompletionBuilder(run_id)
-                    .complete_workflow(f"done-{idx}")
-                    .build()
+                    CompletionBuilder(run_id).complete_workflow(f"done-{idx}").build()
                 )
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
 
         print(f"Pattern 20: Completion order: {completion_order}")
         print(f"Pattern 20: Expected order: [1, 2, 0] (shortest timer first)")
@@ -272,7 +300,9 @@ async def test_pattern_20_parallel_workflows_interleaved_completion(unique_task_
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_pattern_20_parallel_workflows_out_of_order_completion(unique_task_queue: str) -> None:
+async def test_pattern_20_parallel_workflows_out_of_order_completion(
+    unique_task_queue: str,
+) -> None:
     """Test Pattern 20: Complete activations out of poll order.
 
     Scenario: Poll multiple activations, then complete them in reverse order.
@@ -308,7 +338,9 @@ async def test_pattern_20_parallel_workflows_out_of_order_completion(unique_task
             if len(pending_activations) == 3:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
 
             if activation.has_job_type("initialize_workflow"):
@@ -325,7 +357,9 @@ async def test_pattern_20_parallel_workflows_out_of_order_completion(unique_task
                     .complete_workflow(f"result-{workflow_id}")
                     .build()
                 )
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
 
         assert len(pending_activations) == 3
         print(f"Pattern 20: Poll order: {[wid for _, wid in pending_activations]}")
@@ -344,7 +378,9 @@ async def test_pattern_20_parallel_workflows_out_of_order_completion(unique_task
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_pattern_20_parallel_workflows_mixed_operations(unique_task_queue: str) -> None:
+async def test_pattern_20_parallel_workflows_mixed_operations(
+    unique_task_queue: str,
+) -> None:
     """Test Pattern 20: Parallel workflows with mixed operations.
 
     Scenario:
@@ -354,8 +390,8 @@ async def test_pattern_20_parallel_workflows_mixed_operations(unique_task_queue:
 
     Verifies handling of different job types across parallel workflows.
     """
-    import temporalio.bridge.proto.activity_result.activity_result_pb2 as activity_result_pb
     import temporalio.bridge.proto
+    import temporalio.bridge.proto.activity_result.activity_result_pb2 as activity_result_pb
 
     bridge = TrioBridgeWrapper()
     await bridge.start()
@@ -384,7 +420,9 @@ async def test_pattern_20_parallel_workflows_mixed_operations(unique_task_queue:
             if len(workflows) == 3:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
 
             if activation.has_job_type("initialize_workflow"):
@@ -426,13 +464,16 @@ async def test_pattern_20_parallel_workflows_mixed_operations(unique_task_queue:
                         .build()
                     )
 
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
                 print(f"Pattern 20: Initialized {workflows[run_id]['type']} workflow")
 
         assert len(workflows) == 3
 
         # Send signal to signal workflow
         from .conftest import signal_workflow_via_cli
+
         signal_workflow_via_cli(wf_signal, "complete_signal")
         print("Pattern 20: Sent signal to signal workflow")
 
@@ -442,7 +483,9 @@ async def test_pattern_20_parallel_workflows_mixed_operations(unique_task_queue:
             if not pending:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(timeout=DEFAULT_TIMEOUT)
+            activation_bytes = await bridge.poll_workflow_activation(
+                timeout=DEFAULT_TIMEOUT
+            )
             activation = ActivationParser(activation_bytes)
             run_id = activation.run_id
 
@@ -460,18 +503,20 @@ async def test_pattern_20_parallel_workflows_mixed_operations(unique_task_queue:
                         .complete_workflow("timer_done")
                         .build()
                     )
-                    await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                    await bridge.complete_workflow_activation(
+                        completion, timeout=DEFAULT_TIMEOUT
+                    )
                     wf["done"] = True
                     print("Pattern 20: Timer workflow completed")
 
             elif activation.has_job_type("resolve_activity"):
                 # Activity workflow got result
                 completion = (
-                    CompletionBuilder(run_id)
-                    .complete_workflow("activity_done")
-                    .build()
+                    CompletionBuilder(run_id).complete_workflow("activity_done").build()
                 )
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
                 wf["done"] = True
                 print("Pattern 20: Activity workflow completed")
 
@@ -483,7 +528,9 @@ async def test_pattern_20_parallel_workflows_mixed_operations(unique_task_queue:
                     .complete_workflow("signal_done")
                     .build()
                 )
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
                 wf["done"] = True
                 print("Pattern 20: Signal workflow completed")
 
@@ -497,6 +544,7 @@ async def test_pattern_20_parallel_workflows_mixed_operations(unique_task_queue:
                 activity_bytes = await bridge.poll_activity_task(timeout=2.0)
                 if activity_bytes:
                     import temporalio.bridge.proto.activity_task.activity_task_pb2 as activity_task_pb
+
                     activity_task = activity_task_pb.ActivityTask()
                     activity_task.ParseFromString(activity_bytes)
 
@@ -506,7 +554,9 @@ async def test_pattern_20_parallel_workflows_mixed_operations(unique_task_queue:
                     result = activity_result_pb.ActivityExecutionResult()
                     result.completed.result.data = b'"activity_result"'
                     completion.result.CopyFrom(result)
-                    await bridge.complete_activity_task(completion.SerializeToString(), timeout=DEFAULT_TIMEOUT)
+                    await bridge.complete_activity_task(
+                        completion.SerializeToString(), timeout=DEFAULT_TIMEOUT
+                    )
                     print("Pattern 20: Completed activity task")
         except Exception:
             pass
@@ -519,17 +569,23 @@ async def test_pattern_20_parallel_workflows_mixed_operations(unique_task_queue:
 
             try:
                 with trio.move_on_after(2.0):
-                    activation_bytes = await bridge.poll_workflow_activation(timeout=2.0)
+                    activation_bytes = await bridge.poll_workflow_activation(
+                        timeout=2.0
+                    )
                     activation = ActivationParser(activation_bytes)
                     run_id = activation.run_id
 
-                    if run_id in workflows and activation.has_job_type("resolve_activity"):
+                    if run_id in workflows and activation.has_job_type(
+                        "resolve_activity"
+                    ):
                         completion = (
                             CompletionBuilder(run_id)
                             .complete_workflow("activity_done")
                             .build()
                         )
-                        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                        await bridge.complete_workflow_activation(
+                            completion, timeout=DEFAULT_TIMEOUT
+                        )
                         workflows[run_id]["done"] = True
                         print("Pattern 20: Activity workflow completed (late)")
             except Exception:

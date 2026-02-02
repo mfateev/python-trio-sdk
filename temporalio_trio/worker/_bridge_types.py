@@ -31,15 +31,19 @@ from temporalio_trio.worker._activation import (
     ChildWorkflowStartedJob,
     ChildWorkflowStartFailedJob,
     CompleteWorkflowCommand,
+    ContinueAsNewCommand,
     FailWorkflowCommand,
     QueryResultCommand,
     QueryWorkflowJob,
     RequestCancelActivityCommand,
     ScheduleActivityCommand,
+    SignalExternalResolvedJob,
+    SignalExternalWorkflowCommand,
     SignalWorkflowJob,
     StartChildWorkflowCommand,
     StartTimerCommand,
     TimerFiredJob,
+    UpsertSearchAttributesCommand,
     WorkflowActivation,
     WorkflowActivationCompletion,
     WorkflowStartedJob,
@@ -83,6 +87,7 @@ def bridge_to_poc_activation(
         | ChildWorkflowStartedJob
         | ChildWorkflowStartFailedJob
         | ChildWorkflowResolvedJob
+        | SignalExternalResolvedJob
     ] = []
     for job in bridge_act.jobs:
         # Check which job type this is (oneof field)
@@ -116,6 +121,12 @@ def bridge_to_poc_activation(
             poc_jobs.append(
                 _convert_resolve_child_workflow(
                     job.resolve_child_workflow_execution, data_converter
+                )
+            )
+        elif job_type == "resolve_signal_external_workflow":
+            poc_jobs.append(
+                _convert_resolve_signal_external_workflow(
+                    job.resolve_signal_external_workflow
                 )
             )
         elif job_type == "remove_from_cache":
@@ -383,6 +394,35 @@ def _convert_resolve_child_workflow(
     )
 
 
+def _convert_resolve_signal_external_workflow(
+    resolve: act_pb.ResolveSignalExternalWorkflow,
+) -> SignalExternalResolvedJob:
+    """Convert ResolveSignalExternalWorkflow to SignalExternalResolvedJob.
+
+    Args:
+        resolve: Bridge ResolveSignalExternalWorkflow job
+
+    Returns:
+        POC SignalExternalResolvedJob with failure (if any)
+
+    Note:
+        Success is indicated by ABSENCE of failure field.
+        Check: if resolve.failure.ByteSize() > 0 then failed, else succeeded.
+    """
+    seq = resolve.seq
+    failure = None
+
+    # Check if failure is present - success is indicated by absence of failure
+    if resolve.failure.ByteSize() > 0:
+        failure_msg = resolve.failure.message or "Signal external workflow failed"
+        failure = RuntimeError(f"Signal external workflow failed: {failure_msg}")
+
+    return SignalExternalResolvedJob(
+        seq=seq,
+        failure=failure,
+    )
+
+
 def _set_duration(
     duration_proto: google.protobuf.duration_pb2.Duration,
     td: timedelta,
@@ -605,6 +645,80 @@ def poc_to_bridge_completion(
         elif isinstance(cmd, CancelChildWorkflowCommand):
             # Convert CancelChildWorkflowCommand to CancelChildWorkflowExecution
             bridge_cmd.cancel_child_workflow_execution.child_workflow_seq = cmd.seq
+
+        elif isinstance(cmd, SignalExternalWorkflowCommand):
+            # Convert SignalExternalWorkflowCommand to SignalExternalWorkflowExecution
+            bridge_cmd.signal_external_workflow_execution.seq = cmd.seq
+            bridge_cmd.signal_external_workflow_execution.workflow_execution.workflow_id = cmd.workflow_id
+            # Set run_id only if provided (empty = signal current run)
+            if cmd.run_id:
+                bridge_cmd.signal_external_workflow_execution.workflow_execution.run_id = cmd.run_id
+            bridge_cmd.signal_external_workflow_execution.signal_name = cmd.signal_name
+
+            # Encode signal arguments
+            for arg in cmd.args:
+                payload = data_converter.payload_converter.to_payload(arg)
+                bridge_cmd.signal_external_workflow_execution.args.append(payload)
+
+        elif isinstance(cmd, UpsertSearchAttributesCommand):
+            # Convert UpsertSearchAttributesCommand to UpsertWorkflowSearchAttributes
+            # Each search attribute value is encoded as a payload and placed in
+            # upsert_workflow_search_attributes.search_attributes[key]
+            for key, value in cmd.search_attributes.items():
+                payload = data_converter.payload_converter.to_payload(value)
+                bridge_cmd.upsert_workflow_search_attributes.search_attributes[
+                    key
+                ].CopyFrom(payload)
+
+        elif isinstance(cmd, ContinueAsNewCommand):
+            # Convert ContinueAsNewCommand to ContinueAsNewWorkflowExecution
+            bridge_cmd.continue_as_new_workflow_execution.workflow_type = (
+                cmd.workflow_type
+            )
+
+            # Set task queue if provided
+            if cmd.task_queue:
+                bridge_cmd.continue_as_new_workflow_execution.task_queue = (
+                    cmd.task_queue
+                )
+
+            # Encode arguments
+            for arg in cmd.args:
+                payload = data_converter.payload_converter.to_payload(arg)
+                bridge_cmd.continue_as_new_workflow_execution.arguments.append(payload)
+
+            # Convert timeouts to Duration protobufs
+            if cmd.run_timeout:
+                _set_duration(
+                    bridge_cmd.continue_as_new_workflow_execution.workflow_run_timeout,
+                    cmd.run_timeout,
+                )
+            if cmd.task_timeout:
+                _set_duration(
+                    bridge_cmd.continue_as_new_workflow_execution.workflow_task_timeout,
+                    cmd.task_timeout,
+                )
+
+            # Convert retry policy if present
+            if cmd.retry_policy:
+                if cmd.retry_policy.initial_interval:
+                    _set_duration(
+                        bridge_cmd.continue_as_new_workflow_execution.retry_policy.initial_interval,
+                        cmd.retry_policy.initial_interval,
+                    )
+                if cmd.retry_policy.maximum_interval:
+                    _set_duration(
+                        bridge_cmd.continue_as_new_workflow_execution.retry_policy.maximum_interval,
+                        cmd.retry_policy.maximum_interval,
+                    )
+                if cmd.retry_policy.backoff_coefficient:
+                    bridge_cmd.continue_as_new_workflow_execution.retry_policy.backoff_coefficient = cmd.retry_policy.backoff_coefficient
+                if cmd.retry_policy.maximum_attempts:
+                    bridge_cmd.continue_as_new_workflow_execution.retry_policy.maximum_attempts = cmd.retry_policy.maximum_attempts
+                for exc_type in cmd.retry_policy.non_retryable_error_types or []:
+                    bridge_cmd.continue_as_new_workflow_execution.retry_policy.non_retryable_error_types.append(
+                        exc_type
+                    )
 
         else:
             raise NotImplementedError(
