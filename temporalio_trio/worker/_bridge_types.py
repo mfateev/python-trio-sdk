@@ -610,15 +610,15 @@ def poc_to_bridge_completion(
                     cmd.task_timeout,
                 )
 
-            # Set policies
+            # Set policies (int values work for protobuf enums at runtime)
             bridge_cmd.start_child_workflow_execution.parent_close_policy = (
-                cmd.parent_close_policy
+                cmd.parent_close_policy  # type: ignore[assignment]
             )
             bridge_cmd.start_child_workflow_execution.cancellation_type = (
-                cmd.cancellation_type
+                cmd.cancellation_type  # type: ignore[assignment]
             )
             bridge_cmd.start_child_workflow_execution.workflow_id_reuse_policy = (
-                cmd.id_reuse_policy
+                cmd.id_reuse_policy  # type: ignore[assignment]
             )
 
             # Convert retry policy if present

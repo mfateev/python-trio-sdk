@@ -192,22 +192,22 @@ async def test_pattern_19_upsert_search_attributes(unique_task_queue: str) -> No
         if activation.has_job_type("initialize_workflow"):
             print("Pattern 19: Replaying - completing workflow directly")
             run_id = activation.run_id
-            completion = (
+            final_completion = (
                 CompletionBuilder(run_id)
                 .complete_workflow("search_attrs_set_replayed")
                 .build()
             )
             await bridge.complete_workflow_activation(
-                completion, timeout=DEFAULT_TIMEOUT
+                final_completion, timeout=DEFAULT_TIMEOUT
             )
         elif activation.has_job_type("fire_timer"):
             print("Pattern 19: Timer fired")
             # 5. Complete workflow
-            completion = (
+            final_completion = (
                 CompletionBuilder(run_id).complete_workflow("search_attrs_set").build()
             )
             await bridge.complete_workflow_activation(
-                completion, timeout=DEFAULT_TIMEOUT
+                final_completion, timeout=DEFAULT_TIMEOUT
             )
         else:
             pytest.fail(
