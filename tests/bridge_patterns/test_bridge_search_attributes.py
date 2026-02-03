@@ -3,6 +3,13 @@
 Pattern 19: UpsertSearchAttributes
 
 This test verifies the UpsertSearchAttributesCommand conversion through the bridge.
+
+Note: These tests require custom search attributes to be registered on the Temporal server:
+- CustomKeywordField (Keyword type)
+- CustomIntField (Int type)
+
+The custom search attributes are automatically created by conftest.py when the bridge_patterns
+tests are loaded.
 """
 
 from __future__ import annotations

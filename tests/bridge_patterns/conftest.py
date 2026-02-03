@@ -5,6 +5,7 @@ These fixtures provide utilities for direct bridge testing, including:
 - Protobuf message builders
 - CLI helpers for starting workflows
 - Common timeout values
+- Custom search attribute setup
 """
 
 from __future__ import annotations
@@ -31,6 +32,48 @@ from temporalio_trio._async_bridge import TrioBridgeWrapper
 TEMPORAL_CLI_PATH = "/home/sprite/workarea/bin/temporal"
 DEFAULT_NAMESPACE = "default"
 DEFAULT_TIMEOUT = 30.0
+
+
+def _ensure_custom_search_attributes_exist() -> None:
+    """Ensure custom search attributes exist on the Temporal server.
+
+    Creates CustomKeywordField and CustomIntField if they don't already exist.
+    This is idempotent - creating an existing attribute returns an error that we ignore.
+
+    This is called at module load time to ensure search attributes are available
+    for all bridge pattern tests that need them.
+    """
+    attributes = [
+        ("CustomKeywordField", "Keyword"),
+        ("CustomIntField", "Int"),
+    ]
+
+    for name, attr_type in attributes:
+        try:
+            subprocess.run(
+                [
+                    TEMPORAL_CLI_PATH,
+                    "operator",
+                    "search-attribute",
+                    "create",
+                    "--namespace",
+                    DEFAULT_NAMESPACE,
+                    "--name",
+                    name,
+                    "--type",
+                    attr_type,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            # Ignore errors - attribute may already exist
+        except Exception:
+            pass  # Ignore errors during attribute creation
+
+
+# Ensure custom search attributes exist before any tests run
+_ensure_custom_search_attributes_exist()
 
 
 @pytest.fixture
