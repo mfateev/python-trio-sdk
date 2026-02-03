@@ -1,25 +1,59 @@
 # Temporal Python SDK with Trio Support
 
-> **EXPERIMENTAL** - This is an experimental project exploring the use of [Trio](https://trio.readthedocs.io/) as the async runtime for the Temporal Python SDK.
+> **EXPERIMENTAL** - This SDK is functional but not yet production-ready. Use for testing and evaluation.
 
 ## Overview
 
-This repository contains an experimental implementation of the [Temporal](https://temporal.io) Python SDK using Trio instead of asyncio. The goal is to leverage Trio's structured concurrency model for workflow execution.
+This repository contains an experimental implementation of the [Temporal](https://temporal.io) Python SDK using [Trio](https://trio.readthedocs.io/) instead of asyncio. The goal is to leverage Trio's structured concurrency model for deterministic workflow execution.
 
-## Status
+## Current Status
 
-This project is in early experimental stages and is **not ready for production use**.
+**Functional with significant feature coverage:**
 
-### Why Trio?
+| Feature | Status |
+|---------|--------|
+| Workflow execution | ✅ Working |
+| Timers (`workflow.sleep()`) | ✅ Working |
+| Activities | ✅ Working |
+| Child workflows | ✅ Working |
+| Signals | ✅ Working |
+| Queries | ✅ Working |
+| Continue-as-new | ✅ Working |
+| Workflow cancellation | ✅ Working |
+| Replay/determinism | ✅ Working |
+| Signal external workflow | ⚠️ Bridge only |
+| Upsert search attributes | ⚠️ Bridge only |
 
-- **Structured Concurrency**: Trio's nursery-based task management aligns well with Temporal's workflow model
-- **Deterministic Scheduling**: Trio can be configured for deterministic task ordering, essential for workflow replay
-- **Cancellation Semantics**: Trio's cancel scopes provide clear cancellation boundaries
+**Test Coverage:** 545 tests passing (unit + E2E)
+
+### Architecture
+
+The SDK uses a pure async bridge between Trio and Rust/Tokio:
+
+```
+┌─────────────────────────────────────────┐
+│ Trio Layer (Pure Trio)                  │
+│   ├─ workflow.py (public API)           │
+│   ├─ SingleThreadWorker                 │
+│   └─ TrioBridgeWrapper                  │
+└────────────┬────────────────────────────┘
+             │ (async callbacks)
+┌────────────▼────────────────────────────┐
+│ Rust Bridge (PyO3 + Tokio)              │
+│   └─ temporalio-sdk-core                │
+└─────────────────────────────────────────┘
+```
+
+**Key features:**
+- No `trio-asyncio` dependency (pure async bridge)
+- Single Rust thread for all I/O
+- Event-based workflow suspension
+- Deterministic scheduling via Trio fork
 
 ### Prerequisites
 
-This SDK depends on proposed changes to Trio for per-runner deterministic scheduling:
-- [Trio Fork with Deterministic Scheduling](https://github.com/mfateev/trio/tree/temporal-deterministic-scheduling)
+This SDK depends on a Trio fork with deterministic scheduling:
+- [Trio Fork](https://github.com/mfateev/trio/tree/temporal-deterministic-scheduling)
 
 ## Installation
 
@@ -28,13 +62,34 @@ This SDK depends on proposed changes to Trio for per-runner deterministic schedu
 pip install git+https://github.com/mfateev/python-trio-sdk.git
 ```
 
-## Development
+## Quick Start
 
-This project uses:
-- [uv](https://github.com/astral-sh/uv) for package management
-- [poethepoet](https://github.com/nat-n/poethepoet) for task running
-- [ruff](https://github.com/astral-sh/ruff) for linting/formatting
-- [pytest](https://pytest.org/) with pytest-trio for testing
+```python
+import trio
+from temporalio_trio import workflow
+from temporalio_trio.worker import Worker
+from temporalio_trio.client import Client
+
+@workflow.defn
+class GreetingWorkflow:
+    @workflow.run
+    async def run(self, name: str) -> str:
+        await workflow.sleep(1)  # Deterministic timer
+        return f"Hello, {name}!"
+
+async def main():
+    client = await Client.connect("localhost:7233")
+    worker = Worker(
+        client=client,
+        task_queue="greeting-queue",
+        workflows=[GreetingWorkflow],
+    )
+    await worker.run()
+
+trio.run(main)
+```
+
+## Development
 
 ### Setup
 
@@ -46,22 +101,18 @@ cd python-trio-sdk
 # Install dependencies
 uv sync --all-groups
 
-# Run tests
-uv run poe test
-
-# Format code
-uv run poe format
-
-# Lint
-uv run poe lint
+# Build Rust bridge (required)
+cd temporalio_trio_bridge && maturin develop --release && cd ..
 ```
 
 ### Testing
 
-The project includes both unit tests and end-to-end integration tests.
-
-**Run all tests:**
+**Run all tests (requires Temporal server):**
 ```bash
+# Terminal 1: Start Temporal dev server
+temporal server start-dev
+
+# Terminal 2: Run all tests
 uv run pytest -v
 ```
 
@@ -70,16 +121,26 @@ uv run pytest -v
 uv run pytest -v -m "not temporal_server"
 ```
 
-**Run end-to-end tests (requires Temporal server):**
+**Run E2E tests only:**
 ```bash
-# Terminal 1: Start Temporal dev server
-temporal server start-dev
-
-# Terminal 2: Run e2e tests
 uv run pytest -v -m temporal_server
 ```
 
-For detailed information about e2e tests, see [tests/E2E_TESTING.md](tests/E2E_TESTING.md).
+### Linting
+
+```bash
+uv run poe lint     # Run all linters
+uv run poe format   # Auto-fix formatting
+```
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [docs/GAP_ANALYSIS.md](docs/GAP_ANALYSIS.md) | Current feature gaps and priorities |
+| [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) | Original POC implementation plan |
+| [MIGRATION_PLAN.md](MIGRATION_PLAN.md) | trio-asyncio migration (complete) |
+| [tests/E2E_TESTING.md](tests/E2E_TESTING.md) | E2E test guide |
 
 ## Related Projects
 
