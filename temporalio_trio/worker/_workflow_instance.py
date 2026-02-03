@@ -11,7 +11,7 @@ import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
 
 import outcome
 import temporalio.common
@@ -30,6 +30,7 @@ from temporalio_trio.worker._activation import (
     ChildWorkflowStartedJob,
     ChildWorkflowStartFailedJob,
     CompleteWorkflowCommand,
+    ContinueAsNewCommand,
     FailWorkflowCommand,
     QueryResultCommand,
     QueryWorkflowJob,
@@ -46,6 +47,7 @@ from temporalio_trio.worker._clock import WorkflowClock
 from temporalio_trio.workflow import (
     ChildWorkflowCancellationType,
     ChildWorkflowHandle,
+    ContinueAsNewError,
     Info,
     ParentClosePolicy,
     _Definition,
@@ -82,6 +84,58 @@ class _WorkflowCancelled(BaseException):
     """
 
     pass
+
+
+class _ContinueAsNewError(ContinueAsNewError):
+    """Internal continue-as-new error with command generation.
+
+    This is the concrete implementation of ContinueAsNewError that stores
+    the parameters needed to create a ContinueAsNewCommand when the exception
+    is caught by the workflow instance.
+    """
+
+    def __init__(
+        self,
+        instance: "TrioWorkflowInstance",
+        workflow_type: str,
+        args: tuple[Any, ...],
+        task_queue: str | None,
+        run_timeout: timedelta | None,
+        task_timeout: timedelta | None,
+        retry_policy: temporalio.common.RetryPolicy | None,
+    ) -> None:
+        """Initialize _ContinueAsNewError.
+
+        Args:
+            instance: The workflow instance that will generate the command.
+            workflow_type: The workflow type for the new execution.
+            args: Arguments to pass to the new execution.
+            task_queue: Task queue for the new execution.
+            run_timeout: Run timeout for the new execution.
+            task_timeout: Task timeout for the new execution.
+            retry_policy: Retry policy for the new execution.
+        """
+        super().__init__("Continue as new")
+        self._instance = instance
+        self._workflow_type = workflow_type
+        self._args = args
+        self._task_queue = task_queue
+        self._run_timeout = run_timeout
+        self._task_timeout = task_timeout
+        self._retry_policy = retry_policy
+
+    def _apply_command(self) -> None:
+        """Add ContinueAsNewCommand to instance's commands."""
+        self._instance._commands.append(
+            ContinueAsNewCommand(
+                workflow_type=self._workflow_type,
+                args=self._args,
+                task_queue=self._task_queue,
+                run_timeout=self._run_timeout,
+                task_timeout=self._task_timeout,
+                retry_policy=self._retry_policy,
+            )
+        )
 
 
 class WorkflowRunner(ABC):
@@ -507,6 +561,10 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         except _WorkflowYield:
             # Re-raise to propagate yield signal
             raise
+        except _ContinueAsNewError as err:
+            # Workflow requested continue as new - emit command
+            logger.debug("Workflow requested continue as new")
+            err._apply_command()
         except _WorkflowCancelled:
             # Workflow was cancelled - emit cancel command
             self._commands.append(CancelWorkflowCommand())
@@ -958,3 +1016,53 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             raise _WorkflowCancelled()
 
         raise _WorkflowYield()
+
+    def workflow_continue_as_new(
+        self,
+        *args: Any,
+        workflow: str | type | None,
+        task_queue: str | None,
+        run_timeout: timedelta | None,
+        task_timeout: timedelta | None,
+        retry_policy: temporalio.common.RetryPolicy | None,
+    ) -> NoReturn:
+        """Continue the workflow as a new execution.
+
+        This method never returns - it raises _ContinueAsNewError to stop the
+        workflow and start a new execution.
+
+        Args:
+            *args: Arguments to pass to the new workflow execution.
+            workflow: Workflow class or type name. None means same workflow type.
+            task_queue: Task queue for the new execution. None means same queue.
+            run_timeout: Timeout for a single run of the new workflow.
+            task_timeout: Timeout for a single workflow task.
+            retry_policy: Retry policy for the new workflow.
+
+        Raises:
+            _ContinueAsNewError: Always raised to stop the workflow.
+        """
+        # Determine workflow type
+        if workflow is None:
+            # Same workflow type as current
+            workflow_type = self._defn.name
+        elif isinstance(workflow, str):
+            workflow_type = workflow
+        else:
+            # It's a type - get the workflow definition name
+            defn = _Definition.from_class(workflow)
+            if defn is not None:
+                workflow_type = defn.name
+            else:
+                # Fallback to class name
+                workflow_type = getattr(workflow, "__name__", str(workflow))
+
+        raise _ContinueAsNewError(
+            instance=self,
+            workflow_type=workflow_type,
+            args=args,
+            task_queue=task_queue,
+            run_timeout=run_timeout,
+            task_timeout=task_timeout,
+            retry_policy=retry_policy,
+        )

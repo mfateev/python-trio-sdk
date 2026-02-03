@@ -17,12 +17,15 @@ import random
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, NoReturn
 
 import trio
 
+import temporalio.common
+
 from temporalio_trio.worker._activation import (
     CancelWorkflowCommand,
+    ContinueAsNewCommand,
     StartChildWorkflowCommand,
     StartTimerCommand,
 )
@@ -459,6 +462,75 @@ class WorkflowRuntime:
                     raise TimeoutError(
                         f"Condition not met within timeout of {timeout} seconds"
                     )
+
+    def workflow_continue_as_new(
+        self,
+        *args: Any,
+        workflow: str | type | None,
+        task_queue: str | None,
+        run_timeout: timedelta | None,
+        task_timeout: timedelta | None,
+        retry_policy: temporalio.common.RetryPolicy | None,
+    ) -> NoReturn:
+        """Continue the workflow as a new execution.
+
+        This method never returns - it raises ContinueAsNewError to stop the
+        workflow and start a new execution.
+
+        Args:
+            *args: Arguments to pass to the new workflow execution.
+            workflow: Workflow class or type name. None means same workflow type.
+            task_queue: Task queue for the new execution. None means same queue.
+            run_timeout: Timeout for a single run of the new workflow.
+            task_timeout: Timeout for a single workflow task.
+            retry_policy: Retry policy for the new workflow.
+
+        Raises:
+            ContinueAsNewError: Always raised to stop the workflow.
+        """
+        from temporalio_trio.workflow import ContinueAsNewError, _Definition
+
+        # Determine workflow type
+        if workflow is None:
+            workflow_type = self.workflow_type
+        elif isinstance(workflow, str):
+            workflow_type = workflow
+        else:
+            # It's a type - get the workflow definition name
+            defn = _Definition.from_class(workflow)
+            if defn is not None:
+                workflow_type = defn.name
+            else:
+                # Fallback to class name
+                workflow_type = getattr(workflow, "__name__", str(workflow))
+
+        # Create internal exception that carries the command data
+        class _ContinueAsNewError(ContinueAsNewError):
+            """Internal continue-as-new error with command generation."""
+
+            def __init__(inner_self) -> None:
+                super().__init__("Continue as new")
+                inner_self._workflow_type = workflow_type
+                inner_self._args = args
+                inner_self._task_queue = task_queue
+                inner_self._run_timeout = run_timeout
+                inner_self._task_timeout = task_timeout
+                inner_self._retry_policy = retry_policy
+
+            def _apply_command(inner_self, commands: list) -> None:
+                """Add ContinueAsNewCommand to commands list."""
+                commands.append(
+                    ContinueAsNewCommand(
+                        workflow_type=inner_self._workflow_type,
+                        args=inner_self._args,
+                        task_queue=inner_self._task_queue,
+                        run_timeout=inner_self._run_timeout,
+                        task_timeout=inner_self._task_timeout,
+                        retry_policy=inner_self._retry_policy,
+                    )
+                )
+
+        raise _ContinueAsNewError()
 
     def register_signal_handler(self, name: str, handler: Callable[..., Any]) -> None:
         """Register a signal handler.

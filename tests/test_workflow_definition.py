@@ -1,7 +1,7 @@
 """Tests for workflow definition and decorators (Phase 1)."""
 
 from datetime import timedelta
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
 
 import pytest
 import temporalio.common
@@ -231,6 +231,17 @@ class TestRuntimeClass:
             ) -> None:
                 pass
 
+            def workflow_continue_as_new(
+                self,
+                *args: Any,
+                workflow: str | type | None,
+                task_queue: str | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> NoReturn:
+                raise NotImplementedError()
+
         mock = MockRuntime()
 
         # Initially None
@@ -306,6 +317,17 @@ class TestRuntimeClass:
                 timeout_summary: str | None = None,
             ) -> None:
                 pass
+
+            def workflow_continue_as_new(
+                self,
+                *args: Any,
+                workflow: str | type | None,
+                task_queue: str | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> NoReturn:
+                raise NotImplementedError()
 
         mock1 = MockRuntime("mock1")
         mock2 = MockRuntime("mock2")
@@ -397,6 +419,17 @@ class TestPublicAPI:
             ) -> None:
                 pass
 
+            def workflow_continue_as_new(
+                self,
+                *args: Any,
+                workflow: str | type | None,
+                task_queue: str | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> NoReturn:
+                raise NotImplementedError()
+
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
         try:
@@ -474,6 +507,17 @@ class TestPublicAPI:
                 timeout_summary: str | None = None,
             ) -> None:
                 pass
+
+            def workflow_continue_as_new(
+                self,
+                *args: Any,
+                workflow: str | type | None,
+                task_queue: str | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> NoReturn:
+                raise NotImplementedError()
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)

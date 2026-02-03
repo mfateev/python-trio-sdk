@@ -11,7 +11,16 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Generic, Sequence, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Generic,
+    NoReturn,
+    Sequence,
+    TypeVar,
+)
 from uuid import uuid4
 
 import temporalio.common
@@ -32,10 +41,12 @@ __all__ = [
     "wait_condition",
     "start_child_workflow",
     "execute_child_workflow",
+    "continue_as_new",
     "Info",
     "ChildWorkflowHandle",
     "ChildWorkflowCancellationType",
     "ParentClosePolicy",
+    "ContinueAsNewError",
     "_Runtime",
     "_Definition",
     "_SignalDefinition",
@@ -103,6 +114,31 @@ class _NotInWorkflowContextError(RuntimeError):
     """Raised when workflow API is called outside workflow context."""
 
     pass
+
+
+class ContinueAsNewError(BaseException):
+    """Error raised by continue_as_new() to stop workflow and continue as new.
+
+    This exception is raised by :py:func:`continue_as_new` to signal that the
+    workflow should stop and continue as a new execution. It is a BaseException
+    (not Exception) so it won't be caught by normal exception handlers.
+
+    This class should not be instantiated directly - use :py:func:`continue_as_new`
+    instead.
+    """
+
+    def __init__(self, *args: object) -> None:
+        """Initialize ContinueAsNewError.
+
+        Raises:
+            RuntimeError: If instantiated directly (not via a subclass).
+        """
+        if type(self) is ContinueAsNewError:
+            raise RuntimeError(
+                "ContinueAsNewError cannot be instantiated directly. "
+                "Use workflow.continue_as_new() instead."
+            )
+        super().__init__(*args)
 
 
 class _Runtime(ABC):
@@ -277,6 +313,34 @@ class _Runtime(ABC):
 
         Raises:
             TimeoutError: If timeout expires before condition becomes true.
+        """
+        ...
+
+    @abstractmethod
+    def workflow_continue_as_new(
+        self,
+        *args: Any,
+        workflow: str | type | None,
+        task_queue: str | None,
+        run_timeout: timedelta | None,
+        task_timeout: timedelta | None,
+        retry_policy: temporalio.common.RetryPolicy | None,
+    ) -> NoReturn:
+        """Continue the workflow as a new execution.
+
+        This method never returns - it raises ContinueAsNewError to stop the
+        workflow and start a new execution.
+
+        Args:
+            *args: Arguments to pass to the new workflow execution.
+            workflow: Workflow class or type name. None means same workflow type.
+            task_queue: Task queue for the new execution. None means same queue.
+            run_timeout: Timeout for a single run of the new workflow.
+            task_timeout: Timeout for a single workflow task.
+            retry_policy: Retry policy for the new workflow.
+
+        Raises:
+            ContinueAsNewError: Always raised to stop the workflow.
         """
         ...
 
@@ -1099,3 +1163,61 @@ async def execute_child_workflow(
         retry_policy=retry_policy,
     )
     return await handle.result()
+
+
+def continue_as_new(
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    workflow: str | type | None = None,
+    task_queue: str | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+) -> NoReturn:
+    """Stop the workflow immediately and continue as a new execution.
+
+    Mirrors temporalio.workflow.continue_as_new from the SDK.
+
+    This function never returns. It raises :py:class:`ContinueAsNewError` to
+    signal that the workflow should stop and start a new execution with the
+    same workflow ID but a new run ID.
+
+    This is useful for long-running workflows to avoid unbounded history growth.
+    When a workflow continues as new, it starts fresh with a new event history.
+
+    Example:
+        @workflow.defn
+        class LongRunningWorkflow:
+            @workflow.run
+            async def run(self, iteration: int) -> str:
+                if iteration >= 100:
+                    return "done"
+                # Process iteration...
+                await workflow.sleep(60)
+                # Continue as new to reset history
+                workflow.continue_as_new(iteration + 1)
+
+    Args:
+        arg: Single argument to the new workflow execution.
+        args: Multiple arguments. Cannot be set if arg is set.
+        workflow: Workflow class or type name for the new execution. If None,
+            uses the same workflow type as the current workflow.
+        task_queue: Task queue for the new execution. If None, uses the same
+            task queue as the current workflow.
+        run_timeout: Timeout for a single run of the new workflow.
+        task_timeout: Timeout for a single workflow task.
+        retry_policy: Retry policy for the new workflow.
+
+    Raises:
+        ContinueAsNewError: Always raised to stop the workflow.
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    _Runtime.current().workflow_continue_as_new(
+        *temporalio.common._arg_or_args(arg, args),
+        workflow=workflow,
+        task_queue=task_queue,
+        run_timeout=run_timeout,
+        task_timeout=task_timeout,
+        retry_policy=retry_policy,
+    )

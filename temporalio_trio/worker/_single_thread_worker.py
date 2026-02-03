@@ -29,6 +29,7 @@ from temporalio_trio.worker._activation import (
     CancelWorkflowJob,
     ChildWorkflowResolvedJob,
     CompleteWorkflowCommand,
+    ContinueAsNewCommand,
     FailWorkflowCommand,
     QueryWorkflowJob,
     SignalWorkflowJob,
@@ -46,7 +47,7 @@ from temporalio_trio.worker._runtime import (
     set_current_runtime,
 )
 from temporalio_trio.worker._workflow_state import WorkflowState
-from temporalio_trio.workflow import _Definition, _Runtime
+from temporalio_trio.workflow import ContinueAsNewError, _Definition, _Runtime
 
 if TYPE_CHECKING:
     from temporalio_trio._async_bridge import TrioBridgeWrapper
@@ -595,6 +596,15 @@ class SingleThreadWorker:
         except trio.Cancelled:
             # Workflow was cancelled - emit CancelWorkflowCommand
             runtime.commands.append(CancelWorkflowCommand())
+
+        except ContinueAsNewError as e:
+            # Workflow requested continue as new - apply the command
+            logger.debug("Workflow requested continue as new")
+            if hasattr(e, "_apply_command"):
+                e._apply_command(runtime.commands)
+            else:
+                # Fallback: should not happen with proper implementation
+                logger.warning("ContinueAsNewError without _apply_command method")
 
         except Exception as e:
             # Workflow failed
