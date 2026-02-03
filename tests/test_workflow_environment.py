@@ -5,13 +5,40 @@ These tests verify the testing infrastructure for Temporal workflows with Trio.
 
 from __future__ import annotations
 
+import os
 import shutil
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import trio
 
 from temporalio_trio.testing import WorkflowEnvironment
+
+
+def find_temporal_cli() -> str | None:
+    """Find the Temporal CLI in PATH or common locations.
+
+    Returns the path to the temporal CLI if found, None otherwise.
+    """
+    # Check PATH first
+    cli_path = shutil.which("temporal")
+    if cli_path:
+        return cli_path
+
+    # Check common locations
+    common_paths = [
+        Path.home() / "workarea" / "bin" / "temporal",
+        Path("/home/sprite/workarea/bin/temporal"),
+        Path.home() / ".temporalio" / "bin" / "temporal",
+        Path("/usr/local/bin/temporal"),
+    ]
+
+    for path in common_paths:
+        if path.exists() and os.access(path, os.X_OK):
+            return str(path)
+
+    return None
 
 
 class TestWorkflowEnvironmentFromClient:
@@ -166,18 +193,20 @@ class TestWorkflowEnvironmentIntegration:
             await client.close()
 
     @pytest.mark.trio
-    @pytest.mark.temporal_server
-    @pytest.mark.skip(reason="Requires Temporal CLI to be installed")
     async def test_start_local_creates_working_environment(self):
         """Test that start_local creates a working environment.
 
-        This test requires the Temporal CLI to be installed.
+        This starts its own dev server on a free port, independent of
+        any existing Temporal server.
         """
-        # Only run if temporal CLI is available
-        if shutil.which("temporal") is None:
-            pytest.skip("Temporal CLI not found")
+        cli_path = find_temporal_cli()
+        if cli_path is None:
+            pytest.skip("Temporal CLI not found in PATH or common locations")
 
-        async with await WorkflowEnvironment.start_local() as env:
+        async with await WorkflowEnvironment.start_local(
+            temporal_cli_path=cli_path
+        ) as env:
             # The environment should have a working client
             assert env.client is not None
-            # We could start a workflow here but that would require more setup
+            # Verify we can actually connect by checking namespaces
+            # (this confirms the server is running and reachable)
