@@ -327,7 +327,10 @@ async def test_e2e_continue_as_new_preserves_workflow_id(trio_client):
 
                 if isinstance(result, dict):
                     # Verify the workflow completed correctly
-                    assert result.get("workflow_type") == "ContinueAsNewPreservesIdWorkflow"
+                    assert (
+                        result.get("workflow_type")
+                        == "ContinueAsNewPreservesIdWorkflow"
+                    )
                     assert result.get("final_iteration") == 2
                     # Note: workflow_id from workflow.info() may not match the original
                     # workflow_id due to SDK runtime limitations - but the important

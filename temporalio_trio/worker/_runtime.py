@@ -14,18 +14,19 @@ This implements Phases 1, 2, and 4 of the single-threaded migration plan:
 from __future__ import annotations
 
 import random
+from collections.abc import Sequence
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Callable, NoReturn
 
-import trio
-
 import temporalio.common
+import trio
 
 from temporalio_trio.worker._activation import (
     CancelWorkflowCommand,
     ContinueAsNewCommand,
+    SignalExternalWorkflowCommand,
     StartChildWorkflowCommand,
     StartTimerCommand,
 )
@@ -205,6 +206,9 @@ class WorkflowRuntime:
     signal_seq: int = 0
     """Sequence counter for signal IDs."""
 
+    signal_external_seq: int = 0
+    """Sequence counter for external signal IDs."""
+
     # Fired events (for replay) - populated from history
     fired_timers: dict[int, int] = field(default_factory=dict)
     """Timers that have fired: seq -> fire_time_ns."""
@@ -215,6 +219,11 @@ class WorkflowRuntime:
     completed_children: dict[int, Any] = field(default_factory=dict)
     """Child workflows that have completed: seq -> result (or exception)."""
 
+    completed_external_signals: dict[int, BaseException | None] = field(
+        default_factory=dict
+    )
+    """External signals that have resolved: seq -> error (None = success)."""
+
     # Pending events (for suspension) - trio.Event instances
     pending_timers: dict[int, trio.Event] = field(default_factory=dict)
     """Timers waiting to fire: seq -> trio.Event."""
@@ -224,6 +233,9 @@ class WorkflowRuntime:
 
     pending_children: dict[int, trio.Event] = field(default_factory=dict)
     """Child workflows waiting to complete: seq -> trio.Event."""
+
+    pending_external_signals: dict[int, trio.Event] = field(default_factory=dict)
+    """External signals waiting for resolution: seq -> trio.Event."""
 
     # Commands to emit
     commands: list[Any] = field(default_factory=list)
@@ -250,6 +262,20 @@ class WorkflowRuntime:
     # Cancellation (Phase 7)
     cancel_requested: bool = False
     """Whether workflow cancellation has been requested."""
+
+    # Condition notification (for wait_condition)
+    condition_waiters: list[trio.Event] = field(default_factory=list)
+    """Events waiting for state changes (used by wait_condition)."""
+
+    def notify_condition_waiters(self) -> None:
+        """Notify all wait_condition waiters that state may have changed.
+
+        This should be called after any event that might affect condition
+        predicates, such as signal delivery.
+        """
+        for event in self.condition_waiters:
+            event.set()
+        self.condition_waiters.clear()
 
     def workflow_time_ns(self) -> int:
         """Get current workflow time in nanoseconds.
@@ -434,6 +460,11 @@ class WorkflowRuntime:
     ) -> None:
         """Wait until condition returns True or timeout expires.
 
+        This method efficiently waits for conditions by registering for
+        state change notifications. When signals, activity completions,
+        or other events occur, all waiters are notified to re-check their
+        conditions.
+
         Args:
             fn: A callable returning True when condition is met.
             timeout: Optional maximum wait time in seconds.
@@ -446,14 +477,26 @@ class WorkflowRuntime:
         if fn():
             return
 
-        # If no timeout, we need to wait indefinitely
-        # This requires polling with short sleeps
+        # Set up timeout if specified
         start_time_ns = self.time_ns
         timeout_ns = int(timeout * 1_000_000_000) if timeout else None
 
         while not fn():
-            # Sleep for a short interval
-            await self.workflow_sleep(0.1, summary=timeout_summary)
+            # Create an event for this wait and register it
+            wait_event = trio.Event()
+            self.condition_waiters.append(wait_event)
+
+            try:
+                # Signal that we're about to wait (so dispatcher knows we're ready)
+                if self.on_suspend:
+                    self.on_suspend()
+
+                # Wait for the event to be set (by notify_condition_waiters)
+                await wait_event.wait()
+            finally:
+                # Clean up if the event is still in the list
+                if wait_event in self.condition_waiters:
+                    self.condition_waiters.remove(wait_event)
 
             # Check timeout
             if timeout_ns is not None:
@@ -531,6 +574,95 @@ class WorkflowRuntime:
                 )
 
         raise _ContinueAsNewError()
+
+    def workflow_get_external_workflow_handle(
+        self,
+        workflow_id: str,
+        *,
+        run_id: str | None,
+    ) -> "ExternalWorkflowHandle[Any]":
+        """Get a handle to an external workflow.
+
+        Args:
+            workflow_id: ID of the external workflow.
+            run_id: Optional run ID to target a specific run.
+
+        Returns:
+            Handle to the external workflow.
+        """
+        from temporalio_trio.workflow import ExternalWorkflowHandle
+
+        return ExternalWorkflowHandle(self, workflow_id, run_id)
+
+    async def workflow_signal_external_workflow(
+        self,
+        workflow_id: str,
+        signal_name: str,
+        args: Sequence[Any],
+        *,
+        run_id: str | None,
+    ) -> None:
+        """Signal an external workflow.
+
+        This method sends a signal to an external workflow and waits for
+        confirmation that it was delivered.
+
+        Args:
+            workflow_id: ID of the external workflow to signal.
+            signal_name: Name of the signal to send.
+            args: Arguments to pass with the signal.
+            run_id: Optional run ID to target a specific run.
+
+        Raises:
+            RuntimeError: If the signal fails (e.g., workflow not found).
+        """
+        # Increment sequence number
+        self.signal_external_seq += 1
+        seq = self.signal_external_seq
+
+        # Check if already completed (replay path)
+        if seq in self.completed_external_signals:
+            error = self.completed_external_signals[seq]
+            if error is not None:
+                raise error
+            return
+
+        # Create suspension event
+        event = trio.Event()
+        self.pending_external_signals[seq] = event
+
+        # Emit command
+        self.commands.append(
+            SignalExternalWorkflowCommand(
+                seq=seq,
+                workflow_id=workflow_id,
+                signal_name=signal_name,
+                run_id=run_id,
+                args=tuple(args),
+            )
+        )
+
+        # Notify suspension callback if set
+        if self.on_suspend is not None:
+            self.on_suspend()
+
+        # Wait for resolution
+        await event.wait()
+
+        # Check if there was an error
+        if seq in self.completed_external_signals:
+            error = self.completed_external_signals[seq]
+            if error is not None:
+                raise error
+
+    def next_signal_external_seq(self) -> int:
+        """Get the next signal external sequence number.
+
+        Returns:
+            The next sequence number for signal external commands.
+        """
+        self.signal_external_seq += 1
+        return self.signal_external_seq
 
     def register_signal_handler(self, name: str, handler: Callable[..., Any]) -> None:
         """Register a signal handler.
@@ -926,6 +1058,27 @@ class WorkflowRuntime:
         # Cancel the nursery to propagate to all child tasks
         if self.nursery is not None:
             self.nursery.cancel_scope.cancel()
+
+    # External signal methods
+
+    def apply_signal_external_resolved(
+        self, seq: int, error: BaseException | None
+    ) -> None:
+        """Handle a signal external workflow resolution.
+
+        This is called when the activation contains a SignalExternalResolvedJob.
+        It stores the result and wakes up any suspended workflow.
+
+        Args:
+            seq: The sequence number of the signal external command.
+            error: The error if the signal failed, or None if successful.
+        """
+        # Store result for replay
+        self.completed_external_signals[seq] = error
+
+        # Wake up the suspended workflow if waiting
+        if seq in self.pending_external_signals:
+            self.pending_external_signals[seq].set()
 
 
 # Module-level ContextVar for current runtime

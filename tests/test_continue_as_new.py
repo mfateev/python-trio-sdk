@@ -24,7 +24,6 @@ from temporalio_trio.worker import (
 )
 from temporalio_trio.worker._activation import ContinueAsNewCommand
 
-
 # =============================================================================
 # Test Workflows
 # =============================================================================

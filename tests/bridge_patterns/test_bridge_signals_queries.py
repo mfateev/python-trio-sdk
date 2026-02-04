@@ -689,9 +689,7 @@ async def test_query_on_completed_workflow(unique_task_queue: str) -> None:
 
         # 3. Complete workflow IMMEDIATELY (no timer, no activity)
         completion = (
-            CompletionBuilder(run_id)
-            .complete_workflow("workflow_done")
-            .build()
+            CompletionBuilder(run_id).complete_workflow("workflow_done").build()
         )
         await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
         print("Step 2: Sent CompleteWorkflowExecution")
@@ -863,7 +861,9 @@ async def test_query_on_completed_workflow(unique_task_queue: str) -> None:
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
-async def test_query_on_completed_workflow_eviction_before_query(unique_task_queue: str) -> None:
+async def test_query_on_completed_workflow_eviction_before_query(
+    unique_task_queue: str,
+) -> None:
     """Test: Query triggers replay - eviction ALWAYS happens before replay.
 
     This test validates that SDK-Core ALWAYS evicts a completed workflow immediately
@@ -917,9 +917,7 @@ async def test_query_on_completed_workflow_eviction_before_query(unique_task_que
 
         # 3. Complete workflow IMMEDIATELY
         completion = (
-            CompletionBuilder(run_id)
-            .complete_workflow("workflow_done")
-            .build()
+            CompletionBuilder(run_id).complete_workflow("workflow_done").build()
         )
         await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
         print("Step 2: Sent CompleteWorkflowExecution")
@@ -1047,7 +1045,9 @@ async def test_query_on_completed_workflow_eviction_before_query(unique_task_que
 
                     elif "remove_from_cache" in jobs:
                         # Eviction came first - complete it and poll again for replay
-                        print("  -> Eviction came first (SDK-Core evicts immediately after completion)")
+                        print(
+                            "  -> Eviction came first (SDK-Core evicts immediately after completion)"
+                        )
                         completion = CompletionBuilder(activation.run_id).build()
                         await bridge.complete_workflow_activation(
                             completion, timeout=DEFAULT_TIMEOUT
@@ -1060,7 +1060,9 @@ async def test_query_on_completed_workflow_eviction_before_query(unique_task_que
                         )
                         activation = ActivationParser(activation_bytes)
                         jobs = [j.WhichOneof("variant") for j in activation.jobs]
-                        print(f"Step 6: RECEIVED: jobs={jobs}, is_replaying={activation.activation.is_replaying}")
+                        print(
+                            f"Step 6: RECEIVED: jobs={jobs}, is_replaying={activation.activation.is_replaying}"
+                        )
 
                         if "initialize_workflow" in jobs:
                             print("  -> Replay activation received")

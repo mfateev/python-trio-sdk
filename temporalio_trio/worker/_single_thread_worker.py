@@ -32,6 +32,7 @@ from temporalio_trio.worker._activation import (
     ContinueAsNewCommand,
     FailWorkflowCommand,
     QueryWorkflowJob,
+    SignalExternalResolvedJob,
     SignalWorkflowJob,
     TimerFiredJob,
     WorkflowActivation,
@@ -159,7 +160,9 @@ class SingleThreadWorker:
                 # Poll for the next activation
                 logger.debug("Polling for next activation...")
                 activation_bytes = await self._bridge.poll_workflow_activation()
-                logger.debug(f"Received activation: {len(activation_bytes) if isinstance(activation_bytes, bytes) else 'parsed'}")
+                logger.debug(
+                    f"Received activation: {len(activation_bytes) if isinstance(activation_bytes, bytes) else 'parsed'}"
+                )
 
                 # Parse the activation
                 # For unit tests, we use our POC activation types directly
@@ -263,7 +266,9 @@ class SingleThreadWorker:
                     "using cached state (immutable after completion)"
                 )
                 # Send CompleteWorkflow to match history
-                commands = [CompleteWorkflowCommand(result=existing_state.completion_result)]
+                commands = [
+                    CompleteWorkflowCommand(result=existing_state.completion_result)
+                ]
                 await self._send_completion(run_id, commands)
                 return
             else:
@@ -423,7 +428,12 @@ class SingleThreadWorker:
 
                 # Start the main workflow coroutine (workflow object already created)
                 nursery.start_soon(
-                    self._execute_workflow_main, runtime, defn, workflow_obj, started_job.args, state
+                    self._execute_workflow_main,
+                    runtime,
+                    defn,
+                    workflow_obj,
+                    started_job.args,
+                    state,
                 )
 
                 # Wait for main workflow to either complete or need suspension
@@ -646,6 +656,11 @@ class SingleThreadWorker:
                     result=job.result,
                     error=job.failure,
                 )
+            elif isinstance(job, SignalExternalResolvedJob):
+                runtime.apply_signal_external_resolved(
+                    seq=job.seq,
+                    error=job.failure,
+                )
             elif isinstance(job, CancelWorkflowJob):
                 runtime.apply_cancel_workflow()
 
@@ -687,6 +702,9 @@ class SingleThreadWorker:
         except Exception as e:
             # Log but don't fail workflow - signal handlers should not crash workflows
             logger.warning(f"Signal handler error for {signal_job.signal_name}: {e}")
+
+        # Notify any wait_condition waiters that state may have changed
+        runtime.notify_condition_waiters()
 
     async def _run_signal_handler(
         self,

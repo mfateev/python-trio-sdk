@@ -11,7 +11,7 @@ import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Callable, NoReturn
+from typing import Any, Callable, NoReturn, Sequence
 
 import outcome
 import temporalio.common
@@ -35,6 +35,8 @@ from temporalio_trio.worker._activation import (
     QueryResultCommand,
     QueryWorkflowJob,
     ScheduleActivityCommand,
+    SignalExternalResolvedJob,
+    SignalExternalWorkflowCommand,
     SignalWorkflowJob,
     StartChildWorkflowCommand,
     StartTimerCommand,
@@ -48,6 +50,7 @@ from temporalio_trio.workflow import (
     ChildWorkflowCancellationType,
     ChildWorkflowHandle,
     ContinueAsNewError,
+    ExternalWorkflowHandle,
     Info,
     ParentClosePolicy,
     _Definition,
@@ -354,6 +357,8 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             | QueryResultCommand
             | StartChildWorkflowCommand
             | CancelChildWorkflowCommand
+            | SignalExternalWorkflowCommand
+            | ContinueAsNewCommand
         ] = []
         self._start_args: tuple[Any, ...] | None = None
         self._cancel_requested: bool = False
@@ -376,6 +381,13 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         # Current pending child workflow sequence (for yield tracking)
         self._pending_child_seq: int | None = None
 
+        # External signal handling
+        self._signal_external_seq: int = 0
+        # Track resolved external signals for replay: seq -> failure (None = success)
+        self._resolved_external_signals: dict[int, BaseException | None] = {}
+        # Current pending external signal sequence (for yield tracking)
+        self._pending_external_signal_seq: int | None = None
+
         # Guest mode state (Phase 1/2)
         self._guest_running: bool = False
         self._workflow_outcome: outcome.Outcome | None = None
@@ -383,6 +395,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         self._activity_events: dict[int, trio.Event] = {}
         self._condition_events: dict[int, trio.Event] = {}
         self._child_workflow_events: dict[int, trio.Event] = {}
+        self._external_signal_events: dict[int, trio.Event] = {}
         self._pending_conditions: list[tuple[int, Callable[[], bool], trio.Event]] = []
         self._pending_callbacks: list[Callable[[], object]] = []
         self._guest_clock: WorkflowClock | None = None
@@ -500,6 +513,14 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 # Set event to wake workflow (guest mode)
                 if job.seq in self._child_workflow_events:
                     self._child_workflow_events[job.seq].set()
+            elif isinstance(job, SignalExternalResolvedJob):
+                # External signal resolved - store result for replay
+                self._resolved_external_signals[job.seq] = job.failure
+                if self._pending_external_signal_seq == job.seq:
+                    self._pending_external_signal_seq = None
+                # Set event to wake workflow (guest mode)
+                if job.seq in self._external_signal_events:
+                    self._external_signal_events[job.seq].set()
 
         # If we have start args (either new or from previous activation), run workflow
         if self._start_args is not None:
@@ -509,6 +530,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             self._activity_seq = 0
             self._child_workflow_seq = 0
             self._condition_seq = 0
+            self._signal_external_seq = 0
 
             token = _Runtime.set_current(self)
             try:
@@ -1066,3 +1088,71 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             task_timeout=task_timeout,
             retry_policy=retry_policy,
         )
+
+    def workflow_get_external_workflow_handle(
+        self,
+        workflow_id: str,
+        *,
+        run_id: str | None,
+    ) -> ExternalWorkflowHandle[Any]:
+        """Get a handle to an external workflow.
+
+        Args:
+            workflow_id: ID of the external workflow.
+            run_id: Optional run ID to target a specific run.
+
+        Returns:
+            Handle to the external workflow.
+        """
+        return ExternalWorkflowHandle(self, workflow_id, run_id)
+
+    async def workflow_signal_external_workflow(
+        self,
+        workflow_id: str,
+        signal_name: str,
+        args: Sequence[Any],
+        *,
+        run_id: str | None,
+    ) -> None:
+        """Signal an external workflow.
+
+        This method sends a signal to an external workflow and waits for
+        confirmation that it was delivered.
+
+        Args:
+            workflow_id: ID of the external workflow to signal.
+            signal_name: Name of the signal to send.
+            args: Arguments to pass with the signal.
+            run_id: Optional run ID to target a specific run.
+
+        Raises:
+            RuntimeError: If the signal fails (e.g., workflow not found).
+        """
+        # Check if cancellation requested before starting new operations
+        if self._cancel_requested:
+            raise _WorkflowCancelled("Workflow cancelled")
+
+        # Increment sequence number
+        self._signal_external_seq += 1
+        seq = self._signal_external_seq
+
+        # Check if we already have the result from a previous replay
+        if seq in self._resolved_external_signals:
+            failure = self._resolved_external_signals[seq]
+            if failure is not None:
+                raise failure
+            return
+
+        # Add the command to signal the external workflow
+        cmd = SignalExternalWorkflowCommand(
+            seq=seq,
+            workflow_id=workflow_id,
+            signal_name=signal_name,
+            run_id=run_id,
+            args=tuple(args),
+        )
+        self._commands.append(cmd)
+
+        # Mark this sequence as pending and yield to wait for resolution
+        self._pending_external_signal_seq = seq
+        raise _WorkflowYield()

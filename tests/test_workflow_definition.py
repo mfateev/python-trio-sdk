@@ -1,7 +1,7 @@
 """Tests for workflow definition and decorators (Phase 1)."""
 
 from datetime import timedelta
-from typing import Any, Callable, NoReturn
+from typing import Any, Callable, NoReturn, Sequence
 
 import pytest
 import temporalio.common
@@ -242,6 +242,24 @@ class TestRuntimeClass:
             ) -> NoReturn:
                 raise NotImplementedError()
 
+            def workflow_get_external_workflow_handle(
+                self,
+                workflow_id: str,
+                *,
+                run_id: str | None,
+            ) -> workflow.ExternalWorkflowHandle[Any]:
+                raise NotImplementedError()
+
+            async def workflow_signal_external_workflow(
+                self,
+                workflow_id: str,
+                signal_name: str,
+                args: Sequence[Any],
+                *,
+                run_id: str | None,
+            ) -> None:
+                raise NotImplementedError()
+
         mock = MockRuntime()
 
         # Initially None
@@ -327,6 +345,24 @@ class TestRuntimeClass:
                 task_timeout: timedelta | None,
                 retry_policy: temporalio.common.RetryPolicy | None,
             ) -> NoReturn:
+                raise NotImplementedError()
+
+            def workflow_get_external_workflow_handle(
+                self,
+                workflow_id: str,
+                *,
+                run_id: str | None,
+            ) -> workflow.ExternalWorkflowHandle[Any]:
+                raise NotImplementedError()
+
+            async def workflow_signal_external_workflow(
+                self,
+                workflow_id: str,
+                signal_name: str,
+                args: Sequence[Any],
+                *,
+                run_id: str | None,
+            ) -> None:
                 raise NotImplementedError()
 
         mock1 = MockRuntime("mock1")
@@ -430,6 +466,24 @@ class TestPublicAPI:
             ) -> NoReturn:
                 raise NotImplementedError()
 
+            def workflow_get_external_workflow_handle(
+                self,
+                workflow_id: str,
+                *,
+                run_id: str | None,
+            ) -> workflow.ExternalWorkflowHandle[Any]:
+                raise NotImplementedError()
+
+            async def workflow_signal_external_workflow(
+                self,
+                workflow_id: str,
+                signal_name: str,
+                args: Sequence[Any],
+                *,
+                run_id: str | None,
+            ) -> None:
+                raise NotImplementedError()
+
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
         try:
@@ -517,6 +571,24 @@ class TestPublicAPI:
                 task_timeout: timedelta | None,
                 retry_policy: temporalio.common.RetryPolicy | None,
             ) -> NoReturn:
+                raise NotImplementedError()
+
+            def workflow_get_external_workflow_handle(
+                self,
+                workflow_id: str,
+                *,
+                run_id: str | None,
+            ) -> workflow.ExternalWorkflowHandle[Any]:
+                raise NotImplementedError()
+
+            async def workflow_signal_external_workflow(
+                self,
+                workflow_id: str,
+                signal_name: str,
+                args: Sequence[Any],
+                *,
+                run_id: str | None,
+            ) -> None:
                 raise NotImplementedError()
 
         mock = MockRuntime()
