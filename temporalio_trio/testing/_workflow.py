@@ -34,8 +34,6 @@ def _find_free_port() -> int:
 class WorkflowEnvironment:
     """Workflow environment for testing workflows with Trio.
 
-    Mirrors temporalio.testing.WorkflowEnvironment from the SDK.
-
     This environment provides a way to run workflows in a test context.
     It can either connect to an existing Temporal server or start a local
     dev server for testing.

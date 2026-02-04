@@ -59,10 +59,7 @@ ReturnType = TypeVar("ReturnType")
 
 
 class ChildWorkflowCancellationType(IntEnum):
-    """How a child workflow reacts to cancellation of its parent.
-
-    Mirrors temporalio.workflow.ChildWorkflowCancellationType from the SDK.
-    """
+    """How a child workflow reacts to cancellation of its parent."""
 
     ABANDON = 0
     """Do not request cancellation of the child workflow if already scheduled."""
@@ -76,11 +73,8 @@ class ChildWorkflowCancellationType(IntEnum):
     WAIT_CANCELLATION_REQUESTED = 3
     """Request cancellation and wait for confirmation that the request was received."""
 
-
 class ParentClosePolicy(IntEnum):
     """What happens to a child workflow when the parent workflow closes.
-
-    Mirrors temporalio.workflow.ParentClosePolicy from the SDK.
     """
 
     UNSPECIFIED = 0
@@ -94,7 +88,6 @@ class ParentClosePolicy(IntEnum):
 
     REQUEST_CANCEL = 3
     """Request cancellation of the child workflow when the parent closes."""
-
 
 # Context variable for current runtime (Trio doesn't have event loops like asyncio)
 _current_runtime: ContextVar[_Runtime | None] = ContextVar(
@@ -110,8 +103,6 @@ class _NotInWorkflowContextError(RuntimeError):
 
 class _Runtime(ABC):
     """Abstract runtime that provides workflow APIs.
-
-    Mirrors temporalio.workflow._Runtime from the SDK.
 
     All workflow APIs (sleep, time, info, etc.) delegate to _Runtime.current().
     This pattern allows adding features without changing the public API.
@@ -330,8 +321,6 @@ class _QueryDefinition:
 @dataclass
 class _Definition:
     """Workflow definition metadata.
-
-    Mirrors temporalio.workflow._Definition from the SDK.
 
     This stores metadata about a workflow class that was decorated with
     @workflow.defn. The definition is attached to the class and can be
@@ -642,8 +631,6 @@ def defn(cls: type | None = None, *, name: str | None = None) -> Any:
 async def sleep(duration: float, *, summary: str | None = None) -> None:
     """Sleep for the given duration.
 
-    Mirrors temporalio.workflow.sleep from the SDK.
-
     This pauses workflow execution for the specified duration. During replay,
     the sleep completes immediately based on recorded history.
 
@@ -660,8 +647,6 @@ async def sleep(duration: float, *, summary: str | None = None) -> None:
 def time() -> float:
     """Get current workflow time in seconds.
 
-    Mirrors temporalio.workflow.time from the SDK.
-
     Returns the current workflow time, which is deterministic and based on
     the workflow's history during replay.
 
@@ -676,8 +661,6 @@ def time() -> float:
 
 def time_ns() -> int:
     """Get current workflow time in nanoseconds.
-
-    Mirrors temporalio.workflow.time_ns from the SDK.
 
     Returns the current workflow time, which is deterministic and based on
     the workflow's history during replay.
@@ -694,8 +677,6 @@ def time_ns() -> int:
 def info() -> Info:
     """Get information about the current workflow.
 
-    Mirrors temporalio.workflow.info from the SDK.
-
     Returns information about the currently executing workflow, including
     its ID, type, run ID, and task queue.
 
@@ -710,8 +691,6 @@ def info() -> Info:
 
 def random() -> _random_module.Random:
     """Get the deterministic random number generator for this workflow.
-
-    Mirrors temporalio.workflow.random from the SDK.
 
     Returns a seeded random.Random instance that produces deterministic
     results across workflow replays. The seed is provided by the Temporal
@@ -743,8 +722,6 @@ def random() -> _random_module.Random:
 
 def uuid4() -> _uuid_module.UUID:
     """Generate a deterministic UUID4 based on the workflow's random generator.
-
-    Mirrors temporalio.workflow.uuid4 from the SDK.
 
     This generates a UUID that is deterministic across workflow replays,
     unlike the standard library uuid.uuid4() which uses system entropy.
@@ -782,8 +759,6 @@ async def execute_activity(
     activity_id: str | None = None,
 ) -> Any:
     """Execute an activity and wait for its result.
-
-    Mirrors temporalio.workflow.execute_activity from the SDK.
 
     This schedules an activity for execution and waits for it to complete.
     At least one of ``schedule_to_close_timeout`` or ``start_to_close_timeout``
@@ -841,7 +816,6 @@ async def wait_condition(
     If the condition becomes true, execution continues immediately.
     If a timeout is specified and expires first, TimeoutError is raised.
 
-    Mirrors temporalio.workflow.wait_condition from the SDK.
 
     Args:
         fn: A callable returning True when condition is met.
@@ -883,7 +857,6 @@ async def wait_condition(
 class Info:
     """Information about a running workflow.
 
-    Mirrors temporalio.workflow.Info from the SDK.
     Simplified for POC - SDK has many more fields.
     """
 
@@ -899,7 +872,6 @@ class Info:
     task_queue: str
     """Task queue the workflow is running on."""
 
-
 # =============================================================================
 # Child Workflow Handle
 # =============================================================================
@@ -907,8 +879,6 @@ class Info:
 
 class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
     """Handle for interacting with a started child workflow.
-
-    Mirrors temporalio.workflow.ChildWorkflowHandle from the SDK.
 
     This handle is returned by :py:func:`start_child_workflow` and provides
     methods to get the result, signal the child, and access its metadata.
@@ -1048,8 +1018,6 @@ async def start_child_workflow(
 ) -> ChildWorkflowHandle[Any, Any]:
     """Start a child workflow and return a handle.
 
-    Mirrors temporalio.workflow.start_child_workflow from the SDK.
-
     This starts a child workflow and returns a handle that can be used to
     wait for the result, send signals, or get metadata.
 
@@ -1124,8 +1092,6 @@ async def execute_child_workflow(
     retry_policy: temporalio.common.RetryPolicy | None = None,
 ) -> Any:
     """Start a child workflow and wait for its result.
-
-    Mirrors temporalio.workflow.execute_child_workflow from the SDK.
 
     This is a convenience method equivalent to:
         handle = await start_child_workflow(...)

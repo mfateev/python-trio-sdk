@@ -87,8 +87,6 @@ class _WorkflowCancelled(BaseException):
 class WorkflowRunner(ABC):
     """Abstract runner for workflows.
 
-    Mirrors temporalio.worker.WorkflowRunner from the SDK.
-
     A workflow runner is responsible for:
     - Preparing workflow definitions for execution (validation, setup)
     - Creating workflow instances for each execution
@@ -191,8 +189,6 @@ class TrioWorkflowRunner(WorkflowRunner):
 class WorkflowInstanceDetails:
     """Immutable details for creating a workflow instance.
 
-    Mirrors temporalio.worker.WorkflowInstanceDetails from the SDK.
-
     This dataclass contains all the information needed to create a new workflow
     instance, including the workflow definition, runtime info, and randomness seed.
 
@@ -211,11 +207,8 @@ class WorkflowInstanceDetails:
     randomness_seed: int
     """Seed for deterministic random number generation."""
 
-
 class WorkflowInstance(ABC):
     """Abstract base class for workflow instances.
-
-    Mirrors temporalio.worker.WorkflowInstance from the SDK.
 
     A workflow instance handles activations from the Temporal server and returns
     completions with commands to execute. Each workflow execution has one instance.
