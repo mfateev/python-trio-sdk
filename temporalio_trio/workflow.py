@@ -6,13 +6,14 @@ This module mirrors temporalio.workflow from the SDK.
 from __future__ import annotations
 
 import inspect
+import random as _random_module
+import uuid as _uuid_module
 from abc import ABC, abstractmethod
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Generic, Sequence, TypeVar
-from uuid import uuid4
 
 import temporalio.common
 
@@ -28,6 +29,8 @@ __all__ = [
     "time",
     "time_ns",
     "info",
+    "random",
+    "uuid4",
     "execute_activity",
     "wait_condition",
     "start_child_workflow",
@@ -277,6 +280,19 @@ class _Runtime(ABC):
 
         Raises:
             TimeoutError: If timeout expires before condition becomes true.
+        """
+        ...
+
+    @abstractmethod
+    def workflow_random(self) -> _random_module.Random:
+        """Get the deterministic random number generator for this workflow.
+
+        Returns a seeded random.Random instance that produces deterministic
+        results across workflow replays. The seed is provided by the Temporal
+        server and is consistent for each workflow execution.
+
+        Returns:
+            A seeded random.Random instance.
         """
         ...
 
@@ -692,6 +708,68 @@ def info() -> Info:
     return _Runtime.current().workflow_info()
 
 
+def random() -> _random_module.Random:
+    """Get the deterministic random number generator for this workflow.
+
+    Mirrors temporalio.workflow.random from the SDK.
+
+    Returns a seeded random.Random instance that produces deterministic
+    results across workflow replays. The seed is provided by the Temporal
+    server and is consistent for each workflow execution.
+
+    IMPORTANT: Always use this function instead of the standard library
+    random module to ensure workflow determinism. Using Python's default
+    random module will break replay.
+
+    Example:
+        # Get a random integer
+        value = workflow.random().randint(1, 100)
+
+        # Get a random float
+        value = workflow.random().random()
+
+        # Shuffle a list deterministically
+        items = [1, 2, 3, 4, 5]
+        workflow.random().shuffle(items)
+
+    Returns:
+        A seeded random.Random instance.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    return _Runtime.current().workflow_random()
+
+
+def uuid4() -> _uuid_module.UUID:
+    """Generate a deterministic UUID4 based on the workflow's random generator.
+
+    Mirrors temporalio.workflow.uuid4 from the SDK.
+
+    This generates a UUID that is deterministic across workflow replays,
+    unlike the standard library uuid.uuid4() which uses system entropy.
+
+    IMPORTANT: Always use this function instead of the standard library
+    uuid.uuid4() to ensure workflow determinism. Using Python's default
+    uuid4 will break replay.
+
+    Example:
+        # Generate a unique ID for a resource
+        resource_id = str(workflow.uuid4())
+
+    Returns:
+        A deterministic UUID4.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    rng = _Runtime.current().workflow_random()
+    # Generate 16 random bytes and convert to UUID4
+    # This matches the official SDK's implementation
+    random_bytes = rng.getrandbits(16 * 8).to_bytes(16, "big")
+    return _uuid_module.UUID(bytes=random_bytes, version=4)
+
+
 async def execute_activity(
     activity: str | Callable[..., Any],
     *args: Any,
@@ -1018,7 +1096,7 @@ async def start_child_workflow(
     return await _Runtime.current().workflow_start_child_workflow(
         workflow,
         *temporalio.common._arg_or_args(arg, args),
-        id=id or str(uuid4()),
+        id=id or str(uuid4()),  # Uses our deterministic uuid4()
         task_queue=task_queue,
         cancellation_type=cancellation_type,
         parent_close_policy=parent_close_policy,

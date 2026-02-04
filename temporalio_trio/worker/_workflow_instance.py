@@ -658,6 +658,18 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         """
         return self._info
 
+    def workflow_random(self) -> random.Random:
+        """Get the deterministic random number generator for this workflow.
+
+        Returns a seeded random.Random instance that produces deterministic
+        results across workflow replays. The seed was provided when the
+        workflow instance was created.
+
+        Returns:
+            A seeded random.Random instance.
+        """
+        return self._random
+
     async def workflow_sleep(self, duration: float, summary: str | None) -> None:
         """Sleep for the given duration.
 
