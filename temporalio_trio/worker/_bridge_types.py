@@ -32,10 +32,12 @@ from temporalio_trio.worker._activation import (
     ChildWorkflowStartFailedJob,
     CompleteWorkflowCommand,
     FailWorkflowCommand,
+    NotifyHasPatchJob,
     QueryResultCommand,
     QueryWorkflowJob,
     RequestCancelActivityCommand,
     ScheduleActivityCommand,
+    SetPatchMarkerCommand,
     SignalWorkflowJob,
     StartChildWorkflowCommand,
     StartTimerCommand,
@@ -83,6 +85,7 @@ def bridge_to_poc_activation(
         | ChildWorkflowStartedJob
         | ChildWorkflowStartFailedJob
         | ChildWorkflowResolvedJob
+        | NotifyHasPatchJob
     ] = []
     for job in bridge_act.jobs:
         # Check which job type this is (oneof field)
@@ -118,6 +121,8 @@ def bridge_to_poc_activation(
                     job.resolve_child_workflow_execution, data_converter
                 )
             )
+        elif job_type == "notify_has_patch":
+            poc_jobs.append(_convert_notify_has_patch(job.notify_has_patch))
         elif job_type == "remove_from_cache":
             # Eviction jobs are handled separately in the bridge worker
             # They should not be passed to the workflow instance
@@ -382,6 +387,18 @@ def _convert_resolve_child_workflow(
     )
 
 
+def _convert_notify_has_patch(notify: act_pb.NotifyHasPatch) -> NotifyHasPatchJob:
+    """Convert NotifyHasPatch to NotifyHasPatchJob.
+
+    Args:
+        notify: Bridge NotifyHasPatch job
+
+    Returns:
+        POC NotifyHasPatchJob
+    """
+    return NotifyHasPatchJob(patch_id=notify.patch_id)
+
+
 def _set_duration(
     duration_proto: google.protobuf.duration_pb2.Duration,
     td: timedelta,
@@ -604,6 +621,11 @@ def poc_to_bridge_completion(
         elif isinstance(cmd, CancelChildWorkflowCommand):
             # Convert CancelChildWorkflowCommand to CancelChildWorkflowExecution
             bridge_cmd.cancel_child_workflow_execution.child_workflow_seq = cmd.seq
+
+        elif isinstance(cmd, SetPatchMarkerCommand):
+            # Convert SetPatchMarkerCommand to SetPatchMarker
+            bridge_cmd.set_patch_marker.patch_id = cmd.patch_id
+            bridge_cmd.set_patch_marker.deprecated = cmd.deprecated
 
         else:
             raise NotImplementedError(

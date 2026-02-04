@@ -29,6 +29,7 @@ __all__ = [
     "QuerySuccessCommand",
     "QueryFailureCommand",
     "CancelWorkflowCommand",
+    "SetPatchMarkerCommand",
     "get_current_runtime",
     "set_current_runtime",
     "reset_current_runtime",
@@ -158,6 +159,22 @@ class StartChildWorkflowCommand:
 
 
 @dataclass
+class SetPatchMarkerCommand:
+    """Command to record a patch marker in workflow history.
+
+    This command is emitted when workflow.patched() is called on a new execution
+    (not replaying). The marker is recorded in history so that during replay,
+    patched() can return the correct value.
+    """
+
+    patch_id: str
+    """The identifier for the patch."""
+
+    deprecated: bool = False
+    """Whether this patch is being marked as deprecated."""
+
+
+@dataclass
 class WorkflowRuntime:
     """Per-workflow isolated runtime state.
 
@@ -256,6 +273,13 @@ class WorkflowRuntime:
     # Cancellation (Phase 7)
     cancel_requested: bool = False
     """Whether workflow cancellation has been requested."""
+
+    # Patching/Versioning (Phase 2 of feature parity)
+    patches_notified: set[str] = field(default_factory=set)
+    """Patch IDs that have been notified as existing in history (for replay)."""
+
+    patches_memoized: dict[str, bool] = field(default_factory=dict)
+    """Memoized results of patched() calls: patch_id -> result."""
 
     def register_signal_handler(self, name: str, handler: Callable[..., Any]) -> None:
         """Register a signal handler.
@@ -648,6 +672,60 @@ class WorkflowRuntime:
         # Cancel the nursery to propagate to all child tasks
         if self.nursery is not None:
             self.nursery.cancel_scope.cancel()
+
+    # Patching methods (Phase 2 of feature parity)
+
+    def apply_notify_has_patch(self, patch_id: str) -> None:
+        """Handle a notify_has_patch job from an activation.
+
+        This is called when the activation contains a NotifyHasPatch job,
+        which happens during replay to inform the runtime that a patch ID
+        exists in the workflow history.
+
+        Args:
+            patch_id: The patch ID that exists in history.
+        """
+        self.patches_notified.add(patch_id)
+
+    def workflow_patch(self, patch_id: str, *, deprecated: bool = False) -> bool:
+        """Check if a patch should be applied.
+
+        This implements the patching logic for safe code evolution:
+        - If replaying and the patch is in history (notified), return True
+        - If replaying and the patch is NOT in history, return False
+        - If not replaying (new execution), emit a SetPatchMarkerCommand and return True
+
+        Results are memoized so subsequent calls with the same patch_id return
+        the same value without emitting additional commands.
+
+        Args:
+            patch_id: Unique identifier for this patch point.
+            deprecated: If True, marks the patch as deprecated. Deprecated patches
+                still return True for existing executions but the marker indicates
+                the old code path can be removed in the future.
+
+        Returns:
+            True if the new code path should be taken, False if the old path
+            should be taken (only during replay without the patch marker).
+        """
+        # Check if already memoized
+        if patch_id in self.patches_memoized:
+            return self.patches_memoized[patch_id]
+
+        # Determine the result based on replay state
+        if self.is_replaying:
+            # During replay, check if patch was recorded in history
+            result = patch_id in self.patches_notified
+        else:
+            # New execution - take the new path and record marker
+            result = True
+            self.commands.append(
+                SetPatchMarkerCommand(patch_id=patch_id, deprecated=deprecated)
+            )
+
+        # Memoize and return
+        self.patches_memoized[patch_id] = result
+        return result
 
 
 @dataclass

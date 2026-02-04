@@ -31,6 +31,8 @@ __all__ = [
     "info",
     "random",
     "uuid4",
+    "patched",
+    "deprecate_patch",
     "execute_activity",
     "wait_condition",
     "start_child_workflow",
@@ -73,9 +75,9 @@ class ChildWorkflowCancellationType(IntEnum):
     WAIT_CANCELLATION_REQUESTED = 3
     """Request cancellation and wait for confirmation that the request was received."""
 
+
 class ParentClosePolicy(IntEnum):
-    """What happens to a child workflow when the parent workflow closes.
-    """
+    """What happens to a child workflow when the parent workflow closes."""
 
     UNSPECIFIED = 0
     """Let the server set the default policy."""
@@ -88,6 +90,7 @@ class ParentClosePolicy(IntEnum):
 
     REQUEST_CANCEL = 3
     """Request cancellation of the child workflow when the parent closes."""
+
 
 # Context variable for current runtime (Trio doesn't have event loops like asyncio)
 _current_runtime: ContextVar[_Runtime | None] = ContextVar(
@@ -284,6 +287,22 @@ class _Runtime(ABC):
 
         Returns:
             A seeded random.Random instance.
+        """
+        ...
+
+    @abstractmethod
+    def workflow_patch(self, patch_id: str, *, deprecated: bool = False) -> bool:
+        """Check if a patch should be applied.
+
+        This is used for safe code evolution. When you need to change workflow
+        code in a way that would break replay, use patched() to gate the change.
+
+        Args:
+            patch_id: Unique identifier for this patch point.
+            deprecated: If True, marks the patch as deprecated.
+
+        Returns:
+            True if the new code path should be taken.
         """
         ...
 
@@ -747,6 +766,93 @@ def uuid4() -> _uuid_module.UUID:
     return _uuid_module.UUID(bytes=random_bytes, version=4)
 
 
+def patched(patch_id: str) -> bool:
+    """Check if a patch should be applied for safe workflow code evolution.
+
+    Use this function when you need to change workflow code in a way that would
+    break existing workflow executions during replay. This allows new code to
+    run for new executions while existing executions continue with the old code
+    path during replay.
+
+    The patch ID must be unique within the workflow. Once a patch is applied,
+    the workflow history records that fact, and subsequent replays will take
+    the new code path.
+
+    Example:
+        @workflow.defn
+        class MyWorkflow:
+            @workflow.run
+            async def run(self) -> str:
+                if workflow.patched("my-change-v2"):
+                    # New code path
+                    result = await workflow.execute_activity(
+                        new_activity,
+                        start_to_close_timeout=timedelta(seconds=30),
+                    )
+                else:
+                    # Old code path (for replaying old executions)
+                    result = await workflow.execute_activity(
+                        old_activity,
+                        start_to_close_timeout=timedelta(seconds=30),
+                    )
+                return result
+
+    Once all old workflow executions have completed, you can remove the
+    patched() check and use deprecate_patch() to mark the patch as deprecated
+    before fully removing it.
+
+    Args:
+        patch_id: A unique identifier for this patch point within the workflow.
+            Must be consistent across code versions.
+
+    Returns:
+        True if the new code path should be taken (new execution or replaying
+        an execution that has the patch marker), False if the old code path
+        should be taken (replaying an execution without the patch marker).
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    return _Runtime.current().workflow_patch(patch_id, deprecated=False)
+
+
+def deprecate_patch(patch_id: str) -> None:
+    """Mark a patch as deprecated.
+
+    Use this after all old workflow executions (that don't have the patch)
+    have completed. This is an intermediate step before fully removing the
+    patched() call from your code.
+
+    The deprecation workflow is:
+    1. Add patched() check with old and new code paths
+    2. Wait for all old executions to complete
+    3. Replace patched() with deprecate_patch() (keep only new code)
+    4. Wait for all executions with the patch marker to complete
+    5. Remove deprecate_patch() call entirely
+
+    Example:
+        @workflow.defn
+        class MyWorkflow:
+            @workflow.run
+            async def run(self) -> str:
+                # Old code used patched("my-change-v2"), now deprecated
+                workflow.deprecate_patch("my-change-v2")
+                # Only new code path remains
+                result = await workflow.execute_activity(
+                    new_activity,
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
+                return result
+
+    Args:
+        patch_id: The same identifier used in the original patched() call.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    _Runtime.current().workflow_patch(patch_id, deprecated=True)
+
+
 async def execute_activity(
     activity: str | Callable[..., Any],
     *args: Any,
@@ -871,6 +977,7 @@ class Info:
 
     task_queue: str
     """Task queue the workflow is running on."""
+
 
 # =============================================================================
 # Child Workflow Handle
