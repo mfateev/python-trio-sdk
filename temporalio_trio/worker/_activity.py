@@ -134,10 +134,13 @@ class TrioActivityWorker:
 
     async def _poll_loop(self) -> None:
         """Poll for activity tasks until shutdown."""
+        logger.debug("Starting activity poll loop")
         try:
             while not self._shutdown_event.is_set():
                 try:
+                    logger.debug("Polling for activity task...")
                     task_bytes = await self._bridge.poll_activity_task()
+                    logger.debug(f"Received activity task: {len(task_bytes)} bytes")
                     task = temporalio.bridge.proto.activity_task.ActivityTask()
                     task.ParseFromString(task_bytes)
                 except Exception as e:
@@ -276,7 +279,14 @@ class TrioActivityWorker:
                 except Exception as e:
                     # Activity failed with exception
                     logger.exception(f"Activity {activity_type} failed")
-                    await self._send_failure(task_token, str(e), type(e).__name__)
+                    # For ApplicationError, use the error's type attribute
+                    # For other exceptions, use the class name
+                    from temporalio.exceptions import ApplicationError
+                    if isinstance(e, ApplicationError) and e.type:
+                        error_type = e.type
+                    else:
+                        error_type = type(e).__name__
+                    await self._send_failure(task_token, str(e), error_type)
 
                 # Cancel heartbeat processor
                 nursery.cancel_scope.cancel()

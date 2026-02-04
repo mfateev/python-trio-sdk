@@ -44,8 +44,13 @@ fn default_sticky_queue_schedule_to_start_timeout_millis() -> u64 {
 }
 
 /// Wrapper around the Temporal SDK Core Worker that provides thread-safe access
+///
+/// The worker is stored in an Option<Arc<Worker>> so that:
+/// 1. The Mutex only needs to be held briefly to clone the Arc
+/// 2. The Arc<Worker> can be used concurrently without locking
+/// 3. SDK-Core's Worker is internally thread-safe for concurrent operations
 pub struct CoreWorkerHandle {
-    worker: Arc<Mutex<Option<Worker>>>,
+    worker: Arc<Mutex<Option<Arc<Worker>>>>,
     runtime: Arc<Mutex<Option<CoreRuntime>>>,
 }
 
@@ -123,18 +128,27 @@ impl CoreWorkerHandle {
         *runtime_guard = Some(runtime);
         drop(runtime_guard);
 
-        // Store worker
-        *worker_guard = Some(worker);
+        // Store worker wrapped in Arc for concurrent access
+        *worker_guard = Some(Arc::new(worker));
 
         Ok(())
     }
 
+    /// Get a clone of the worker Arc
+    ///
+    /// This briefly locks the mutex to clone the Arc, then drops the lock.
+    /// The caller can then use the Arc without holding any lock.
+    async fn get_worker(&self) -> Result<Arc<Worker>> {
+        let guard = self.worker.lock().await;
+        guard
+            .clone()
+            .ok_or_else(|| anyhow!("Worker not initialized"))
+    }
+
     /// Poll for a workflow activation
     pub async fn poll_workflow_activation(&self) -> Result<Vec<u8>> {
-        let guard = self.worker.lock().await;
-        let worker = guard
-            .as_ref()
-            .ok_or_else(|| anyhow!("Worker not initialized"))?;
+        // Get worker Arc and drop the lock before awaiting
+        let worker = self.get_worker().await?;
 
         // Poll for activation
         let activation = match worker.poll_workflow_activation().await {
@@ -154,10 +168,8 @@ impl CoreWorkerHandle {
 
     /// Complete a workflow activation
     pub async fn complete_workflow_activation(&self, completion_bytes: Vec<u8>) -> Result<()> {
-        let guard = self.worker.lock().await;
-        let worker = guard
-            .as_ref()
-            .ok_or_else(|| anyhow!("Worker not initialized"))?;
+        // Get worker Arc and drop the lock before awaiting
+        let worker = self.get_worker().await?;
 
         // Decode completion from protobuf bytes
         let completion = WorkflowActivationCompletion::decode(&completion_bytes[..])
@@ -174,10 +186,8 @@ impl CoreWorkerHandle {
 
     /// Poll for an activity task
     pub async fn poll_activity_task(&self) -> Result<Vec<u8>> {
-        let guard = self.worker.lock().await;
-        let worker = guard
-            .as_ref()
-            .ok_or_else(|| anyhow!("Worker not initialized"))?;
+        // Get worker Arc and drop the lock before awaiting
+        let worker = self.get_worker().await?;
 
         // Poll for activity task
         let task = match worker.poll_activity_task().await {
@@ -197,10 +207,8 @@ impl CoreWorkerHandle {
 
     /// Complete an activity task
     pub async fn complete_activity_task(&self, completion_bytes: Vec<u8>) -> Result<()> {
-        let guard = self.worker.lock().await;
-        let worker = guard
-            .as_ref()
-            .ok_or_else(|| anyhow!("Worker not initialized"))?;
+        // Get worker Arc and drop the lock before awaiting
+        let worker = self.get_worker().await?;
 
         // Decode completion from protobuf bytes
         let completion = ActivityTaskCompletion::decode(&completion_bytes[..])
@@ -217,10 +225,8 @@ impl CoreWorkerHandle {
 
     /// Record an activity heartbeat
     pub async fn record_activity_heartbeat(&self, heartbeat_bytes: Vec<u8>) -> Result<()> {
-        let guard = self.worker.lock().await;
-        let worker = guard
-            .as_ref()
-            .ok_or_else(|| anyhow!("Worker not initialized"))?;
+        // Get worker Arc and drop the lock before doing work
+        let worker = self.get_worker().await?;
 
         // Decode heartbeat from protobuf bytes
         let heartbeat = ActivityHeartbeat::decode(&heartbeat_bytes[..])
@@ -234,30 +240,42 @@ impl CoreWorkerHandle {
 
     /// Validate that the worker is initialized and ready
     pub async fn validate(&self) -> Result<()> {
-        let guard = self.worker.lock().await;
-        if guard.is_some() {
-            Ok(())
-        } else {
-            Err(anyhow!("Worker not initialized"))
-        }
+        // Just try to get the worker - this validates it's initialized
+        let _ = self.get_worker().await?;
+        Ok(())
     }
 
     /// Initiate graceful shutdown of the worker
     pub async fn initiate_shutdown(&self) -> Result<()> {
-        let guard = self.worker.lock().await;
-        if let Some(worker) = guard.as_ref() {
-            worker.initiate_shutdown();
-            Ok(())
-        } else {
-            Err(anyhow!("Worker not initialized"))
-        }
+        // Get worker Arc - no await after this so lock timing doesn't matter
+        let worker = self.get_worker().await?;
+        worker.initiate_shutdown();
+        Ok(())
     }
 
     /// Finalize shutdown and wait for completion
     pub async fn finalize_shutdown(&self) -> Result<()> {
+        // Need to take ownership for finalize_shutdown, so we take from the Option
         let mut worker_guard = self.worker.lock().await;
-        if let Some(worker) = worker_guard.take() {
-            worker.finalize_shutdown().await;
+        let worker_opt = worker_guard.take();
+        // Drop the lock before any awaiting
+        drop(worker_guard);
+
+        if let Some(worker) = worker_opt {
+            // Now we need to get the inner Worker from the Arc
+            // If there are other references, this will fail - that's expected during proper shutdown
+            match Arc::try_unwrap(worker) {
+                Ok(inner_worker) => {
+                    inner_worker.finalize_shutdown().await;
+                }
+                Err(_arc) => {
+                    // Other references exist - this shouldn't happen during proper shutdown
+                    // but we can't finalize without ownership
+                    return Err(anyhow!(
+                        "Cannot finalize shutdown: other references to worker exist"
+                    ));
+                }
+            }
         }
 
         // Drop the runtime

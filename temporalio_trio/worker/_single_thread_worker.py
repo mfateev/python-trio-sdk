@@ -28,6 +28,8 @@ from temporalio_trio.worker._activation import (
     ActivityResolvedJob,
     CancelWorkflowJob,
     ChildWorkflowResolvedJob,
+    ChildWorkflowStartedJob,
+    ChildWorkflowStartFailedJob,
     CompleteWorkflowCommand,
     ContinueAsNewCommand,
     FailWorkflowCommand,
@@ -460,15 +462,14 @@ class SingleThreadWorker:
                     # we need to wait for the workflow to process and signal commands ready
                     await trio.sleep(0)
 
-                    # Only force-signal for truly empty activations (0 jobs).
-                    # Activations with jobs that wake workflows should NOT be force-signaled
-                    # because the workflow needs time to process and produce commands.
-                    if (
-                        len(activation.jobs) == 0
-                        and not state.commands_ready.is_set()
-                        and not state.is_complete
-                    ):
-                        # Empty activation (heartbeat) - signal with current commands
+                    # If commands_ready is not set after yielding, signal it now.
+                    # This handles:
+                    # 1. Empty activations (heartbeat) - no jobs to wake workflow
+                    # 2. Informational jobs like ChildWorkflowStartedJob - don't wake workflow
+                    # 3. Jobs that wake workflow - workflow runs, produces commands, signals ready
+                    # After trio.sleep(0), any woken tasks have had a chance to run.
+                    if not state.commands_ready.is_set() and not state.is_complete:
+                        # No commands produced - signal with current (empty) commands
                         state.signal_commands_ready()
 
         except Exception as e:
@@ -650,6 +651,18 @@ class SingleThreadWorker:
                 self._apply_signal(runtime, job)
             elif isinstance(job, QueryWorkflowJob):
                 self._apply_query(runtime, job)
+            elif isinstance(job, ChildWorkflowStartedJob):
+                runtime.apply_child_workflow_started(
+                    seq=job.seq,
+                    run_id=job.run_id,
+                )
+            elif isinstance(job, ChildWorkflowStartFailedJob):
+                runtime.apply_child_workflow_start_failed(
+                    seq=job.seq,
+                    workflow_id=job.workflow_id,
+                    workflow_type=job.workflow_type,
+                    cause=job.cause,
+                )
             elif isinstance(job, ChildWorkflowResolvedJob):
                 runtime.apply_child_workflow_resolved(
                     seq=job.seq,

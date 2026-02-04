@@ -26,6 +26,7 @@ import trio
 from temporalio_trio.worker._activation import (
     CancelWorkflowCommand,
     ContinueAsNewCommand,
+    ScheduleActivityCommand,
     SignalExternalWorkflowCommand,
     StartChildWorkflowCommand,
     StartTimerCommand,
@@ -50,43 +51,6 @@ class NotInWorkflowRuntimeError(RuntimeError):
     """Raised when workflow runtime is accessed outside of workflow context."""
 
     pass
-
-
-@dataclass
-class ScheduleActivityCommand:
-    """Command to schedule an activity for execution.
-
-    This command is emitted when execute_activity() is called and schedules
-    an activity to be executed. When the activity completes, a resolution
-    job will be delivered to the workflow.
-    """
-
-    seq: int
-    """Sequence number identifying this activity."""
-
-    activity_type: str
-    """Name of the activity type to execute."""
-
-    arguments: tuple[Any, ...]
-    """Arguments to pass to the activity."""
-
-    activity_id: str | None = None
-    """Optional user-provided activity ID."""
-
-    task_queue: str | None = None
-    """Task queue to run activity on (defaults to workflow's task queue)."""
-
-    schedule_to_close_timeout_ms: int | None = None
-    """Max total time for activity (schedule to completion), in milliseconds."""
-
-    schedule_to_start_timeout_ms: int | None = None
-    """Max time to wait for a worker to pick up the activity, in milliseconds."""
-
-    start_to_close_timeout_ms: int | None = None
-    """Max time for activity execution (from start to completion), in milliseconds."""
-
-    heartbeat_timeout_ms: int | None = None
-    """Max time between heartbeats, in milliseconds."""
 
 
 @dataclass
@@ -116,40 +80,6 @@ class QueryFailureCommand:
 
     error: BaseException
     """The exception raised by the query handler."""
-
-
-@dataclass
-class StartChildWorkflowCommand:
-    """Command to start a child workflow.
-
-    This command is emitted when execute_child_workflow() is called and starts
-    a new child workflow. When the child completes, a resolution job will be
-    delivered to the parent workflow.
-    """
-
-    seq: int
-    """Sequence number identifying this child workflow."""
-
-    workflow_type: str
-    """Name of the workflow type to execute."""
-
-    workflow_id: str
-    """ID for the child workflow."""
-
-    arguments: tuple[Any, ...]
-    """Arguments to pass to the child workflow."""
-
-    task_queue: str | None = None
-    """Task queue to run child on (defaults to parent's)."""
-
-    execution_timeout_ms: int | None = None
-    """Total timeout for child workflow including retries, in milliseconds."""
-
-    run_timeout_ms: int | None = None
-    """Timeout for a single run of the child workflow, in milliseconds."""
-
-    task_timeout_ms: int | None = None
-    """Timeout for a single workflow task of the child, in milliseconds."""
 
 
 @dataclass
@@ -333,15 +263,19 @@ class WorkflowRuntime:
         # Extract activity name if a callable was passed
         activity_name = activity if isinstance(activity, str) else activity.__name__
 
+        # Default task_queue to workflow's task queue if not specified
+        actual_task_queue = task_queue if task_queue is not None else self.task_queue
+
         return await self.execute_activity(
             activity_name,
             args,
             activity_id=activity_id,
-            task_queue=task_queue,
+            task_queue=actual_task_queue,
             schedule_to_close_timeout=schedule_to_close_timeout,
             schedule_to_start_timeout=schedule_to_start_timeout,
             start_to_close_timeout=start_to_close_timeout,
             heartbeat_timeout=heartbeat_timeout,
+            retry_policy=retry_policy,
         )
 
     async def workflow_start_child_workflow(
@@ -383,9 +317,21 @@ class WorkflowRuntime:
         # Extract workflow type name
         if isinstance(workflow, str):
             workflow_type = workflow
-        else:
+        elif isinstance(workflow, type):
+            # It's a class
             defn = _Definition.from_class(workflow)
             workflow_type = defn.name if defn else workflow.__name__
+        elif hasattr(workflow, "__temporal_workflow_run"):
+            # It's a method decorated with @workflow.run
+            # Extract class name from __qualname__ (e.g., "MyWorkflow.run" -> "MyWorkflow")
+            qualname = getattr(workflow, "__qualname__", "")
+            if "." in qualname:
+                workflow_type = qualname.rsplit(".", 1)[0]
+            else:
+                workflow_type = getattr(workflow, "__name__", str(workflow))
+        else:
+            # Fallback - try to get the name
+            workflow_type = getattr(workflow, "__name__", str(workflow))
 
         # Get seq for this child workflow
         seq = self.next_child_workflow_seq()
@@ -410,25 +356,20 @@ class WorkflowRuntime:
         event = trio.Event()
         self.pending_children[seq] = event
 
+        # Default task_queue to workflow's task queue if not specified
+        actual_task_queue = task_queue if task_queue is not None else self.task_queue
+
         # Emit command
         self.commands.append(
             StartChildWorkflowCommand(
                 seq=seq,
                 workflow_type=workflow_type,
                 workflow_id=id,
-                arguments=args,
-                task_queue=task_queue,
-                execution_timeout_ms=(
-                    int(execution_timeout.total_seconds() * 1000)
-                    if execution_timeout
-                    else None
-                ),
-                run_timeout_ms=(
-                    int(run_timeout.total_seconds() * 1000) if run_timeout else None
-                ),
-                task_timeout_ms=(
-                    int(task_timeout.total_seconds() * 1000) if task_timeout else None
-                ),
+                args=args,
+                task_queue=actual_task_queue,
+                execution_timeout=execution_timeout,
+                run_timeout=run_timeout,
+                task_timeout=task_timeout,
             )
         )
 
@@ -787,6 +728,7 @@ class WorkflowRuntime:
         schedule_to_start_timeout: timedelta | None = None,
         start_to_close_timeout: timedelta | None = None,
         heartbeat_timeout: timedelta | None = None,
+        retry_policy: temporalio.common.RetryPolicy | None = None,
     ) -> Any:
         """Execute an activity using event-based suspension.
 
@@ -808,6 +750,7 @@ class WorkflowRuntime:
             schedule_to_start_timeout: Max time to wait for worker to pick up.
             start_to_close_timeout: Max time for activity execution.
             heartbeat_timeout: Max time between heartbeats.
+            retry_policy: Retry policy for the activity.
 
         Returns:
             The activity result.
@@ -830,38 +773,23 @@ class WorkflowRuntime:
         event = trio.Event()
         self.pending_activities[seq] = event
 
-        # Convert timeouts to milliseconds
-        schedule_to_close_timeout_ms = (
-            int(schedule_to_close_timeout.total_seconds() * 1000)
-            if schedule_to_close_timeout
-            else None
-        )
-        schedule_to_start_timeout_ms = (
-            int(schedule_to_start_timeout.total_seconds() * 1000)
-            if schedule_to_start_timeout
-            else None
-        )
-        start_to_close_timeout_ms = (
-            int(start_to_close_timeout.total_seconds() * 1000)
-            if start_to_close_timeout
-            else None
-        )
-        heartbeat_timeout_ms = (
-            int(heartbeat_timeout.total_seconds() * 1000) if heartbeat_timeout else None
-        )
+        # Generate activity_id if not provided
+        actual_activity_id = activity_id if activity_id else str(seq)
 
-        # Emit command
+        # Emit command using _activation.ScheduleActivityCommand
+        # which uses timedelta directly (not milliseconds)
         self.commands.append(
             ScheduleActivityCommand(
                 seq=seq,
+                activity_id=actual_activity_id,
                 activity_type=activity,
-                arguments=args,
-                activity_id=activity_id,
+                args=args,
                 task_queue=task_queue,
-                schedule_to_close_timeout_ms=schedule_to_close_timeout_ms,
-                schedule_to_start_timeout_ms=schedule_to_start_timeout_ms,
-                start_to_close_timeout_ms=start_to_close_timeout_ms,
-                heartbeat_timeout_ms=heartbeat_timeout_ms,
+                schedule_to_close_timeout=schedule_to_close_timeout,
+                schedule_to_start_timeout=schedule_to_start_timeout,
+                start_to_close_timeout=start_to_close_timeout,
+                heartbeat_timeout=heartbeat_timeout,
+                retry_policy=retry_policy,
             )
         )
 
@@ -974,16 +902,8 @@ class WorkflowRuntime:
         event = trio.Event()
         self.pending_children[seq] = event
 
-        # Convert timeouts to milliseconds
-        execution_timeout_ms = (
-            int(execution_timeout.total_seconds() * 1000) if execution_timeout else None
-        )
-        run_timeout_ms = (
-            int(run_timeout.total_seconds() * 1000) if run_timeout else None
-        )
-        task_timeout_ms = (
-            int(task_timeout.total_seconds() * 1000) if task_timeout else None
-        )
+        # Default task_queue to workflow's task queue if not specified
+        actual_task_queue = task_queue if task_queue is not None else self.task_queue
 
         # Emit command
         self.commands.append(
@@ -991,11 +911,11 @@ class WorkflowRuntime:
                 seq=seq,
                 workflow_type=workflow,
                 workflow_id=workflow_id,
-                arguments=args,
-                task_queue=task_queue,
-                execution_timeout_ms=execution_timeout_ms,
-                run_timeout_ms=run_timeout_ms,
-                task_timeout_ms=task_timeout_ms,
+                args=args,
+                task_queue=actual_task_queue,
+                execution_timeout=execution_timeout,
+                run_timeout=run_timeout,
+                task_timeout=task_timeout,
             )
         )
 
@@ -1040,6 +960,51 @@ class WorkflowRuntime:
             self.completed_children[seq] = error
         else:
             self.completed_children[seq] = result
+
+        # Wake up the suspended workflow if waiting
+        if seq in self.pending_children:
+            self.pending_children[seq].set()
+
+    def apply_child_workflow_started(self, seq: int, run_id: str) -> None:
+        """Handle a child workflow started job from an activation.
+
+        This is called when the activation contains a ChildWorkflowStartedJob.
+        The child has been accepted and started by the server. This is informational -
+        the parent workflow is still waiting for the resolution (completion/failure).
+
+        Args:
+            seq: The child workflow sequence number that started.
+            run_id: The run ID of the started child workflow.
+        """
+        # Store the run_id for potential future use (e.g., tracking, debugging)
+        # The parent workflow continues waiting for ChildWorkflowResolvedJob
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Child workflow seq={seq} started with run_id={run_id}")
+
+    def apply_child_workflow_start_failed(
+        self, seq: int, workflow_id: str, workflow_type: str, cause: str
+    ) -> None:
+        """Handle a child workflow start failed job from an activation.
+
+        This is called when the activation contains a ChildWorkflowStartFailedJob.
+        The child workflow could not be started (e.g., workflow ID conflict).
+        We treat this as an immediate failure and wake up the waiting parent.
+
+        Args:
+            seq: The child workflow sequence number that failed to start.
+            workflow_id: The requested workflow ID.
+            workflow_type: The requested workflow type.
+            cause: The reason the child workflow failed to start.
+        """
+        from temporalio.exceptions import ChildWorkflowError
+
+        # Create an error to wake the parent with
+        error = ChildWorkflowError(
+            f"Child workflow {workflow_type} ({workflow_id}) failed to start: {cause}"
+        )
+        self.completed_children[seq] = error
 
         # Wake up the suspended workflow if waiting
         if seq in self.pending_children:

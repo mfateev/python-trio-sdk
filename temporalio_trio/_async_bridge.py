@@ -669,21 +669,31 @@ class TrioBridgeWrapper:
 
         def deliver_result(result) -> None:
             """Callback for activity task result."""
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"poll_activity_task callback received: success={result.success}")
             try:
                 if result.success:
                     data_bytes = result.get_data()
                     if data_bytes is not None:
                         result_container.append(bytes(data_bytes))
+                        logger.debug(f"poll_activity_task got {len(data_bytes)} bytes")
                     else:
                         result_container.append(b"")
+                        logger.debug("poll_activity_task got empty data")
                 else:
                     error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(error_msg))
+                    logger.debug(f"poll_activity_task error: {error_msg}")
             except Exception as e:
                 error_container.append(e)
+                logger.debug(f"poll_activity_task callback exception: {e}")
             finally:
+                logger.debug("poll_activity_task setting event")
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
+        import logging
+        logging.getLogger(__name__).debug("Sending poll_activity_task request to bridge")
         self._rust_bridge.send_request("poll_activity_task", b"", deliver_result)
 
         if timeout is not None:

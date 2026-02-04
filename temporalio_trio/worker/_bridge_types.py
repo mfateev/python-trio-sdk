@@ -48,6 +48,7 @@ from temporalio_trio.worker._activation import (
     WorkflowActivationCompletion,
     WorkflowStartedJob,
 )
+from temporalio_trio.worker._failure_converter import failure_to_exception
 from temporalio_trio.worker._runtime import (
     QueryFailureCommand,
     QuerySuccessCommand,
@@ -131,7 +132,7 @@ def bridge_to_poc_activation(
         elif job_type == "resolve_signal_external_workflow":
             poc_jobs.append(
                 _convert_resolve_signal_external_workflow(
-                    job.resolve_signal_external_workflow
+                    job.resolve_signal_external_workflow, data_converter
                 )
             )
         elif job_type == "remove_from_cache":
@@ -271,7 +272,9 @@ def _convert_resolve_activity(
         data_converter: Data converter for deserializing result payload
 
     Returns:
-        POC ActivityResolvedJob with result or failure
+        POC ActivityResolvedJob with result or failure.
+        Failures are converted to proper exception types (ActivityError, etc.)
+        using the failure converter.
     """
     seq = resolve.seq
     result = None
@@ -288,17 +291,19 @@ def _convert_resolve_activity(
                 resolution.completed.result
             )
     elif status == "failed":
-        # Activity failed - convert to exception
-        failure_msg = resolution.failed.failure.message
-        failure = RuntimeError(f"Activity failed: {failure_msg}")
-    elif status == "cancelled":
-        # Activity was cancelled
-        cancel_msg = (
-            resolution.cancelled.failure.message
-            if resolution.cancelled.failure.message
-            else "Activity cancelled"
+        # Activity failed - convert to proper exception type
+        # The failure converter produces ActivityError with __cause__ set to
+        # the underlying exception (e.g., ApplicationError)
+        failure = failure_to_exception(
+            resolution.failed.failure,
+            data_converter.payload_converter,
         )
-        failure = RuntimeError(f"Activity cancelled: {cancel_msg}")
+    elif status == "cancelled":
+        # Activity was cancelled - convert to proper exception type
+        failure = failure_to_exception(
+            resolution.cancelled.failure,
+            data_converter.payload_converter,
+        )
     elif status == "backoff":
         # Activity needs to retry after backoff - treat as transient failure
         # The SDK core handles retry scheduling, so this shouldn't typically reach here
@@ -369,7 +374,9 @@ def _convert_resolve_child_workflow(
         data_converter: Data converter for deserializing result payload
 
     Returns:
-        POC ChildWorkflowResolvedJob with result or failure
+        POC ChildWorkflowResolvedJob with result or failure.
+        Failures are converted to proper exception types (ChildWorkflowError, etc.)
+        using the failure converter.
     """
     seq = resolve.seq
     result = None
@@ -386,17 +393,19 @@ def _convert_resolve_child_workflow(
                 child_result.completed.result
             )
     elif status == "failed":
-        # Child workflow failed
-        failure_msg = child_result.failed.failure.message
-        failure = RuntimeError(f"Child workflow failed: {failure_msg}")
-    elif status == "cancelled":
-        # Child workflow was cancelled
-        cancel_msg = (
-            child_result.cancelled.failure.message
-            if child_result.cancelled.failure.message
-            else "Child workflow cancelled"
+        # Child workflow failed - convert to proper exception type
+        # The failure converter produces ChildWorkflowError with __cause__ set
+        # to the underlying exception (e.g., ApplicationError)
+        failure = failure_to_exception(
+            child_result.failed.failure,
+            data_converter.payload_converter,
         )
-        failure = RuntimeError(f"Child workflow cancelled: {cancel_msg}")
+    elif status == "cancelled":
+        # Child workflow was cancelled - convert to proper exception type
+        failure = failure_to_exception(
+            child_result.cancelled.failure,
+            data_converter.payload_converter,
+        )
     else:
         failure = RuntimeError(f"Unknown child workflow result status: {status}")
 
@@ -409,14 +418,17 @@ def _convert_resolve_child_workflow(
 
 def _convert_resolve_signal_external_workflow(
     resolve: act_pb.ResolveSignalExternalWorkflow,
+    data_converter: temporalio.converter.DataConverter,
 ) -> SignalExternalResolvedJob:
     """Convert ResolveSignalExternalWorkflow to SignalExternalResolvedJob.
 
     Args:
         resolve: Bridge ResolveSignalExternalWorkflow job
+        data_converter: Data converter for deserializing failure details
 
     Returns:
-        POC SignalExternalResolvedJob with failure (if any)
+        POC SignalExternalResolvedJob with failure (if any).
+        Failures are converted to proper exception types using the failure converter.
 
     Note:
         Success is indicated by ABSENCE of failure field.
@@ -427,8 +439,10 @@ def _convert_resolve_signal_external_workflow(
 
     # Check if failure is present - success is indicated by absence of failure
     if resolve.failure.ByteSize() > 0:
-        failure_msg = resolve.failure.message or "Signal external workflow failed"
-        failure = RuntimeError(f"Signal external workflow failed: {failure_msg}")
+        failure = failure_to_exception(
+            resolve.failure,
+            data_converter.payload_converter,
+        )
 
     return SignalExternalResolvedJob(
         seq=seq,
@@ -505,16 +519,16 @@ def poc_to_bridge_completion(
 
         elif isinstance(cmd, FailWorkflowCommand):
             # Convert FailWorkflowCommand to FailWorkflowExecution
-            # For now, just create a simple failure message
-            # In a full implementation, we'd convert the exception properly
-            bridge_cmd.fail_workflow_execution.failure.message = str(cmd.exception)
-            bridge_cmd.fail_workflow_execution.failure.stack_trace = ""
-            if hasattr(cmd.exception, "__traceback__") and cmd.exception.__traceback__:
-                import traceback
-
-                bridge_cmd.fail_workflow_execution.failure.stack_trace = "".join(
-                    traceback.format_tb(cmd.exception.__traceback__)
-                )
+            # Use the SDK's failure converter to properly set application_failure_info
+            # for ApplicationError, etc. to_failure modifies the failure object in place.
+            failure_converter = temporalio.converter.DefaultFailureConverter()
+            failure = temporalio.api.failure.v1.Failure()
+            failure_converter.to_failure(
+                cmd.exception,
+                data_converter.payload_converter,
+                failure,
+            )
+            bridge_cmd.fail_workflow_execution.failure.CopyFrom(failure)
 
         elif isinstance(cmd, CancelWorkflowCommand):
             # Convert CancelWorkflowCommand to CancelWorkflowExecution

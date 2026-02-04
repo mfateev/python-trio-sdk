@@ -320,6 +320,10 @@ class Worker:
                 if self._single_thread_worker:
                     nursery.start_soon(self._single_thread_worker.run)
 
+                # Start activity worker
+                if self._activity_worker:
+                    nursery.start_soon(self._activity_worker.run)
+
                 await self._shutdown_event.wait()
 
                 # Initiate bridge shutdown to unblock poll_workflow_activation
@@ -356,6 +360,8 @@ class Worker:
         self._shutdown_event.set()
         if self._single_thread_worker:
             self._single_thread_worker.shutdown()
+        if self._activity_worker:
+            self._activity_worker.shutdown()
 
     async def __aenter__(self) -> Worker:
         """Start the worker and return self for use by ``async with``.
