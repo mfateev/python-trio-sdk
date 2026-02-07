@@ -16,6 +16,7 @@
 use crate::core_client::{ClientInitConfig, CoreClientHandle};
 use crate::core_worker::{CoreWorkerHandle, WorkerInitConfig};
 use crate::request::{Request, RequestResult};
+use futures_util::FutureExt;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -152,10 +153,27 @@ impl TrioAsyncBridge {
         core_client: Arc<AsyncMutex<CoreClientHandle>>,
     ) {
         // Create Tokio runtime (single-threaded)
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("Failed to create Tokio runtime");
+        {
+            Ok(runtime) => runtime,
+            Err(e) => {
+                eprintln!(
+                    "FATAL ERROR: Failed to create Tokio runtime\n\
+                     Details: {}\n\
+                     IMPACT: Bridge cannot function, all operations will fail.\n\
+                     Possible causes:\n\
+                     - System resource exhaustion (file descriptors, memory)\n\
+                     - OS permissions issues\n\
+                     - Incompatible system configuration\n\
+                     RECOMMENDATION: Check system resources and logs.",
+                    e
+                );
+                // Cannot proceed without runtime - exit thread cleanly
+                return;
+            }
+        };
 
         // Run event loop
         rt.block_on(async move {
@@ -179,18 +197,41 @@ impl TrioAsyncBridge {
     ///
     /// This runs as a Tokio task spawned from the event loop.
     /// Multiple requests can be processed concurrently.
+    ///
+    /// CRITICAL: This function ensures callback is ALWAYS delivered, even on panic.
     async fn process_request_async(
         request: Request,
         core_worker: Arc<CoreWorkerHandle>,
         core_client: Arc<AsyncMutex<CoreClientHandle>>,
     ) {
-        // Process the request (before moving callback)
-        let result = Self::handle_operation(&request, core_worker, core_client).await;
+        let request_id = request.request_id.clone();
 
-        // Move callback after processing
+        // Wrap processing in catch_unwind to handle panics
+        // Must do this before moving callback since we need request reference
+        let panic_result = std::panic::AssertUnwindSafe(
+            Self::handle_operation(&request, core_worker, core_client)
+        ).catch_unwind().await;
+
+        // Move callback after processing (can't do this before because handle_operation needs &request)
         let callback = request.callback;
 
-        // Deliver result back to Python via callback
+        // Deliver result - either success/error from handle_operation or panic error
+        let result = match panic_result {
+            Ok(result) => result,
+            Err(panic_err) => {
+                let panic_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_err.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "Unknown panic".to_string()
+                };
+                eprintln!("ERROR: Request {} panicked during processing: {}", request_id, panic_msg);
+                RequestResult::error(request_id, format!("Task panicked: {}", panic_msg))
+            }
+        };
+
+        // Deliver result back to Python via callback (always called, even on panic)
         Self::deliver_result(callback, result);
     }
 
@@ -548,15 +589,33 @@ impl TrioAsyncBridge {
         Python::with_gil(|py| {
             // Convert RequestResult to a Python object using Bound
             // Create a Bound instance which wraps the #[pyclass] for Python
-            match pyo3::Bound::new(py, result) {
+            match pyo3::Bound::new(py, result.clone()) {
                 Ok(bound_result) => {
                     // Pass the Bound object to the callback
                     if let Err(e) = callback.call1(py, (bound_result,)) {
-                        eprintln!("Callback error: {}", e);
+                        eprintln!(
+                            "ERROR: Failed to execute Python callback for request {}\n\
+                             Details: {}\n\
+                             IMPACT: Python Event will never fire, causing indefinite hang.\n\
+                             RECOMMENDATION: Always use timeouts on bridge operations.\n\
+                             Possible causes:\n\
+                             - Trio runtime shutting down\n\
+                             - Invalid trio_token (trio_token expired or from wrong context)\n\
+                             - Python callback raised an exception\n\
+                             - Python interpreter state corrupted",
+                            result.request_id, e
+                        );
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to create Bound RequestResult: {}", e);
+                    eprintln!(
+                        "ERROR: Failed to create Bound RequestResult for request {}\n\
+                         Details: {}\n\
+                         IMPACT: Callback cannot be invoked, Python will hang indefinitely.\n\
+                         RECOMMENDATION: Always use timeouts on bridge operations.\n\
+                         This indicates a serious PyO3 issue or memory corruption.",
+                        result.request_id, e
+                    );
                 }
             }
         });

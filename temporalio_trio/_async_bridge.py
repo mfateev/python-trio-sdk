@@ -294,10 +294,15 @@ class TrioBridgeWrapper:
             try:
                 if result.success:
                     data_bytes = result.get_data()
-                    if data_bytes is not None:
-                        result_container.append(bytes(data_bytes))
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError(
+                                f"start_workflow returned success without data. "
+                                f"This indicates a bridge bug (request_id: {result.request_id})"
+                            )
+                        )
                     else:
-                        result_container.append(b"")
+                        result_container.append(bytes(data_bytes))
                 else:
                     error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(error_msg))
@@ -358,10 +363,15 @@ class TrioBridgeWrapper:
             try:
                 if result.success:
                     data_bytes = result.get_data()
-                    if data_bytes is not None:
-                        result_container.append(bytes(data_bytes))
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError(
+                                f"get_workflow_result returned success without data. "
+                                f"This indicates a bridge bug (request_id: {result.request_id})"
+                            )
+                        )
                     else:
-                        result_container.append(b"")
+                        result_container.append(bytes(data_bytes))
                 else:
                     error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(error_msg))
@@ -551,10 +561,15 @@ class TrioBridgeWrapper:
             try:
                 if result.success:
                     data_bytes = result.get_data()
-                    if data_bytes is not None:
-                        result_container.append(bytes(data_bytes))
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError(
+                                f"query_workflow returned success without data. "
+                                f"This indicates a bridge bug (request_id: {result.request_id})"
+                            )
+                        )
                     else:
-                        result_container.append(b"")
+                        result_container.append(bytes(data_bytes))
                 else:
                     error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(error_msg))
@@ -675,12 +690,16 @@ class TrioBridgeWrapper:
             try:
                 if result.success:
                     data_bytes = result.get_data()
-                    if data_bytes is not None:
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError(
+                                f"poll_activity_task returned success without data. "
+                                f"This indicates a bridge bug (request_id: {result.request_id})"
+                            )
+                        )
+                    else:
                         result_container.append(bytes(data_bytes))
                         logger.debug(f"poll_activity_task got {len(data_bytes)} bytes")
-                    else:
-                        result_container.append(b"")
-                        logger.debug("poll_activity_task got empty data")
                 else:
                     error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(error_msg))
@@ -791,10 +810,15 @@ class TrioBridgeWrapper:
             try:
                 if result.success:
                     data_bytes = result.get_data()
-                    if data_bytes is not None:
-                        result_container.append(bytes(data_bytes))
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError(
+                                f"record_activity_heartbeat returned success without data. "
+                                f"This indicates a bridge bug (request_id: {result.request_id})"
+                            )
+                        )
                     else:
-                        result_container.append(b"")
+                        result_container.append(bytes(data_bytes))
                 else:
                     error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(error_msg))
@@ -875,10 +899,15 @@ class TrioBridgeWrapper:
                 if result.success:
                     # Extract the protobuf bytes from the struct
                     data_bytes = result.get_data()
-                    if data_bytes is not None:
-                        result_container.append(bytes(data_bytes))
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError(
+                                f"poll_workflow_activation returned success without data. "
+                                f"This indicates a bridge bug (request_id: {result.request_id})"
+                            )
+                        )
                     else:
-                        result_container.append(b"")
+                        result_container.append(bytes(data_bytes))
                 else:
                     error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(error_msg))
@@ -1032,9 +1061,20 @@ class TrioBridgeWrapper:
 
         try:
             self._rust_bridge.send_request("initiate_shutdown", b"", noop_callback)
-        except RuntimeError:
-            # Bridge may already be shut down, ignore
-            pass
+        except RuntimeError as e:
+            # Bridge may already be shut down - expected during shutdown
+            error_str = str(e).lower()
+            if "shutdown" in error_str or "not running" in error_str:
+                # Expected shutdown error, safe to ignore
+                pass
+            else:
+                # Unexpected error during shutdown initiation
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"Unexpected error during initiate_shutdown: {e}. "
+                    f"This may indicate a bridge issue."
+                )
 
         self._state = BridgeState.SHUTDOWN
 
@@ -1086,9 +1126,15 @@ class TrioBridgeWrapper:
             self._rust_bridge.send_request("finalize_shutdown", b"", deliver_result)
         except RuntimeError as e:
             # Handle case where bridge is already fully shutdown
-            if "shutdown" in str(e).lower():
+            error_str = str(e).lower()
+            if "shutdown" in error_str or "not running" in error_str:
+                # Expected shutdown error - bridge already finalized
                 self._shutdown_finalized = True
                 return
+            # Unexpected error - re-raise
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Unexpected error during finalize_shutdown: {e}")
             raise
 
         if timeout is not None:

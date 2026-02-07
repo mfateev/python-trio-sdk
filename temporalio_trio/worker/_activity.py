@@ -234,7 +234,12 @@ class TrioActivityWorker:
             except trio.WouldBlock:
                 logger.warning("Heartbeat queue full, dropping heartbeat")
             except trio.ClosedResourceError:
-                pass  # Activity finished
+                # Activity has finished or been cancelled - this is expected
+                # Heartbeats after activity completion are silently dropped
+                logger.debug(
+                    "Heartbeat channel closed (activity finished or cancelled). "
+                    "This is expected during activity completion or cancellation."
+                )
 
         # Create activity context
         context = activity._Context(
@@ -362,8 +367,13 @@ class TrioActivityWorker:
             if pending_details is not None:
                 try:
                     await self._send_heartbeat(task_token, pending_details)
-                except Exception:
-                    pass  # Best effort
+                except Exception as e:
+                    # Best effort heartbeat during cancellation - failures are expected
+                    # The activity is being cancelled, so heartbeat delivery is not critical
+                    logger.debug(
+                        f"Failed to send final heartbeat during cancellation: {e}. "
+                        f"This is expected during activity cancellation."
+                    )
             raise
 
     async def _send_heartbeat(
