@@ -19,7 +19,7 @@ This document tracks all gaps between the Trio SDK and the official Temporal Pyt
 - **Production features**: ❌ Missing (metrics, proper error types, updates)
 - **API completeness**: ~70% (core APIs done, advanced APIs missing)
 
-**Assessment:** SDK is suitable for POC/experimentation but **not production-ready**. Significant gaps remain in advanced features, observability, and dynamic configuration.
+**Assessment:** SDK is suitable for POC/experimentation but **not production-ready**. Significant gaps remain in advanced features, observability, and extensibility.
 
 ---
 
@@ -192,88 +192,7 @@ def upsert_search_attributes(
 
 ## 2. Worker Configuration Gaps
 
-### 2.1 Worker Tuner / Slot Supplier ❌ NOT IMPLEMENTED
-
-**Status:** Not implemented. Critical for production resource management.
-
-**What's missing:**
-- `WorkerTuner` base class and implementations
-- `FixedSizeSlotSupplier` - Simple fixed-size slot allocation
-- `ResourceBasedTuner` - Dynamic tuning based on system resources
-- `ResourceBasedSlotSupplier` - Memory/CPU-aware slot management
-- Custom slot supplier support
-- Worker configuration: `worker_tuner` parameter
-
-**sdk-python reference:**
-```python
-from temporalio.worker import Worker
-from temporalio.worker.tuner import (
-    WorkerTuner,
-    FixedSizeSlotSupplier,
-    ResourceBasedTuner,
-    ResourceBasedSlotInfo,
-    ResourceBasedSlotSupplier,
-)
-
-# Option 1: Fixed size tuner
-tuner = WorkerTuner(
-    workflow_task_slot_supplier=FixedSizeSlotSupplier(100),
-    activity_task_slot_supplier=FixedSizeSlotSupplier(200),
-    local_activity_slot_supplier=FixedSizeSlotSupplier(200),
-)
-
-# Option 2: Resource-based tuner (dynamic)
-tuner = ResourceBasedTuner(
-    target_memory_usage=0.8,  # 80% memory threshold
-    target_cpu_usage=0.8,      # 80% CPU threshold
-)
-
-worker = Worker(
-    client,
-    task_queue="my-queue",
-    workflows=[MyWorkflow],
-    worker_tuner=tuner,  # ❌ Not supported in Trio SDK
-)
-```
-
-**Current Trio SDK alternative:**
-```python
-# Only basic integer limits available
-worker = Worker(
-    client,
-    task_queue="my-queue",
-    workflows=[MyWorkflow],
-    max_concurrent_workflow_tasks=100,  # Static limit
-    max_concurrent_activities=200,       # Static limit
-    max_concurrent_local_activities=200, # Static limit
-)
-```
-
-**Why it matters:**
-- **Dynamic resource management** - Adjust concurrency based on system load
-- **Memory protection** - Prevent OOM by monitoring memory usage
-- **Better utilization** - Scale up/down based on available resources
-- **Production stability** - Critical for high-throughput deployments
-- **Custom policies** - Implement domain-specific tuning strategies
-
-**What's needed:**
-1. Python API for tuner/slot supplier interfaces
-2. Bridge exposure of sdk-core's tuner support
-3. Resource monitoring integration (memory, CPU)
-4. Configuration passing through Worker initialization
-5. Tests for dynamic slot management
-
-**SDK-Core support:** ✅ Available in `sdk-core/crates/sdk-core/src/worker/tuner.rs` - just needs Python exposure.
-
-**Priority: P0** - **Critical for production deployments**. Without this:
-- No protection against resource exhaustion
-- Poor resource utilization (fixed limits)
-- Cannot adapt to variable workloads
-- Risk of OOM crashes under load
-
----
-
-### 2.2 Interceptors ❌ NOT IMPLEMENTED
+### 2.1 Interceptors ❌ NOT IMPLEMENTED
 
 **Status:** Not implemented. Critical for observability and customization.
 
@@ -307,7 +226,7 @@ class TracingInterceptor(Interceptor):
 
 ---
 
-### 2.3 Build ID / Versioning ⚠️ PARTIAL
+### 2.2 Build ID / Versioning ⚠️ PARTIAL
 
 **Status:** Worker accepts `build_id` parameter but no versioning workflow support.
 
@@ -324,7 +243,7 @@ class TracingInterceptor(Interceptor):
 
 ---
 
-### 2.4 Failure Converter ⚠️ PARTIAL
+### 2.3 Failure Converter ⚠️ PARTIAL
 
 **Status:** Basic support exists but incomplete.
 
@@ -341,7 +260,7 @@ class TracingInterceptor(Interceptor):
 
 ---
 
-### 2.5 Workflow Runner Customization ❌ NOT IMPLEMENTED
+### 2.4 Workflow Runner Customization ❌ NOT IMPLEMENTED
 
 **Status:** Not implemented.
 
@@ -510,6 +429,79 @@ runtime = Runtime(telemetry=TelemetryConfig(
 
 ---
 
+### 3.8 Worker Tuner / Slot Supplier ❌ NOT IMPLEMENTED
+
+**Status:** Not implemented. Optimization for dynamic resource management.
+
+**What's missing:**
+- `WorkerTuner` base class and implementations
+- `FixedSizeSlotSupplier` - Simple fixed-size slot allocation
+- `ResourceBasedTuner` - Dynamic tuning based on system resources
+- `ResourceBasedSlotSupplier` - Memory/CPU-aware slot management
+- Custom slot supplier support
+- Worker configuration: `worker_tuner` parameter
+
+**sdk-python reference:**
+```python
+from temporalio.worker import Worker
+from temporalio.worker.tuner import (
+    WorkerTuner,
+    FixedSizeSlotSupplier,
+    ResourceBasedTuner,
+)
+
+# Option 1: Fixed size tuner
+tuner = WorkerTuner(
+    workflow_task_slot_supplier=FixedSizeSlotSupplier(100),
+    activity_task_slot_supplier=FixedSizeSlotSupplier(200),
+    local_activity_slot_supplier=FixedSizeSlotSupplier(200),
+)
+
+# Option 2: Resource-based tuner (dynamic)
+tuner = ResourceBasedTuner(
+    target_memory_usage=0.8,
+    target_cpu_usage=0.8,
+)
+
+worker = Worker(
+    client,
+    task_queue="my-queue",
+    workflows=[MyWorkflow],
+    worker_tuner=tuner,  # ❌ Not supported in Trio SDK
+)
+```
+
+**Current Trio SDK alternative:**
+```python
+# Static limits work fine for most use cases
+worker = Worker(
+    client,
+    task_queue="my-queue",
+    workflows=[MyWorkflow],
+    max_concurrent_workflow_tasks=100,
+    max_concurrent_activities=200,
+    max_concurrent_local_activities=200,
+)
+```
+
+**Why it could be useful:**
+- Dynamic resource management based on system load
+- Memory protection in very high-throughput scenarios
+- Better resource utilization in variable workloads
+- Custom tuning policies for specific domains
+
+**What's needed:**
+1. Python API for tuner/slot supplier interfaces
+2. Bridge exposure of sdk-core's tuner support
+3. Resource monitoring integration (memory, CPU)
+4. Configuration passing through Worker initialization
+
+**SDK-Core support:** ✅ Available in `sdk-core/crates/sdk-core/src/worker/tuner.rs` - just needs Python exposure.
+
+**Priority: P3** - **Optional optimization**. Static limits (`max_concurrent_*`) are sufficient for most production deployments. Dynamic tuning is beneficial for very high-throughput systems with variable workloads, but not required for basic production use.
+
+---
+
 ## 4. Client API Gaps
 
 ### 4.1 Workflow Handle APIs ⚠️ PARTIAL
@@ -647,14 +639,13 @@ async def test_workflow():
 
 ### 7.1 Critical (P0) - Required for Production
 
-- [ ] **Worker Tuner / Slot Supplier** - Dynamic resource management
 - [ ] **Metrics & Telemetry** - Observability
 - [ ] **Interceptors** - Tracing, logging, monitoring
 - [ ] **Error Type Preservation** - Proper error handling
 - [ ] **Update Handlers** - Interactive workflows
 - [ ] **Versioning (patched/deprecate_patch)** - Safe code updates
 
-**Status:** 0/6 complete. **Not production-ready.**
+**Status:** 0/5 complete. **Not production-ready.**
 
 ---
 
@@ -690,10 +681,11 @@ async def test_workflow():
 
 ### 7.4 Low Priority (P3) - Future
 
+- [ ] **Worker Tuner / Slot Supplier** - Dynamic resource management (optional optimization)
 - [ ] **Nexus Support** - Cross-namespace calls
 - [ ] **Advanced Interceptor Patterns** - Complex middleware
 
-**Status:** 0/2 complete.
+**Status:** 0/3 complete.
 
 ---
 
@@ -716,14 +708,13 @@ async def test_workflow():
 ### Phase 1: Production Critical (P0)
 **Goal:** Make SDK production-ready for basic use cases
 
-1. **Worker Tuner / Slot Supplier** - Resource management foundation
-2. **Metrics & Telemetry** - Observability foundation
-3. **Interceptors** - Extensibility foundation
-4. **Error Type Preservation** - Proper error handling
-5. **Update Handlers** - Interactive workflows
-6. **Versioning APIs** - Safe code updates
+1. **Metrics & Telemetry** - Observability foundation
+2. **Interceptors** - Extensibility foundation
+3. **Error Type Preservation** - Proper error handling
+4. **Update Handlers** - Interactive workflows
+5. **Versioning APIs** - Safe code updates
 
-**Estimated effort:** 6-8 weeks
+**Estimated effort:** 5-7 weeks
 **Outcome:** Production-ready for stateless workflows with proper monitoring
 
 ---
@@ -747,10 +738,10 @@ async def test_workflow():
 ### Phase 3: Advanced Features (P2-P3)
 **Goal:** Full feature parity with sdk-python
 
-14. Schedules, Async Activity Completion, Nexus, etc.
+14. Schedules, Async Activity Completion, Worker Tuner, Nexus, etc.
 
 **Estimated effort:** 6-8 weeks
-**Outcome:** 100% feature compatibility
+**Outcome:** 100% feature compatibility with optional optimizations
 
 ---
 
@@ -759,17 +750,16 @@ async def test_workflow():
 **Current Assessment:** The Trio SDK is **NOT production-ready** due to:
 
 ### Critical Blockers:
-1. **No resource management** - Risk of OOM under load (no tuner/slot supplier)
-2. **No metrics** - Cannot monitor worker health or performance
-3. **No interceptors** - Cannot add tracing, logging, or custom logic
-4. **Poor error handling** - Exception types lost, debugging difficult
-5. **No versioning** - Cannot safely update workflow code
-6. **No update handlers** - Cannot implement interactive workflows
+1. **No metrics** - Cannot monitor worker health or performance
+2. **No interceptors** - Cannot add tracing, logging, or custom logic
+3. **Poor error handling** - Exception types lost, debugging difficult
+4. **No versioning** - Cannot safely update workflow code
+5. **No update handlers** - Cannot implement interactive workflows
 
 ### Risk Assessment:
-- **High Risk**: Memory exhaustion, inability to diagnose issues, deployment failures
-- **Cannot support**: High-throughput production, long-running workflows with updates, compliance requirements
-- **Suitable for**: POC, experimentation, low-volume testing only
+- **High Risk**: Inability to diagnose issues, poor error handling, deployment failures
+- **Cannot support**: Long-running workflows with updates, compliance requirements, observability integration
+- **Suitable for**: POC, experimentation, controlled production with static concurrency limits
 
 ### Path to Production:
 Complete all Phase 1 (P0) items before considering production deployment.
@@ -789,18 +779,18 @@ Complete all Phase 1 (P0) items before considering production deployment.
 - ✅ Clean API matching sdk-python patterns
 
 **Weaknesses:**
-- ❌ No dynamic resource management
 - ❌ No observability (metrics, tracing)
 - ❌ No production hardening (error types, versioning, testing)
 - ❌ Missing 62% of sdk-python features
 - ❌ Minimal documentation and examples
+- ❌ Static concurrency limits only (no dynamic tuning)
 
 **Recommendation:**
 - **For POC/experimentation:** ✅ Ready
-- **For production:** ❌ Requires Phase 1 & 2 completion (~14-18 weeks of work)
-- **For full compatibility:** ❌ Requires all phases (~20-26 weeks of work)
+- **For production:** ❌ Requires Phase 1 & 2 completion (~13-17 weeks of work)
+- **For full compatibility:** ❌ Requires all phases (~19-25 weeks of work)
 
 ---
 
-**Last updated:** 2026-02-08
+**Last updated:** 2026-02-08 (Worker Tuner downgraded to P3)
 **Next review:** After Phase 1 implementation
