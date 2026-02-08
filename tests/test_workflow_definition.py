@@ -1,5 +1,6 @@
 """Tests for workflow definition and decorators (Phase 1)."""
 
+import random
 from datetime import timedelta
 from typing import Any, Callable, NoReturn, Sequence
 
@@ -266,6 +267,14 @@ class TestRuntimeClass:
             ) -> None:
                 raise NotImplementedError()
 
+            def workflow_random(self) -> random.Random:
+                return random.Random(12345)
+
+            def workflow_patch(
+                self, patch_id: str, *, deprecated: bool = False
+            ) -> bool:
+                return True
+
         mock = MockRuntime()
 
         # Initially None
@@ -376,6 +385,14 @@ class TestRuntimeClass:
                 run_id: str | None,
             ) -> None:
                 raise NotImplementedError()
+
+            def workflow_random(self) -> random.Random:
+                return random.Random(12345)
+
+            def workflow_patch(
+                self, patch_id: str, *, deprecated: bool = False
+            ) -> bool:
+                return True
 
         mock1 = MockRuntime("mock1")
         mock2 = MockRuntime("mock2")
@@ -502,6 +519,14 @@ class TestPublicAPI:
             ) -> None:
                 raise NotImplementedError()
 
+            def workflow_random(self) -> random.Random:
+                return random.Random(12345)
+
+            def workflow_patch(
+                self, patch_id: str, *, deprecated: bool = False
+            ) -> bool:
+                return True
+
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
         try:
@@ -614,6 +639,14 @@ class TestPublicAPI:
                 run_id: str | None,
             ) -> None:
                 raise NotImplementedError()
+
+            def workflow_random(self) -> random.Random:
+                return random.Random(12345)
+
+            def workflow_patch(
+                self, patch_id: str, *, deprecated: bool = False
+            ) -> bool:
+                return True
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)

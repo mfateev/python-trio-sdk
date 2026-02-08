@@ -6,6 +6,8 @@ This module mirrors temporalio.workflow from the SDK.
 from __future__ import annotations
 
 import inspect
+import random as _random_module
+import uuid as _uuid_module
 from abc import ABC, abstractmethod
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
@@ -21,7 +23,6 @@ from typing import (
     Sequence,
     TypeVar,
 )
-from uuid import uuid4
 
 import temporalio.common
 
@@ -37,6 +38,10 @@ __all__ = [
     "time",
     "time_ns",
     "info",
+    "random",
+    "uuid4",
+    "patched",
+    "deprecate_patch",
     "execute_activity",
     "wait_condition",
     "start_child_workflow",
@@ -70,10 +75,7 @@ ReturnType = TypeVar("ReturnType")
 
 
 class ChildWorkflowCancellationType(IntEnum):
-    """How a child workflow reacts to cancellation of its parent.
-
-    Mirrors temporalio.workflow.ChildWorkflowCancellationType from the SDK.
-    """
+    """How a child workflow reacts to cancellation of its parent."""
 
     ABANDON = 0
     """Do not request cancellation of the child workflow if already scheduled."""
@@ -89,10 +91,7 @@ class ChildWorkflowCancellationType(IntEnum):
 
 
 class ParentClosePolicy(IntEnum):
-    """What happens to a child workflow when the parent workflow closes.
-
-    Mirrors temporalio.workflow.ParentClosePolicy from the SDK.
-    """
+    """What happens to a child workflow when the parent workflow closes."""
 
     UNSPECIFIED = 0
     """Let the server set the default policy."""
@@ -146,8 +145,6 @@ class ContinueAsNewError(BaseException):
 
 class _Runtime(ABC):
     """Abstract runtime that provides workflow APIs.
-
-    Mirrors temporalio.workflow._Runtime from the SDK.
 
     All workflow APIs (sleep, time, info, etc.) delegate to _Runtime.current().
     This pattern allows adding features without changing the public API.
@@ -396,6 +393,35 @@ class _Runtime(ABC):
         """
         ...
 
+    @abstractmethod
+    def workflow_random(self) -> _random_module.Random:
+        """Get the deterministic random number generator for this workflow.
+
+        Returns a seeded random.Random instance that produces deterministic
+        results across workflow replays. The seed is provided by the Temporal
+        server and is consistent for each workflow execution.
+
+        Returns:
+            A seeded random.Random instance.
+        """
+        ...
+
+    @abstractmethod
+    def workflow_patch(self, patch_id: str, *, deprecated: bool = False) -> bool:
+        """Check if a patch should be applied.
+
+        This is used for safe code evolution. When you need to change workflow
+        code in a way that would break replay, use patched() to gate the change.
+
+        Args:
+            patch_id: Unique identifier for this patch point.
+            deprecated: If True, marks the patch as deprecated.
+
+        Returns:
+            True if the new code path should be taken.
+        """
+        ...
+
 
 @dataclass
 class _SignalDefinition:
@@ -430,8 +456,6 @@ class _QueryDefinition:
 @dataclass
 class _Definition:
     """Workflow definition metadata.
-
-    Mirrors temporalio.workflow._Definition from the SDK.
 
     This stores metadata about a workflow class that was decorated with
     @workflow.defn. The definition is attached to the class and can be
@@ -742,8 +766,6 @@ def defn(cls: type | None = None, *, name: str | None = None) -> Any:
 async def sleep(duration: float, *, summary: str | None = None) -> None:
     """Sleep for the given duration.
 
-    Mirrors temporalio.workflow.sleep from the SDK.
-
     This pauses workflow execution for the specified duration. During replay,
     the sleep completes immediately based on recorded history.
 
@@ -760,8 +782,6 @@ async def sleep(duration: float, *, summary: str | None = None) -> None:
 def time() -> float:
     """Get current workflow time in seconds.
 
-    Mirrors temporalio.workflow.time from the SDK.
-
     Returns the current workflow time, which is deterministic and based on
     the workflow's history during replay.
 
@@ -776,8 +796,6 @@ def time() -> float:
 
 def time_ns() -> int:
     """Get current workflow time in nanoseconds.
-
-    Mirrors temporalio.workflow.time_ns from the SDK.
 
     Returns the current workflow time, which is deterministic and based on
     the workflow's history during replay.
@@ -794,8 +812,6 @@ def time_ns() -> int:
 def info() -> Info:
     """Get information about the current workflow.
 
-    Mirrors temporalio.workflow.info from the SDK.
-
     Returns information about the currently executing workflow, including
     its ID, type, run ID, and task queue.
 
@@ -806,6 +822,151 @@ def info() -> Info:
         _NotInWorkflowContextError: If not in a workflow context.
     """
     return _Runtime.current().workflow_info()
+
+
+def random() -> _random_module.Random:
+    """Get the deterministic random number generator for this workflow.
+
+    Returns a seeded random.Random instance that produces deterministic
+    results across workflow replays. The seed is provided by the Temporal
+    server and is consistent for each workflow execution.
+
+    IMPORTANT: Always use this function instead of the standard library
+    random module to ensure workflow determinism. Using Python's default
+    random module will break replay.
+
+    Example:
+        # Get a random integer
+        value = workflow.random().randint(1, 100)
+
+        # Get a random float
+        value = workflow.random().random()
+
+        # Shuffle a list deterministically
+        items = [1, 2, 3, 4, 5]
+        workflow.random().shuffle(items)
+
+    Returns:
+        A seeded random.Random instance.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    return _Runtime.current().workflow_random()
+
+
+def uuid4() -> _uuid_module.UUID:
+    """Generate a deterministic UUID4 based on the workflow's random generator.
+
+    This generates a UUID that is deterministic across workflow replays,
+    unlike the standard library uuid.uuid4() which uses system entropy.
+
+    IMPORTANT: Always use this function instead of the standard library
+    uuid.uuid4() to ensure workflow determinism. Using Python's default
+    uuid4 will break replay.
+
+    Example:
+        # Generate a unique ID for a resource
+        resource_id = str(workflow.uuid4())
+
+    Returns:
+        A deterministic UUID4.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    rng = _Runtime.current().workflow_random()
+    # Generate 16 random bytes and convert to UUID4
+    # This matches the official SDK's implementation
+    random_bytes = rng.getrandbits(16 * 8).to_bytes(16, "big")
+    return _uuid_module.UUID(bytes=random_bytes, version=4)
+
+
+def patched(patch_id: str) -> bool:
+    """Check if a patch should be applied for safe workflow code evolution.
+
+    Use this function when you need to change workflow code in a way that would
+    break existing workflow executions during replay. This allows new code to
+    run for new executions while existing executions continue with the old code
+    path during replay.
+
+    The patch ID must be unique within the workflow. Once a patch is applied,
+    the workflow history records that fact, and subsequent replays will take
+    the new code path.
+
+    Example:
+        @workflow.defn
+        class MyWorkflow:
+            @workflow.run
+            async def run(self) -> str:
+                if workflow.patched("my-change-v2"):
+                    # New code path
+                    result = await workflow.execute_activity(
+                        new_activity,
+                        start_to_close_timeout=timedelta(seconds=30),
+                    )
+                else:
+                    # Old code path (for replaying old executions)
+                    result = await workflow.execute_activity(
+                        old_activity,
+                        start_to_close_timeout=timedelta(seconds=30),
+                    )
+                return result
+
+    Once all old workflow executions have completed, you can remove the
+    patched() check and use deprecate_patch() to mark the patch as deprecated
+    before fully removing it.
+
+    Args:
+        patch_id: A unique identifier for this patch point within the workflow.
+            Must be consistent across code versions.
+
+    Returns:
+        True if the new code path should be taken (new execution or replaying
+        an execution that has the patch marker), False if the old code path
+        should be taken (replaying an execution without the patch marker).
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    return _Runtime.current().workflow_patch(patch_id, deprecated=False)
+
+
+def deprecate_patch(patch_id: str) -> None:
+    """Mark a patch as deprecated.
+
+    Use this after all old workflow executions (that don't have the patch)
+    have completed. This is an intermediate step before fully removing the
+    patched() call from your code.
+
+    The deprecation workflow is:
+    1. Add patched() check with old and new code paths
+    2. Wait for all old executions to complete
+    3. Replace patched() with deprecate_patch() (keep only new code)
+    4. Wait for all executions with the patch marker to complete
+    5. Remove deprecate_patch() call entirely
+
+    Example:
+        @workflow.defn
+        class MyWorkflow:
+            @workflow.run
+            async def run(self) -> str:
+                # Old code used patched("my-change-v2"), now deprecated
+                workflow.deprecate_patch("my-change-v2")
+                # Only new code path remains
+                result = await workflow.execute_activity(
+                    new_activity,
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
+                return result
+
+    Args:
+        patch_id: The same identifier used in the original patched() call.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    _Runtime.current().workflow_patch(patch_id, deprecated=True)
 
 
 async def execute_activity(
@@ -820,8 +981,6 @@ async def execute_activity(
     activity_id: str | None = None,
 ) -> Any:
     """Execute an activity and wait for its result.
-
-    Mirrors temporalio.workflow.execute_activity from the SDK.
 
     This schedules an activity for execution and waits for it to complete.
     At least one of ``schedule_to_close_timeout`` or ``start_to_close_timeout``
@@ -879,7 +1038,6 @@ async def wait_condition(
     If the condition becomes true, execution continues immediately.
     If a timeout is specified and expires first, TimeoutError is raised.
 
-    Mirrors temporalio.workflow.wait_condition from the SDK.
 
     Args:
         fn: A callable returning True when condition is met.
@@ -921,7 +1079,6 @@ async def wait_condition(
 class Info:
     """Information about a running workflow.
 
-    Mirrors temporalio.workflow.Info from the SDK.
     Simplified for POC - SDK has many more fields.
     """
 
@@ -945,8 +1102,6 @@ class Info:
 
 class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
     """Handle for interacting with a started child workflow.
-
-    Mirrors temporalio.workflow.ChildWorkflowHandle from the SDK.
 
     This handle is returned by :py:func:`start_child_workflow` and provides
     methods to get the result, signal the child, and access its metadata.
@@ -1292,8 +1447,6 @@ async def start_child_workflow(
 ) -> ChildWorkflowHandle[Any, Any]:
     """Start a child workflow and return a handle.
 
-    Mirrors temporalio.workflow.start_child_workflow from the SDK.
-
     This starts a child workflow and returns a handle that can be used to
     wait for the result, send signals, or get metadata.
 
@@ -1340,7 +1493,7 @@ async def start_child_workflow(
     return await _Runtime.current().workflow_start_child_workflow(
         workflow,
         *temporalio.common._arg_or_args(arg, args),
-        id=id or str(uuid4()),
+        id=id or str(uuid4()),  # Uses our deterministic uuid4()
         task_queue=task_queue,
         cancellation_type=cancellation_type,
         parent_close_policy=parent_close_policy,
@@ -1368,8 +1521,6 @@ async def execute_child_workflow(
     retry_policy: temporalio.common.RetryPolicy | None = None,
 ) -> Any:
     """Start a child workflow and wait for its result.
-
-    Mirrors temporalio.workflow.execute_child_workflow from the SDK.
 
     This is a convenience method equivalent to:
         handle = await start_child_workflow(...)

@@ -33,10 +33,12 @@ from temporalio_trio.worker._activation import (
     CompleteWorkflowCommand,
     ContinueAsNewCommand,
     FailWorkflowCommand,
+    NotifyHasPatchJob,
     QueryResultCommand,
     QueryWorkflowJob,
     RequestCancelActivityCommand,
     ScheduleActivityCommand,
+    SetPatchMarkerCommand,
     SignalExternalResolvedJob,
     SignalExternalWorkflowCommand,
     SignalWorkflowJob,
@@ -93,6 +95,7 @@ def bridge_to_poc_activation(
         | ChildWorkflowStartFailedJob
         | ChildWorkflowResolvedJob
         | SignalExternalResolvedJob
+        | NotifyHasPatchJob
     ] = []
     is_eviction = False
     for job in bridge_act.jobs:
@@ -135,6 +138,8 @@ def bridge_to_poc_activation(
                     job.resolve_signal_external_workflow, data_converter
                 )
             )
+        elif job_type == "notify_has_patch":
+            poc_jobs.append(_convert_notify_has_patch(job.notify_has_patch))
         elif job_type == "remove_from_cache":
             # Track eviction - this activation is a cache eviction request
             is_eviction = True
@@ -450,6 +455,18 @@ def _convert_resolve_signal_external_workflow(
     )
 
 
+def _convert_notify_has_patch(notify: act_pb.NotifyHasPatch) -> NotifyHasPatchJob:
+    """Convert NotifyHasPatch to NotifyHasPatchJob.
+
+    Args:
+        notify: Bridge NotifyHasPatch job
+
+    Returns:
+        POC NotifyHasPatchJob
+    """
+    return NotifyHasPatchJob(patch_id=notify.patch_id)
+
+
 def _set_duration(
     duration_proto: google.protobuf.duration_pb2.Duration,
     td: timedelta,
@@ -758,6 +775,11 @@ def poc_to_bridge_completion(
                     bridge_cmd.continue_as_new_workflow_execution.retry_policy.non_retryable_error_types.append(
                         exc_type
                     )
+
+        elif isinstance(cmd, SetPatchMarkerCommand):
+            # Convert SetPatchMarkerCommand to SetPatchMarker
+            bridge_cmd.set_patch_marker.patch_id = cmd.patch_id
+            bridge_cmd.set_patch_marker.deprecated = cmd.deprecated
 
         else:
             raise NotImplementedError(
