@@ -149,6 +149,9 @@ class WorkflowRuntime:
     completed_children: dict[int, Any] = field(default_factory=dict)
     """Child workflows that have completed: seq -> result (or exception)."""
 
+    started_children: dict[int, str] = field(default_factory=dict)
+    """Child workflows that have started: seq -> run_id."""
+
     completed_external_signals: dict[int, BaseException | None] = field(
         default_factory=dict
     )
@@ -160,6 +163,9 @@ class WorkflowRuntime:
 
     pending_activities: dict[int, trio.Event] = field(default_factory=dict)
     """Activities waiting to complete: seq -> trio.Event."""
+
+    pending_child_starts: dict[int, trio.Event] = field(default_factory=dict)
+    """Child workflows waiting to start: seq -> trio.Event."""
 
     pending_children: dict[int, trio.Event] = field(default_factory=dict)
     """Child workflows waiting to complete: seq -> trio.Event."""
@@ -343,18 +349,26 @@ class WorkflowRuntime:
             workflow_type=workflow_type,
         )
 
-        # Check if already completed (replay path)
-        if seq in self.completed_children:
-            result = self.completed_children[seq]
-            if isinstance(result, BaseException):
-                handle._set_failure(result)
-            else:
-                handle._set_result(result)
+        # Check if already started (replay path)
+        if seq in self.started_children:
+            run_id = self.started_children[seq]
+            handle._first_execution_run_id = run_id
+
+            # Check if also already completed
+            if seq in self.completed_children:
+                result = self.completed_children[seq]
+                if isinstance(result, BaseException):
+                    handle._set_failure(result)
+                else:
+                    handle._set_result(result)
             return handle
 
-        # Create suspension event
-        event = trio.Event()
-        self.pending_children[seq] = event
+        # Create suspension events (one for start, one for completion)
+        start_event = trio.Event()
+        self.pending_child_starts[seq] = start_event
+
+        completion_event = trio.Event()
+        self.pending_children[seq] = completion_event
 
         # Default task_queue to workflow's task queue if not specified
         actual_task_queue = task_queue if task_queue is not None else self.task_queue
@@ -377,6 +391,45 @@ class WorkflowRuntime:
         if self.on_suspend is not None:
             self.on_suspend()
 
+        # Wait for child to START (not complete)
+        await start_event.wait()
+
+        # Get run_id and clean up start tracking
+        run_id = self.started_children[seq]
+        del self.pending_child_starts[seq]
+
+        # Set run_id on handle
+        handle._first_execution_run_id = run_id
+
+        return handle
+
+    async def workflow_wait_child_workflow(self, seq: int) -> Any:
+        """Wait for a child workflow to complete and return the result.
+
+        Args:
+            seq: The child workflow sequence number.
+
+        Returns:
+            The child workflow result or raises an exception.
+        """
+        # If already completed (replay), return result immediately
+        if seq in self.completed_children:
+            result = self.completed_children[seq]
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+        # Wait for completion event
+        if seq not in self.pending_children:
+            # This shouldn't happen - the child should be pending
+            raise RuntimeError(f"Child workflow seq={seq} is not pending")
+
+        event = self.pending_children[seq]
+
+        # Call suspension callback if set
+        if self.on_suspend is not None:
+            self.on_suspend()
+
         # Wait for child to complete
         await event.wait()
 
@@ -384,13 +437,10 @@ class WorkflowRuntime:
         result = self.completed_children[seq]
         del self.pending_children[seq]
 
-        # Set result on handle
+        # Return result or raise exception
         if isinstance(result, BaseException):
-            handle._set_failure(result)
-        else:
-            handle._set_result(result)
-
-        return handle
+            raise result
+        return result
 
     async def workflow_wait_condition(
         self,
@@ -969,19 +1019,23 @@ class WorkflowRuntime:
         """Handle a child workflow started job from an activation.
 
         This is called when the activation contains a ChildWorkflowStartedJob.
-        The child has been accepted and started by the server. This is informational -
-        the parent workflow is still waiting for the resolution (completion/failure).
+        The child has been accepted and started by the server.
 
         Args:
             seq: The child workflow sequence number that started.
             run_id: The run ID of the started child workflow.
         """
-        # Store the run_id for potential future use (e.g., tracking, debugging)
-        # The parent workflow continues waiting for ChildWorkflowResolvedJob
         import logging
 
         logger = logging.getLogger(__name__)
         logger.debug(f"Child workflow seq={seq} started with run_id={run_id}")
+
+        # Store the run_id
+        self.started_children[seq] = run_id
+
+        # Wake up any workflow waiting for the child to start
+        if seq in self.pending_child_starts:
+            self.pending_child_starts[seq].set()
 
     def apply_child_workflow_start_failed(
         self, seq: int, workflow_id: str, workflow_type: str, cause: str

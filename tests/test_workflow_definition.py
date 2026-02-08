@@ -222,6 +222,12 @@ class TestRuntimeClass:
             ) -> ChildWorkflowHandle[Any, Any]:
                 raise NotImplementedError()
 
+            async def workflow_wait_child_workflow(
+                self,
+                handle: ChildWorkflowHandle[Any, Any],
+            ) -> Any:
+                raise NotImplementedError()
+
             async def workflow_wait_condition(
                 self,
                 fn: Callable[[], bool],
@@ -325,6 +331,12 @@ class TestRuntimeClass:
                 id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
                 retry_policy: temporalio.common.RetryPolicy | None,
             ) -> ChildWorkflowHandle[Any, Any]:
+                raise NotImplementedError()
+
+            async def workflow_wait_child_workflow(
+                self,
+                handle: ChildWorkflowHandle[Any, Any],
+            ) -> Any:
                 raise NotImplementedError()
 
             async def workflow_wait_condition(
@@ -446,6 +458,12 @@ class TestPublicAPI:
             ) -> ChildWorkflowHandle[Any, Any]:
                 raise NotImplementedError()
 
+            async def workflow_wait_child_workflow(
+                self,
+                handle: ChildWorkflowHandle[Any, Any],
+            ) -> Any:
+                raise NotImplementedError()
+
             async def workflow_wait_condition(
                 self,
                 fn: Callable[[], bool],
@@ -551,6 +569,12 @@ class TestPublicAPI:
                 id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
                 retry_policy: temporalio.common.RetryPolicy | None,
             ) -> ChildWorkflowHandle[Any, Any]:
+                raise NotImplementedError()
+
+            async def workflow_wait_child_workflow(
+                self,
+                handle: ChildWorkflowHandle[Any, Any],
+            ) -> Any:
                 raise NotImplementedError()
 
             async def workflow_wait_condition(

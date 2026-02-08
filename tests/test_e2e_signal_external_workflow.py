@@ -319,6 +319,9 @@ async def test_get_external_workflow_handle_properties() -> None:
         async def workflow_start_child_workflow(self, *args, **kwargs):
             pass
 
+        async def workflow_wait_child_workflow(self, *args, **kwargs):
+            pass
+
         async def workflow_wait_condition(self, *args, **kwargs):
             pass
 

@@ -300,6 +300,15 @@ class _Runtime(ABC):
         ...
 
     @abstractmethod
+    async def workflow_wait_child_workflow(self, seq: int) -> None:
+        """Wait for a child workflow to complete.
+
+        Args:
+            seq: The child workflow sequence number.
+        """
+        ...
+
+    @abstractmethod
     async def workflow_wait_condition(
         self,
         fn: Callable[[], bool],
@@ -1001,8 +1010,16 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
         Raises:
             RuntimeError: If the child workflow failed or was cancelled.
         """
-        # This will be called after the workflow has completed
-        # The actual waiting is handled by the workflow instance
+        # If not yet completed, wait for completion via the runtime
+        if not self._completed:
+            try:
+                result = await _Runtime.current().workflow_wait_child_workflow(self._seq)
+                self._set_result(result)
+            except BaseException as e:
+                self._set_failure(e)
+                raise
+
+        # Now return the result or raise the failure
         if self._failure:
             raise self._failure
         return self._result  # type: ignore[return-value]

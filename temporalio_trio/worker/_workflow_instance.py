@@ -983,6 +983,42 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         # Yield control - workflow will re-run when child workflow starts/completes
         raise _WorkflowYield()
 
+    async def workflow_wait_child_workflow(
+        self,
+        handle: ChildWorkflowHandle[Any, Any],
+    ) -> Any:
+        """Wait for a child workflow to complete and return its result.
+
+        This method is called by ChildWorkflowHandle.result() to wait for
+        the child workflow to finish executing.
+
+        Args:
+            handle: The child workflow handle to wait for.
+
+        Returns:
+            The result of the child workflow.
+
+        Raises:
+            The exception raised by the child workflow, if any.
+        """
+        # Get the sequence number from the handle
+        seq = handle._seq
+
+        # Check if this child workflow has already resolved (replay)
+        if seq in self._resolved_child_workflows:
+            result, failure = self._resolved_child_workflows[seq]
+            if failure is not None:
+                raise failure
+            return result
+
+        # Check for cancellation before waiting
+        if self._cancel_requested:
+            raise _WorkflowCancelled()
+
+        # Child workflow hasn't completed yet - yield and wait
+        self._pending_child_seq = seq
+        raise _WorkflowYield()
+
     async def workflow_wait_condition(
         self,
         fn: Callable[[], bool],
