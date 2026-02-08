@@ -30,6 +30,7 @@ from temporalio_trio.worker._activation import (
     ChildWorkflowResolvedJob,
     CompleteWorkflowCommand,
     FailWorkflowCommand,
+    NotifyHasPatchJob,
     QueryWorkflowJob,
     SignalWorkflowJob,
     TimerFiredJob,
@@ -458,6 +459,8 @@ class SingleThreadWorker:
                 )
             elif isinstance(job, CancelWorkflowJob):
                 runtime.apply_cancel_workflow()
+            elif isinstance(job, NotifyHasPatchJob):
+                runtime.apply_notify_has_patch(job.patch_id)
 
     def _apply_signal(
         self, runtime: WorkflowRuntime, signal_job: SignalWorkflowJob

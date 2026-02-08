@@ -31,9 +31,11 @@ from temporalio_trio.worker._activation import (
     ChildWorkflowStartFailedJob,
     CompleteWorkflowCommand,
     FailWorkflowCommand,
+    NotifyHasPatchJob,
     QueryResultCommand,
     QueryWorkflowJob,
     ScheduleActivityCommand,
+    SetPatchMarkerCommand,
     SignalWorkflowJob,
     StartChildWorkflowCommand,
     StartTimerCommand,
@@ -86,8 +88,6 @@ class _WorkflowCancelled(BaseException):
 
 class WorkflowRunner(ABC):
     """Abstract runner for workflows.
-
-    Mirrors temporalio.worker.WorkflowRunner from the SDK.
 
     A workflow runner is responsible for:
     - Preparing workflow definitions for execution (validation, setup)
@@ -191,8 +191,6 @@ class TrioWorkflowRunner(WorkflowRunner):
 class WorkflowInstanceDetails:
     """Immutable details for creating a workflow instance.
 
-    Mirrors temporalio.worker.WorkflowInstanceDetails from the SDK.
-
     This dataclass contains all the information needed to create a new workflow
     instance, including the workflow definition, runtime info, and randomness seed.
 
@@ -214,8 +212,6 @@ class WorkflowInstanceDetails:
 
 class WorkflowInstance(ABC):
     """Abstract base class for workflow instances.
-
-    Mirrors temporalio.worker.WorkflowInstance from the SDK.
 
     A workflow instance handles activations from the Temporal server and returns
     completions with commands to execute. Each workflow execution has one instance.
@@ -300,6 +296,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             | QueryResultCommand
             | StartChildWorkflowCommand
             | CancelChildWorkflowCommand
+            | SetPatchMarkerCommand
         ] = []
         self._start_args: tuple[Any, ...] | None = None
         self._cancel_requested: bool = False
@@ -332,6 +329,16 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         self._pending_conditions: list[tuple[int, Callable[[], bool], trio.Event]] = []
         self._pending_callbacks: list[Callable[[], object]] = []
         self._guest_clock: WorkflowClock | None = None
+
+        # Patching/Versioning (Phase 2 of feature parity)
+        self._patches_notified: set[str] = set()
+        """Patch IDs notified via NotifyHasPatch jobs (from history during replay)."""
+
+        self._patches_memoized: dict[str, bool] = {}
+        """Memoized results of patched() calls to ensure consistency."""
+
+        self._is_replaying: bool = False
+        """Whether the current activation is replaying from history."""
 
     @property
     def defn(self) -> _Definition:
@@ -375,6 +382,9 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         # Update time from activation
         self._time_ns = act.timestamp_ns
         self._commands = []
+
+        # Update replay flag from activation (if available)
+        self._is_replaying = getattr(act, "is_replaying", False)
 
         # Update clock if guest is running
         if self._guest_running and self._guest_clock is not None:
@@ -446,6 +456,9 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 # Set event to wake workflow (guest mode)
                 if job.seq in self._child_workflow_events:
                     self._child_workflow_events[job.seq].set()
+            elif isinstance(job, NotifyHasPatchJob):
+                # Patch notification from history - record for patched() calls
+                self._patches_notified.add(job.patch_id)
 
         # If we have start args (either new or from previous activation), run workflow
         if self._start_args is not None:
@@ -657,6 +670,56 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             Info about the current workflow execution.
         """
         return self._info
+
+    def workflow_random(self) -> random.Random:
+        """Get the deterministic random number generator for this workflow.
+
+        Returns a seeded random.Random instance that produces deterministic
+        results across workflow replays. The seed was provided when the
+        workflow instance was created.
+
+        Returns:
+            A seeded random.Random instance.
+        """
+        return self._random
+
+    def workflow_patch(self, patch_id: str, *, deprecated: bool = False) -> bool:
+        """Check if a patch should be applied.
+
+        This implements the patching logic for safe workflow code evolution:
+        - If replaying and the patch is in history (notified), return True
+        - If replaying and the patch is NOT in history, return False
+        - If not replaying (new execution), emit a SetPatchMarkerCommand and return True
+
+        Results are memoized so subsequent calls with the same patch_id return
+        the same value without emitting additional commands.
+
+        Args:
+            patch_id: Unique identifier for this patch point.
+            deprecated: If True, marks the patch as deprecated.
+
+        Returns:
+            True if the new code path should be taken, False if the old path
+            should be taken (only during replay without the patch marker).
+        """
+        # Check if already memoized
+        if patch_id in self._patches_memoized:
+            return self._patches_memoized[patch_id]
+
+        # Determine the result based on replay state
+        if self._is_replaying:
+            # During replay, check if patch was recorded in history
+            result = patch_id in self._patches_notified
+        else:
+            # New execution - take the new path and record marker
+            result = True
+            self._commands.append(
+                SetPatchMarkerCommand(patch_id=patch_id, deprecated=deprecated)
+            )
+
+        # Memoize and return
+        self._patches_memoized[patch_id] = result
+        return result
 
     async def workflow_sleep(self, duration: float, summary: str | None) -> None:
         """Sleep for the given duration.

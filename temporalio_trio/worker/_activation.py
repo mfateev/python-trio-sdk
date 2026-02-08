@@ -22,6 +22,7 @@ __all__ = [
     "CancelWorkflowJob",
     "SignalWorkflowJob",
     "QueryWorkflowJob",
+    "NotifyHasPatchJob",
     "WorkflowActivation",
     # Workflow commands
     "StartTimerCommand",
@@ -30,6 +31,7 @@ __all__ = [
     "FailWorkflowCommand",
     "CancelWorkflowCommand",
     "QueryResultCommand",
+    "SetPatchMarkerCommand",
     "WorkflowActivationCompletion",
     # Activity jobs (for workflow-activity integration)
     "ActivityResolvedJob",
@@ -148,6 +150,22 @@ class QueryWorkflowJob:
 
     headers: dict[str, Any] | None = None
     """Optional headers associated with the query."""
+
+
+@dataclass
+class NotifyHasPatchJob:
+    """Job indicating a patch was recorded in history.
+
+    This job is sent pre-emptively before workflow code runs to inform
+    the runtime that a specific patch ID exists in the workflow history.
+    This allows workflow.patched() to return the correct value during replay.
+
+    Attributes:
+        patch_id: The identifier of the patch that was recorded.
+    """
+
+    patch_id: str
+    """The identifier of the patch that was recorded."""
 
 
 # Type alias defined at bottom of file after all types are defined
@@ -416,6 +434,26 @@ class QueryResultCommand:
     """The error message (if failed)."""
 
 
+@dataclass
+class SetPatchMarkerCommand:
+    """Command to record a patch marker in workflow history.
+
+    This command is generated when workflow.patched() returns True,
+    recording that the new code path was taken. During replay, the
+    presence of this marker determines whether patched() returns True.
+
+    Attributes:
+        patch_id: The identifier for the patch.
+        deprecated: Whether this patch is being marked as deprecated.
+    """
+
+    patch_id: str
+    """The identifier for the patch."""
+
+    deprecated: bool = False
+    """Whether this patch is being marked as deprecated."""
+
+
 # =============================================================================
 # Child Workflow Jobs (for child workflow execution)
 # =============================================================================
@@ -581,6 +619,7 @@ WorkflowJob = (
     | CancelWorkflowJob
     | SignalWorkflowJob
     | QueryWorkflowJob
+    | NotifyHasPatchJob
     | ActivityResolvedJob
     | ChildWorkflowStartedJob
     | ChildWorkflowStartFailedJob
@@ -597,6 +636,7 @@ WorkflowCommand = (
     | ScheduleActivityCommand
     | RequestCancelActivityCommand
     | QueryResultCommand
+    | SetPatchMarkerCommand
     | StartChildWorkflowCommand
     | CancelChildWorkflowCommand
 )
