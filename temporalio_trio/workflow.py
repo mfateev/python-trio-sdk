@@ -1020,9 +1020,28 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
             signal: Signal name or decorated method reference.
             arg: Single argument to the signal.
             args: Multiple arguments (cannot be set if arg is set).
+
+        Raises:
+            RuntimeError: If the signal fails (e.g., workflow not found).
         """
-        # TODO: Implement signal external workflow
-        raise NotImplementedError("Child workflow signaling not yet implemented")
+        # Get signal name from string or callable
+        if callable(signal):
+            signal_defn = _SignalDefinition.from_fn(signal)
+            if signal_defn and signal_defn.name:
+                signal_name = signal_defn.name
+            else:
+                signal_name = signal.__name__
+        else:
+            signal_name = signal
+
+        # Use the same signaling mechanism as external workflows
+        # A child workflow is just an external workflow that we started
+        await _Runtime.current().workflow_signal_external_workflow(
+            self._id,
+            signal_name,
+            temporalio.common._arg_or_args(arg, args),
+            run_id=self._first_execution_run_id,
+        )
 
     def __await__(self):
         """Support `await handle` syntax.
