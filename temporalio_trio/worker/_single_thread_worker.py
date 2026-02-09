@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import trio
 
+from temporalio_trio.worker import _activation as act_types
 from temporalio_trio.worker._activation import (
     ActivityResolvedJob,
     CancelWorkflowJob,
@@ -42,6 +43,7 @@ from temporalio_trio.worker._activation import (
     WorkflowActivationCompletion,
     WorkflowStartedJob,
 )
+from temporalio_trio.worker import _runtime as rt_types
 from temporalio_trio.worker._runtime import (
     CancelWorkflowCommand,
     QueryFailureCommand,
@@ -51,7 +53,7 @@ from temporalio_trio.worker._runtime import (
     set_current_runtime,
 )
 from temporalio_trio.worker._workflow_state import WorkflowState
-from temporalio_trio.workflow import ContinueAsNewError, _Definition, _Runtime
+from temporalio_trio.workflow import ContinueAsNewError, Info, _Definition, _Runtime
 
 if TYPE_CHECKING:
     from temporalio_trio._async_bridge import TrioBridgeWrapper
@@ -59,6 +61,72 @@ if TYPE_CHECKING:
 __all__ = ["SingleThreadWorker"]
 
 logger = logging.getLogger(__name__)
+
+
+class _RuntimeAdapter(_Runtime):
+    """Adapter that wraps WorkflowRuntime to implement the _Runtime ABC.
+
+    This allows workflow.sleep(), workflow.time(), etc. to find the runtime
+    via _Runtime.current() when the SingleThreadWorker is executing workflows.
+    """
+
+    def __init__(self, runtime: WorkflowRuntime) -> None:
+        self._runtime = runtime
+
+    def workflow_time_ns(self) -> int:
+        return self._runtime.time_ns
+
+    async def workflow_sleep(self, duration: float, summary: str | None = None) -> None:
+        await self._runtime.workflow_sleep(duration, summary=summary)
+
+    def workflow_info(self) -> Info:
+        return Info(
+            workflow_id=self._runtime.workflow_id,
+            workflow_type=self._runtime.workflow_type,
+            run_id=self._runtime.run_id,
+            task_queue=self._runtime.task_queue,
+            namespace="default",
+            is_replaying=self._runtime.is_replaying,
+        )
+
+    async def workflow_execute_activity(
+        self, activity, *args, **kwargs
+    ) -> Any:
+        return await self._runtime.execute_activity(activity, *args, **kwargs)
+
+    async def workflow_start_child_workflow(
+        self, workflow, *args, **kwargs
+    ) -> Any:
+        return await self._runtime.execute_child_workflow(workflow, *args, **kwargs)
+
+    async def workflow_wait_condition(
+        self, fn, *, timeout=None, timeout_summary=None
+    ) -> None:
+        await self._runtime.workflow_wait_condition(fn, timeout=timeout, timeout_summary=timeout_summary)
+
+    async def workflow_wait_child_workflow(self, *args, **kwargs) -> Any:
+        return await self._runtime.workflow_wait_child_workflow(*args, **kwargs)
+
+    def workflow_continue_as_new(self, *args, **kwargs):
+        return self._runtime.workflow_continue_as_new(*args, **kwargs)
+
+    def workflow_get_external_workflow_handle(self, workflow_id, *, run_id=None):
+        return self._runtime.workflow_get_external_workflow_handle(
+            workflow_id, run_id=run_id
+        )
+
+    async def workflow_signal_external_workflow(
+        self, workflow_id, signal_name, args, *, run_id=None
+    ):
+        return await self._runtime.workflow_signal_external_workflow(
+            workflow_id, signal_name, args, run_id=run_id
+        )
+
+    def workflow_random(self):
+        return self._runtime.random
+
+    def workflow_patch(self, patch_id, *, deprecated=False):
+        return self._runtime.workflow_patch(patch_id, deprecated=deprecated)
 
 
 class SingleThreadWorker:
@@ -206,8 +274,6 @@ class SingleThreadWorker:
         if isinstance(activation_bytes, WorkflowActivation):
             return activation_bytes
 
-        # For real bridges, we would parse protobuf here
-        # This is a placeholder for the actual implementation
         import temporalio.bridge.proto.workflow_activation.workflow_activation_pb2 as wa
 
         from temporalio_trio.worker._bridge_types import bridge_to_poc_activation
@@ -215,11 +281,20 @@ class SingleThreadWorker:
         bridge_act = wa.WorkflowActivation()
         bridge_act.ParseFromString(activation_bytes)
 
-        # Use default data converter for now
         import temporalio.converter
 
         data_converter = temporalio.converter.DataConverter()
-        return bridge_to_poc_activation(bridge_act, data_converter)
+        poc_act = bridge_to_poc_activation(bridge_act, data_converter)
+
+        # Check if the raw protobuf had a remove_from_cache eviction job
+        # (bridge_to_poc_activation tracks this via remove_from_cache flag,
+        # but double-check the raw protobuf to be safe)
+        for job in bridge_act.jobs:
+            if job.WhichOneof("variant") == "remove_from_cache":
+                poc_act.remove_from_cache = True
+                break
+
+        return poc_act
 
     async def _dispatch_activation(self, activation: WorkflowActivation) -> None:
         """Dispatch an activation to the appropriate workflow.
@@ -233,13 +308,9 @@ class SingleThreadWorker:
         # Extract run_id from activation
         run_id = self._extract_run_id(activation)
 
-        # Debug: log activation details
         job_types = [type(j).__name__ for j in activation.jobs]
-        is_eviction = self._is_eviction(activation)
-        logger.debug(
-            f"Dispatch activation run_id={run_id[:8]}...: jobs={job_types}, "
-            f"is_eviction={is_eviction}, in_cache={run_id in self._workflow_states}"
-        )
+        logger.debug(f"Dispatching activation for {run_id}: jobs={job_types}, "
+                     f"known={run_id in self._workflow_states}")
 
         # Check for eviction
         if self._is_eviction(activation):
@@ -337,16 +408,13 @@ class SingleThreadWorker:
         Raises:
             RuntimeError: If run_id cannot be determined.
         """
-        # Check if activation has run_id attribute (from bridge)
-        if hasattr(activation, "run_id"):
-            return activation.run_id  # type: ignore
+        # Use run_id from activation (set by bridge_to_poc_activation)
+        if activation.run_id:
+            return activation.run_id
 
-        # For test activations, we need to derive run_id from jobs
-        # In real usage, the bridge activation always has run_id
+        # Fallback for test activations that don't set run_id
         for job in activation.jobs:
             if isinstance(job, WorkflowStartedJob):
-                # Use workflow_type as a stand-in for run_id in tests
-                # Real implementations would have run_id from the bridge
                 return f"run-{id(activation)}"
 
         raise RuntimeError("Cannot determine run_id from activation")
@@ -360,10 +428,9 @@ class SingleThreadWorker:
         Returns:
             True if this is an eviction activation.
         """
-        # Check for eviction job
-        if hasattr(activation, "remove_from_cache"):
-            return bool(activation.remove_from_cache)  # type: ignore
-        return False
+        return getattr(activation, "is_eviction", False) or getattr(
+            activation, "remove_from_cache", False
+        )
 
     async def _run_workflow(
         self, state: WorkflowState, initial_activation: WorkflowActivation
@@ -418,9 +485,10 @@ class SingleThreadWorker:
         # Register signal and query handlers from definition
         self._register_handlers(runtime, defn, workflow_obj)
 
-        # Set runtime as current (both _Runtime and legacy _runtime module)
-        token = _Runtime.set_current(runtime)
-        legacy_token = set_current_runtime(runtime)
+        # Set runtime as current (both _runtime.py and workflow.py contextvars)
+        token = set_current_runtime(runtime)
+        adapter = _RuntimeAdapter(runtime)
+        workflow_token = _Runtime.set_current(adapter)
         try:
             # Apply initial activation jobs (now query handlers are registered)
             self._apply_activation(runtime, initial_activation)
@@ -480,8 +548,8 @@ class SingleThreadWorker:
             state.signal_commands_ready()
 
         finally:
-            _Runtime.reset_current(token)
-            reset_current_runtime(legacy_token)
+            _Runtime.reset_current(workflow_token)
+            reset_current_runtime(token)
 
     def _handle_activation_for_completed_workflow(
         self,
@@ -782,6 +850,110 @@ class SingleThreadWorker:
                 )
             )
 
+    def _normalize_commands(self, commands: list[Any]) -> list[Any]:
+        """Convert _runtime command types to _activation command types.
+
+        The WorkflowRuntime may produce commands using types from _runtime.py
+        (with seq/start_to_fire_timeout_ms fields) or directly from _activation.py
+        (with timer_id/duration_ms fields). This method normalizes both to the
+        _activation types expected by poc_to_bridge_completion.
+
+        If _runtime re-exports _activation types (as in the current worktree),
+        commands are already in the correct form and pass through unchanged.
+        """
+        normalized = []
+        for cmd in commands:
+            # Check for _runtime-specific StartTimerCommand (has seq, start_to_fire_timeout_ms)
+            if hasattr(cmd, "start_to_fire_timeout_ms") and hasattr(cmd, "seq"):
+                normalized.append(
+                    act_types.StartTimerCommand(
+                        timer_id=cmd.seq,
+                        duration_ms=cmd.start_to_fire_timeout_ms,
+                        summary=getattr(cmd, "summary", None),
+                    )
+                )
+            # Check for _runtime-specific ScheduleActivityCommand (has arguments, *_timeout_ms)
+            elif hasattr(cmd, "arguments") and hasattr(cmd, "start_to_close_timeout_ms"):
+                from datetime import timedelta
+
+                normalized.append(
+                    act_types.ScheduleActivityCommand(
+                        seq=cmd.seq,
+                        activity_id=getattr(cmd, "activity_id", None) or str(cmd.seq),
+                        activity_type=cmd.activity_type,
+                        args=cmd.arguments,
+                        task_queue=getattr(cmd, "task_queue", None),
+                        schedule_to_close_timeout=(
+                            timedelta(milliseconds=cmd.schedule_to_close_timeout_ms)
+                            if getattr(cmd, "schedule_to_close_timeout_ms", None)
+                            else None
+                        ),
+                        schedule_to_start_timeout=(
+                            timedelta(milliseconds=cmd.schedule_to_start_timeout_ms)
+                            if getattr(cmd, "schedule_to_start_timeout_ms", None)
+                            else None
+                        ),
+                        start_to_close_timeout=(
+                            timedelta(milliseconds=cmd.start_to_close_timeout_ms)
+                            if getattr(cmd, "start_to_close_timeout_ms", None)
+                            else None
+                        ),
+                        heartbeat_timeout=(
+                            timedelta(milliseconds=cmd.heartbeat_timeout_ms)
+                            if getattr(cmd, "heartbeat_timeout_ms", None)
+                            else None
+                        ),
+                    )
+                )
+            elif isinstance(cmd, rt_types.QuerySuccessCommand):
+                normalized.append(
+                    act_types.QueryResultCommand(
+                        query_id=cmd.query_id,
+                        result=cmd.result,
+                    )
+                )
+            elif isinstance(cmd, rt_types.QueryFailureCommand):
+                normalized.append(
+                    act_types.QueryResultCommand(
+                        query_id=cmd.query_id,
+                        error=str(cmd.error),
+                    )
+                )
+            # Check for _runtime-specific StartChildWorkflowCommand (has arguments, *_timeout_ms)
+            elif hasattr(cmd, "arguments") and hasattr(cmd, "execution_timeout_ms"):
+                from datetime import timedelta
+
+                normalized.append(
+                    act_types.StartChildWorkflowCommand(
+                        seq=cmd.seq,
+                        workflow_id=cmd.workflow_id,
+                        workflow_type=cmd.workflow_type,
+                        args=cmd.arguments,
+                        task_queue=getattr(cmd, "task_queue", None),
+                        execution_timeout=(
+                            timedelta(milliseconds=cmd.execution_timeout_ms)
+                            if getattr(cmd, "execution_timeout_ms", None)
+                            else None
+                        ),
+                        run_timeout=(
+                            timedelta(milliseconds=cmd.run_timeout_ms)
+                            if getattr(cmd, "run_timeout_ms", None)
+                            else None
+                        ),
+                        task_timeout=(
+                            timedelta(milliseconds=cmd.task_timeout_ms)
+                            if getattr(cmd, "task_timeout_ms", None)
+                            else None
+                        ),
+                    )
+                )
+            else:
+                # Already an _activation type (CompleteWorkflowCommand,
+                # FailWorkflowCommand, StartTimerCommand, ScheduleActivityCommand,
+                # CancelWorkflowCommand, etc.) or QuerySuccessCommand/QueryFailureCommand
+                normalized.append(cmd)
+        return normalized
+
     async def _send_completion(self, run_id: str, commands: list[Any]) -> None:
         """Send a completion with commands to the bridge.
 
@@ -789,16 +961,13 @@ class SingleThreadWorker:
             run_id: The workflow run_id.
             commands: List of commands to send.
         """
-        # Convert to protobuf and send
-        # For now, just log the commands
         logger.debug(f"Sending completion for {run_id} with {len(commands)} commands")
-
-        # Create completion protobuf
-        import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2
 
         from temporalio_trio.worker._bridge_types import poc_to_bridge_completion
 
-        poc_completion = WorkflowActivationCompletion(commands=commands)
+        # Normalize runtime commands to activation types
+        normalized = self._normalize_commands(commands)
+        poc_completion = WorkflowActivationCompletion(commands=normalized)
 
         import temporalio.converter
 

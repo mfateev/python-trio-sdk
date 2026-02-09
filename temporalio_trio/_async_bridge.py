@@ -118,6 +118,7 @@ class TrioBridgeWrapper:
         max_concurrent_workflow_task_polls: int = 5,
         sticky_queue_schedule_to_start_timeout_millis: int = 10_000,
         timeout: Optional[float] = None,
+        telemetry: Optional[dict] = None,
     ) -> None:
         """Initialize the bridge worker with Temporal configuration.
 
@@ -135,6 +136,7 @@ class TrioBridgeWrapper:
                 allowed to sit on the sticky queue before it is timed out and moved
                 to the non-sticky queue. In milliseconds. (default: 10000 = 10s)
             timeout: Optional timeout in seconds
+            telemetry: Optional telemetry configuration dict for metrics export
 
         Raises:
             RuntimeError: If bridge is not running or initialization fails
@@ -162,6 +164,9 @@ class TrioBridgeWrapper:
             "max_concurrent_workflow_task_polls": max_concurrent_workflow_task_polls,
             "sticky_queue_schedule_to_start_timeout_millis": sticky_queue_schedule_to_start_timeout_millis,
         }
+
+        if telemetry is not None:
+            config["telemetry"] = telemetry
 
         event = trio.Event()
         error_container: list = []

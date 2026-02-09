@@ -19,7 +19,7 @@ from temporalio.exceptions import (
     TimeoutError,
 )
 
-from temporalio_trio import activity, client, testing, worker, workflow
+from temporalio_trio import activity, client, runtime, testing, worker, workflow
 
 __version__ = "0.1.0"
 
@@ -27,6 +27,7 @@ __all__ = [
     "__version__",
     "activity",
     "client",
+    "runtime",
     "testing",
     "workflow",
     "worker",

@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use prost::Message;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,11 +8,56 @@ use temporalio_client::ClientOptions;
 use temporalio_common::errors::PollError;
 use temporalio_common::protos::coresdk::workflow_completion::WorkflowActivationCompletion;
 use temporalio_common::protos::coresdk::{ActivityHeartbeat, ActivityTaskCompletion};
+use temporalio_common::telemetry::{
+    MetricTemporality, OtelCollectorOptions, OtlpProtocol, PrometheusExporterOptions,
+    TelemetryOptions,
+};
 use temporalio_common::worker::{WorkerTaskTypes, WorkerVersioningStrategy};
 use temporalio_common::Worker as WorkerTrait;
-use temporalio_sdk_core::{init_worker, CoreRuntime, RetryClient, Worker, WorkerConfig};
+use temporalio_sdk_core::telemetry::{build_otlp_metric_exporter, start_prometheus_metric_exporter};
+use temporalio_sdk_core::{init_worker, CoreRuntime, RetryClient, RuntimeOptions, Worker, WorkerConfig};
 use tokio::sync::Mutex;
 use url::Url;
+
+/// Telemetry configuration received from Python
+#[derive(serde::Deserialize, Default)]
+pub struct TelemetryInitConfig {
+    pub prometheus: Option<PrometheusInitConfig>,
+    pub opentelemetry: Option<OpenTelemetryInitConfig>,
+    #[serde(default = "default_true")]
+    pub attach_service_name: bool,
+    pub metric_prefix: Option<String>,
+    pub global_tags: Option<HashMap<String, String>>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct PrometheusInitConfig {
+    pub bind_address: String,
+    #[serde(default)]
+    pub counters_total_suffix: bool,
+    #[serde(default)]
+    pub unit_suffix: bool,
+    #[serde(default)]
+    pub durations_as_seconds: bool,
+}
+
+#[derive(serde::Deserialize)]
+pub struct OpenTelemetryInitConfig {
+    pub url: String,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    pub metric_periodicity_millis: Option<u64>,
+    #[serde(default)]
+    pub metric_temporality_delta: bool,
+    #[serde(default)]
+    pub durations_as_seconds: bool,
+    #[serde(default)]
+    pub http: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
 
 /// Configuration for initializing the Core Worker
 #[derive(serde::Deserialize)]
@@ -25,10 +71,8 @@ pub struct WorkerInitConfig {
     pub max_cached_workflows: usize,
     #[serde(default = "default_max_concurrent_polls")]
     pub max_concurrent_workflow_task_polls: usize,
-    /// How long a workflow task is allowed to sit on the sticky queue before it is timed out
-    /// and moved to the non-sticky queue. Value in milliseconds.
-    #[serde(default = "default_sticky_queue_schedule_to_start_timeout_millis")]
-    pub sticky_queue_schedule_to_start_timeout_millis: u64,
+    #[serde(default)]
+    pub telemetry: Option<TelemetryInitConfig>,
 }
 
 fn default_max_cached_workflows() -> usize {
@@ -39,28 +83,33 @@ fn default_max_concurrent_polls() -> usize {
     5
 }
 
-fn default_sticky_queue_schedule_to_start_timeout_millis() -> u64 {
-    10_000 // 10 seconds, matches SDK-Core default
-}
-
-/// Wrapper around the Temporal SDK Core Worker that provides thread-safe access
+/// Wrapper around the Temporal SDK Core Worker.
 ///
-/// The worker is stored in an Option<Arc<Worker>> so that:
-/// 1. The Mutex only needs to be held briefly to clone the Arc
-/// 2. The Arc<Worker> can be used concurrently without locking
-/// 3. SDK-Core's Worker is internally thread-safe for concurrent operations
+/// The inner Worker is stored as `Option<Arc<Worker>>` — matching the pattern
+/// used by the official C-bridge. SDK-Core's Worker handles its own internal
+/// synchronization, so no external Mutex is needed for poll/complete operations.
+/// A Mutex is only used during one-time initialization.
 pub struct CoreWorkerHandle {
-    worker: Arc<Mutex<Option<Arc<Worker>>>>,
-    runtime: Arc<Mutex<Option<CoreRuntime>>>,
+    worker: Mutex<Option<Arc<Worker>>>,
+    runtime: Mutex<Option<CoreRuntime>>,
 }
 
 impl CoreWorkerHandle {
     /// Create a new uninitialized CoreWorkerHandle
     pub fn new() -> Self {
         Self {
-            worker: Arc::new(Mutex::new(None)),
-            runtime: Arc::new(Mutex::new(None)),
+            worker: Mutex::new(None),
+            runtime: Mutex::new(None),
         }
+    }
+
+    /// Get the worker Arc, or error if not initialized.
+    async fn worker(&self) -> Result<Arc<Worker>> {
+        self.worker
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow!("Worker not initialized"))
     }
 
     /// Initialize the worker with the given configuration
@@ -70,10 +119,75 @@ impl CoreWorkerHandle {
             return Err(anyhow!("Worker already initialized"));
         }
 
-        // Create CoreRuntime with default options
-        use temporalio_sdk_core::RuntimeOptions;
-        let runtime_options = RuntimeOptions::default();
-        let runtime = CoreRuntime::new_assume_tokio(runtime_options)?;
+        // Build TelemetryOptions from config
+        let telem_config = config.telemetry.unwrap_or_default();
+        let telemetry_options = TelemetryOptions::builder()
+            .attach_service_name(telem_config.attach_service_name)
+            .metric_prefix(
+                telem_config
+                    .metric_prefix
+                    .unwrap_or_else(|| "temporal_".to_string()),
+            )
+            .build();
+
+        // Build RuntimeOptions with telemetry
+        let runtime_options = RuntimeOptions::builder()
+            .telemetry_options(telemetry_options)
+            .build()
+            .map_err(|e| anyhow!("Failed to build runtime options: {}", e))?;
+
+        // Create CoreRuntime (Tokio runtime already active)
+        let mut runtime = CoreRuntime::new_assume_tokio(runtime_options)?;
+
+        // Late-bind metrics exporter (requires active Tokio runtime)
+        if let Some(ref prom) = telem_config.prometheus {
+            let global_tags = telem_config.global_tags.clone().unwrap_or_default();
+            let prom_opts = PrometheusExporterOptions::builder()
+                .socket_addr(
+                    prom.bind_address
+                        .parse()
+                        .map_err(|e| anyhow!("Invalid Prometheus bind address: {}", e))?,
+                )
+                .global_tags(global_tags)
+                .counters_total_suffix(prom.counters_total_suffix)
+                .unit_suffix(prom.unit_suffix)
+                .use_seconds_for_durations(prom.durations_as_seconds)
+                .build();
+            let started = start_prometheus_metric_exporter(prom_opts)
+                .map_err(|e| anyhow!("Failed to start Prometheus exporter: {}", e))?;
+            runtime
+                .telemetry_mut()
+                .attach_late_init_metrics(started.meter);
+        } else if let Some(ref otel) = telem_config.opentelemetry {
+            let global_tags = telem_config.global_tags.clone().unwrap_or_default();
+            let otel_opts = OtelCollectorOptions::builder()
+                .url(
+                    Url::from_str(&otel.url)
+                        .map_err(|e| anyhow!("Invalid OTel collector URL: {}", e))?,
+                )
+                .headers(otel.headers.clone())
+                .metric_periodicity(Duration::from_millis(
+                    otel.metric_periodicity_millis.unwrap_or(1000),
+                ))
+                .metric_temporality(if otel.metric_temporality_delta {
+                    MetricTemporality::Delta
+                } else {
+                    MetricTemporality::Cumulative
+                })
+                .use_seconds_for_durations(otel.durations_as_seconds)
+                .global_tags(global_tags)
+                .protocol(if otel.http {
+                    OtlpProtocol::Http
+                } else {
+                    OtlpProtocol::Grpc
+                })
+                .build();
+            let meter = build_otlp_metric_exporter(otel_opts)
+                .map_err(|e| anyhow!("Failed to build OTel exporter: {}", e))?;
+            runtime
+                .telemetry_mut()
+                .attach_late_init_metrics(Arc::new(meter));
+        }
 
         // Parse target URL
         let target_url =
@@ -100,14 +214,9 @@ impl CoreWorkerHandle {
         let retry_client = RetryClient::new(client, Default::default());
 
         // Build worker config (using bon builder)
-        // Note: Using minimal configuration with required fields
         let worker_config = WorkerConfig::builder()
             .namespace(config.namespace.clone())
             .task_queue(config.task_queue.clone())
-            .max_cached_workflows(config.max_cached_workflows)
-            .sticky_queue_schedule_to_start_timeout(Duration::from_millis(
-                config.sticky_queue_schedule_to_start_timeout_millis,
-            ))
             .versioning_strategy(WorkerVersioningStrategy::None {
                 build_id: "trio-worker".to_string(),
             })
@@ -128,29 +237,16 @@ impl CoreWorkerHandle {
         *runtime_guard = Some(runtime);
         drop(runtime_guard);
 
-        // Store worker wrapped in Arc for concurrent access
+        // Store worker as Arc (no lock needed for subsequent operations)
         *worker_guard = Some(Arc::new(worker));
 
         Ok(())
     }
 
-    /// Get a clone of the worker Arc
-    ///
-    /// This briefly locks the mutex to clone the Arc, then drops the lock.
-    /// The caller can then use the Arc without holding any lock.
-    async fn get_worker(&self) -> Result<Arc<Worker>> {
-        let guard = self.worker.lock().await;
-        guard
-            .clone()
-            .ok_or_else(|| anyhow!("Worker not initialized"))
-    }
-
-    /// Poll for a workflow activation
+    /// Poll for a workflow activation (lock-free — uses cloned Arc)
     pub async fn poll_workflow_activation(&self) -> Result<Vec<u8>> {
-        // Get worker Arc and drop the lock before awaiting
-        let worker = self.get_worker().await?;
+        let worker = self.worker().await?;
 
-        // Poll for activation
         let activation = match worker.poll_workflow_activation().await {
             Ok(act) => act,
             Err(PollError::ShutDown) => {
@@ -161,21 +257,17 @@ impl CoreWorkerHandle {
             }
         };
 
-        // Encode to protobuf bytes
         let bytes = activation.encode_to_vec();
         Ok(bytes)
     }
 
-    /// Complete a workflow activation
+    /// Complete a workflow activation (lock-free — uses cloned Arc)
     pub async fn complete_workflow_activation(&self, completion_bytes: Vec<u8>) -> Result<()> {
-        // Get worker Arc and drop the lock before awaiting
-        let worker = self.get_worker().await?;
+        let worker = self.worker().await?;
 
-        // Decode completion from protobuf bytes
         let completion = WorkflowActivationCompletion::decode(&completion_bytes[..])
             .map_err(|e| anyhow!("Failed to decode completion: {}", e))?;
 
-        // Complete the activation
         worker
             .complete_workflow_activation(completion)
             .await
@@ -184,12 +276,10 @@ impl CoreWorkerHandle {
         Ok(())
     }
 
-    /// Poll for an activity task
+    /// Poll for an activity task (lock-free)
     pub async fn poll_activity_task(&self) -> Result<Vec<u8>> {
-        // Get worker Arc and drop the lock before awaiting
-        let worker = self.get_worker().await?;
+        let worker = self.worker().await?;
 
-        // Poll for activity task
         let task = match worker.poll_activity_task().await {
             Ok(task) => task,
             Err(PollError::ShutDown) => {
@@ -200,21 +290,17 @@ impl CoreWorkerHandle {
             }
         };
 
-        // Encode to protobuf bytes
         let bytes = task.encode_to_vec();
         Ok(bytes)
     }
 
-    /// Complete an activity task
+    /// Complete an activity task (lock-free)
     pub async fn complete_activity_task(&self, completion_bytes: Vec<u8>) -> Result<()> {
-        // Get worker Arc and drop the lock before awaiting
-        let worker = self.get_worker().await?;
+        let worker = self.worker().await?;
 
-        // Decode completion from protobuf bytes
         let completion = ActivityTaskCompletion::decode(&completion_bytes[..])
             .map_err(|e| anyhow!("Failed to decode activity completion: {}", e))?;
 
-        // Complete the activity task
         worker
             .complete_activity_task(completion)
             .await
@@ -223,16 +309,13 @@ impl CoreWorkerHandle {
         Ok(())
     }
 
-    /// Record an activity heartbeat
+    /// Record an activity heartbeat (lock-free)
     pub async fn record_activity_heartbeat(&self, heartbeat_bytes: Vec<u8>) -> Result<()> {
-        // Get worker Arc and drop the lock before doing work
-        let worker = self.get_worker().await?;
+        let worker = self.worker().await?;
 
-        // Decode heartbeat from protobuf bytes
         let heartbeat = ActivityHeartbeat::decode(&heartbeat_bytes[..])
             .map_err(|e| anyhow!("Failed to decode activity heartbeat: {}", e))?;
 
-        // Record the heartbeat (fire and forget internally by SDK Core)
         worker.record_activity_heartbeat(heartbeat);
 
         Ok(())
@@ -240,45 +323,40 @@ impl CoreWorkerHandle {
 
     /// Validate that the worker is initialized and ready
     pub async fn validate(&self) -> Result<()> {
-        // Just try to get the worker - this validates it's initialized
-        let _ = self.get_worker().await?;
-        Ok(())
+        let guard = self.worker.lock().await;
+        if guard.is_some() {
+            Ok(())
+        } else {
+            Err(anyhow!("Worker not initialized"))
+        }
     }
 
-    /// Initiate graceful shutdown of the worker
+    /// Initiate graceful shutdown of the worker (lock-free)
     pub async fn initiate_shutdown(&self) -> Result<()> {
-        // Get worker Arc - no await after this so lock timing doesn't matter
-        let worker = self.get_worker().await?;
+        let worker = self.worker().await?;
         worker.initiate_shutdown();
         Ok(())
     }
 
     /// Finalize shutdown and wait for completion
     pub async fn finalize_shutdown(&self) -> Result<()> {
-        // Need to take ownership for finalize_shutdown, so we take from the Option
-        let mut worker_guard = self.worker.lock().await;
-        let worker_opt = worker_guard.take();
-        // Drop the lock before any awaiting
-        drop(worker_guard);
-
-        if let Some(worker) = worker_opt {
-            // Now we need to get the inner Worker from the Arc
-            // If there are other references, this will fail - that's expected during proper shutdown
-            match Arc::try_unwrap(worker) {
-                Ok(inner_worker) => {
-                    inner_worker.finalize_shutdown().await;
+        // Take the Arc out; try_unwrap to get owned Worker for finalize_shutdown
+        let worker = {
+            let mut guard = self.worker.lock().await;
+            guard.take()
+        };
+        if let Some(worker_arc) = worker {
+            match Arc::try_unwrap(worker_arc) {
+                Ok(worker) => {
+                    worker.finalize_shutdown().await;
                 }
                 Err(_arc) => {
-                    // Other references exist - this shouldn't happen during proper shutdown
-                    // but we can't finalize without ownership
-                    return Err(anyhow!(
-                        "Cannot finalize shutdown: other references to worker exist"
-                    ));
+                    // Other references still exist; just drop our reference.
+                    // The worker will be cleaned up when all references are dropped.
                 }
             }
         }
 
-        // Drop the runtime
         let mut runtime_guard = self.runtime.lock().await;
         *runtime_guard = None;
 
