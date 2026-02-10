@@ -71,6 +71,10 @@ pub struct WorkerInitConfig {
     pub max_cached_workflows: usize,
     #[serde(default = "default_max_concurrent_polls")]
     pub max_concurrent_workflow_task_polls: usize,
+    /// How long a workflow task is allowed to sit on the sticky queue before it is timed out
+    /// and moved to the non-sticky queue. Value in milliseconds.
+    #[serde(default = "default_sticky_queue_schedule_to_start_timeout_millis")]
+    pub sticky_queue_schedule_to_start_timeout_millis: u64,
     #[serde(default)]
     pub telemetry: Option<TelemetryInitConfig>,
 }
@@ -81,6 +85,10 @@ fn default_max_cached_workflows() -> usize {
 
 fn default_max_concurrent_polls() -> usize {
     5
+}
+
+fn default_sticky_queue_schedule_to_start_timeout_millis() -> u64 {
+    10_000 // 10 seconds
 }
 
 /// Wrapper around the Temporal SDK Core Worker.
