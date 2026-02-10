@@ -346,6 +346,14 @@ async def test_get_external_workflow_handle_properties() -> None:
         ) -> None:
             pass
 
+        def workflow_random(self):
+            import random
+
+            return random.Random(42)
+
+        def workflow_patch(self, patch_id, *, deprecated=False):
+            return True
+
     mock = MockRuntime()
     token = workflow._Runtime.set_current(mock)
     try:

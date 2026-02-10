@@ -3,8 +3,8 @@
 Tests the interactions that were broken and fixed:
 1. run_id preservation through bridge_to_poc_activation
 2. Eviction detection from remove_from_cache activations
-3. Command normalization (passthrough in unified type system)
-4. _Runtime contextvar bridging (workflow.sleep/time via _RuntimeAdapter)
+3. Command type unification (runtime uses activation types directly)
+4. _Runtime contextvar bridging (workflow.sleep/time via WorkflowRuntime duck typing)
 5. Timer summary round-trip through the full completion pipeline
 """
 
@@ -293,94 +293,55 @@ class TestEvictionDetection:
 
 
 class TestCommandNormalization:
-    """Tests that commands pass through normalization correctly."""
+    """Tests that WorkflowRuntime commands are compatible with poc_to_bridge_completion.
 
-    def _make_worker(self) -> SingleThreadWorker:
-        return SingleThreadWorker(
-            bridge=MockBridge(),  # type: ignore
-            task_queue="q",
-            workflows=[ImmediateWorkflow],
+    Since _runtime.py now imports command types directly from _activation.py,
+    commands are already in the correct format — no normalization needed.
+    """
+
+    def test_runtime_uses_activation_timer_type(self):
+        """StartTimerCommand from _runtime is the same as from _activation."""
+        from temporalio_trio.worker._activation import (
+            StartTimerCommand as ActStartTimerCommand,
+        )
+        from temporalio_trio.worker._runtime import (
+            StartTimerCommand as RtStartTimerCommand,
         )
 
-    def test_start_timer_command(self):
-        """StartTimerCommand passes through normalization."""
-        worker = self._make_worker()
-        cmd = StartTimerCommand(timer_id=3, duration_ms=5000)
-        normalized = worker._normalize_commands([cmd])
+        assert ActStartTimerCommand is RtStartTimerCommand
 
-        assert len(normalized) == 1
-        assert isinstance(normalized[0], StartTimerCommand)
-        assert normalized[0].timer_id == 3
-        assert normalized[0].duration_ms == 5000
-
-    def test_start_timer_with_summary(self):
-        """Summary must survive normalization."""
-        worker = self._make_worker()
-        cmd = StartTimerCommand(timer_id=1, duration_ms=100, summary="test sleep")
-        normalized = worker._normalize_commands([cmd])
-
-        assert normalized[0].summary == "test sleep"
-
-    def test_schedule_activity_command(self):
-        """ScheduleActivityCommand passes through normalization."""
-        worker = self._make_worker()
-        cmd = ScheduleActivityCommand(
-            seq=1,
-            activity_type="my_activity",
-            activity_id="act-1",
-            args=("arg1",),
-            start_to_close_timeout=timedelta(seconds=30),
+    def test_runtime_uses_activation_activity_type(self):
+        """ScheduleActivityCommand from _runtime is the same as from _activation."""
+        from temporalio_trio.worker._activation import (
+            ScheduleActivityCommand as ActCmd,
         )
-        normalized = worker._normalize_commands([cmd])
+        from temporalio_trio.worker._runtime import (
+            ScheduleActivityCommand as RtCmd,
+        )
 
-        assert isinstance(normalized[0], ScheduleActivityCommand)
-        assert normalized[0].activity_type == "my_activity"
+        assert ActCmd is RtCmd
 
-    def test_query_success_command(self):
-        """QuerySuccessCommand normalizes to QueryResultCommand."""
-        worker = self._make_worker()
-        cmd = QuerySuccessCommand(query_id="q1", result=42)
-        normalized = worker._normalize_commands([cmd])
+    def test_runtime_uses_activation_child_workflow_type(self):
+        """StartChildWorkflowCommand from _runtime is the same as from _activation."""
+        from temporalio_trio.worker._activation import (
+            StartChildWorkflowCommand as ActCmd,
+        )
+        from temporalio_trio.worker._runtime import (
+            StartChildWorkflowCommand as RtCmd,
+        )
 
-        from temporalio_trio.worker._activation import QueryResultCommand
+        assert ActCmd is RtCmd
 
-        assert isinstance(normalized[0], QueryResultCommand)
-        assert normalized[0].query_id == "q1"
-        assert normalized[0].result == 42
-        assert normalized[0].error is None
+    def test_runtime_uses_activation_cancel_type(self):
+        """CancelWorkflowCommand from _runtime is the same as from _activation."""
+        from temporalio_trio.worker._activation import (
+            CancelWorkflowCommand as ActCmd,
+        )
+        from temporalio_trio.worker._runtime import (
+            CancelWorkflowCommand as RtCmd,
+        )
 
-    def test_query_failure_command(self):
-        """QueryFailureCommand normalizes to QueryResultCommand with error."""
-        worker = self._make_worker()
-        cmd = QueryFailureCommand(query_id="q2", error=ValueError("bad"))
-        normalized = worker._normalize_commands([cmd])
-
-        from temporalio_trio.worker._activation import QueryResultCommand
-
-        assert isinstance(normalized[0], QueryResultCommand)
-        assert cmd.query_id == "q2"
-        assert "bad" in normalized[0].error
-
-    def test_complete_workflow_passes_through(self):
-        """CompleteWorkflowCommand passes through unchanged."""
-        worker = self._make_worker()
-        cmd = CompleteWorkflowCommand(result="hello")
-        normalized = worker._normalize_commands([cmd])
-
-        assert normalized[0] is cmd
-
-    def test_mixed_command_types(self):
-        """Mix of command types all normalize correctly."""
-        worker = self._make_worker()
-        commands: list[Any] = [
-            StartTimerCommand(timer_id=1, duration_ms=1000),
-            CompleteWorkflowCommand(result="done"),
-        ]
-        normalized = worker._normalize_commands(commands)
-
-        assert len(normalized) == 2
-        assert isinstance(normalized[0], StartTimerCommand)
-        assert isinstance(normalized[1], CompleteWorkflowCommand)
+        assert ActCmd is RtCmd
 
 
 # =============================================================================
