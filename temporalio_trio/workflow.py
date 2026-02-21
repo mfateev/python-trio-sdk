@@ -13,7 +13,16 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Generic, Sequence, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Generic,
+    NoReturn,
+    Sequence,
+    TypeVar,
+)
 
 import temporalio.common
 
@@ -37,10 +46,15 @@ __all__ = [
     "wait_condition",
     "start_child_workflow",
     "execute_child_workflow",
+    "continue_as_new",
+    "get_external_workflow_handle",
+    "get_external_workflow_handle_for",
     "Info",
     "ChildWorkflowHandle",
+    "ExternalWorkflowHandle",
     "ChildWorkflowCancellationType",
     "ParentClosePolicy",
+    "ContinueAsNewError",
     "_Runtime",
     "_Definition",
     "_SignalDefinition",
@@ -102,6 +116,31 @@ class _NotInWorkflowContextError(RuntimeError):
     """Raised when workflow API is called outside workflow context."""
 
     pass
+
+
+class ContinueAsNewError(BaseException):
+    """Error raised by continue_as_new() to stop workflow and continue as new.
+
+    This exception is raised by :py:func:`continue_as_new` to signal that the
+    workflow should stop and continue as a new execution. It is a BaseException
+    (not Exception) so it won't be caught by normal exception handlers.
+
+    This class should not be instantiated directly - use :py:func:`continue_as_new`
+    instead.
+    """
+
+    def __init__(self, *args: object) -> None:
+        """Initialize ContinueAsNewError.
+
+        Raises:
+            RuntimeError: If instantiated directly (not via a subclass).
+        """
+        if type(self) is ContinueAsNewError:
+            raise RuntimeError(
+                "ContinueAsNewError cannot be instantiated directly. "
+                "Use workflow.continue_as_new() instead."
+            )
+        super().__init__(*args)
 
 
 class _Runtime(ABC):
@@ -258,6 +297,15 @@ class _Runtime(ABC):
         ...
 
     @abstractmethod
+    async def workflow_wait_child_workflow(self, seq: int) -> None:
+        """Wait for a child workflow to complete.
+
+        Args:
+            seq: The child workflow sequence number.
+        """
+        ...
+
+    @abstractmethod
     async def workflow_wait_condition(
         self,
         fn: Callable[[], bool],
@@ -274,6 +322,74 @@ class _Runtime(ABC):
 
         Raises:
             TimeoutError: If timeout expires before condition becomes true.
+        """
+        ...
+
+    @abstractmethod
+    def workflow_continue_as_new(
+        self,
+        *args: Any,
+        workflow: str | type | None,
+        task_queue: str | None,
+        run_timeout: timedelta | None,
+        task_timeout: timedelta | None,
+        retry_policy: temporalio.common.RetryPolicy | None,
+    ) -> NoReturn:
+        """Continue the workflow as a new execution.
+
+        This method never returns - it raises ContinueAsNewError to stop the
+        workflow and start a new execution.
+
+        Args:
+            *args: Arguments to pass to the new workflow execution.
+            workflow: Workflow class or type name. None means same workflow type.
+            task_queue: Task queue for the new execution. None means same queue.
+            run_timeout: Timeout for a single run of the new workflow.
+            task_timeout: Timeout for a single workflow task.
+            retry_policy: Retry policy for the new workflow.
+
+        Raises:
+            ContinueAsNewError: Always raised to stop the workflow.
+        """
+        ...
+
+    @abstractmethod
+    def workflow_get_external_workflow_handle(
+        self,
+        workflow_id: str,
+        *,
+        run_id: str | None,
+    ) -> "ExternalWorkflowHandle[Any]":
+        """Get a handle to an external workflow.
+
+        Args:
+            workflow_id: ID of the external workflow.
+            run_id: Optional run ID to target a specific run.
+
+        Returns:
+            Handle to the external workflow.
+        """
+        ...
+
+    @abstractmethod
+    async def workflow_signal_external_workflow(
+        self,
+        workflow_id: str,
+        signal_name: str,
+        args: Sequence[Any],
+        *,
+        run_id: str | None,
+    ) -> None:
+        """Signal an external workflow.
+
+        Args:
+            workflow_id: ID of the external workflow to signal.
+            signal_name: Name of the signal to send.
+            args: Arguments to pass with the signal.
+            run_id: Optional run ID to target a specific run.
+
+        Raises:
+            RuntimeError: If the signal fails (e.g., workflow not found).
         """
         ...
 
@@ -1049,8 +1165,16 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
         Raises:
             RuntimeError: If the child workflow failed or was cancelled.
         """
-        # This will be called after the workflow has completed
-        # The actual waiting is handled by the workflow instance
+        # If not yet completed, wait for completion via the runtime
+        if not self._completed:
+            try:
+                result = await _Runtime.current().workflow_wait_child_workflow(self._seq)
+                self._set_result(result)
+            except BaseException as e:
+                self._set_failure(e)
+                raise
+
+        # Now return the result or raise the failure
         if self._failure:
             raise self._failure
         return self._result  # type: ignore[return-value]
@@ -1068,9 +1192,28 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
             signal: Signal name or decorated method reference.
             arg: Single argument to the signal.
             args: Multiple arguments (cannot be set if arg is set).
+
+        Raises:
+            RuntimeError: If the signal fails (e.g., workflow not found).
         """
-        # TODO: Implement signal external workflow
-        raise NotImplementedError("Child workflow signaling not yet implemented")
+        # Get signal name from string or callable
+        if callable(signal):
+            signal_defn = _SignalDefinition.from_fn(signal)
+            if signal_defn and signal_defn.name:
+                signal_name = signal_defn.name
+            else:
+                signal_name = signal.__name__
+        else:
+            signal_name = signal
+
+        # Use the same signaling mechanism as external workflows
+        # A child workflow is just an external workflow that we started
+        await _Runtime.current().workflow_signal_external_workflow(
+            self._id,
+            signal_name,
+            temporalio.common._arg_or_args(arg, args),
+            run_id=self._first_execution_run_id,
+        )
 
     def __await__(self):
         """Support `await handle` syntax.
@@ -1101,6 +1244,185 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
         """
         self._failure = failure
         self._completed = True
+
+
+# =============================================================================
+# External Workflow Handle
+# =============================================================================
+
+
+class ExternalWorkflowHandle(Generic[SelfType]):
+    """Handle to an external workflow for signaling or cancellation.
+
+    Mirrors temporalio.workflow.ExternalWorkflowHandle from the SDK.
+
+    This handle can be used to send signals to an external workflow (a workflow
+    running separately that is not a child of this workflow).
+
+    Example:
+        # Get a handle to an external workflow
+        handle = workflow.get_external_workflow_handle("other-workflow-id")
+
+        # Send a signal
+        await handle.signal("my_signal", "arg1", "arg2")
+
+    Note:
+        External workflow handles do NOT support waiting for results - that's
+        what child workflows are for. External handles are for signaling
+        workflows that are not hierarchically related.
+    """
+
+    def __init__(
+        self,
+        runtime: _Runtime,
+        workflow_id: str,
+        run_id: str | None = None,
+    ) -> None:
+        """Initialize external workflow handle.
+
+        Args:
+            runtime: The workflow runtime.
+            workflow_id: ID of the external workflow.
+            run_id: Optional run ID to target a specific run.
+        """
+        self._runtime = runtime
+        self._workflow_id = workflow_id
+        self._run_id = run_id
+
+    @property
+    def id(self) -> str:
+        """Get the workflow ID."""
+        return self._workflow_id
+
+    @property
+    def run_id(self) -> str | None:
+        """Get the run ID if specified."""
+        return self._run_id
+
+    async def signal(
+        self,
+        signal: str | Callable,
+        arg: Any = temporalio.common._arg_unset,
+        *,
+        args: Sequence[Any] = [],
+    ) -> None:
+        """Send a signal to the external workflow.
+
+        Args:
+            signal: Signal name or decorated method reference.
+            arg: Single argument to the signal.
+            args: Multiple arguments (cannot be set if arg is set).
+
+        Raises:
+            RuntimeError: If the signal fails (e.g., workflow not found).
+        """
+        # Get signal name from string or callable
+        if callable(signal):
+            signal_defn = _SignalDefinition.from_fn(signal)
+            if signal_defn and signal_defn.name:
+                signal_name = signal_defn.name
+            else:
+                signal_name = signal.__name__
+        else:
+            signal_name = signal
+
+        await self._runtime.workflow_signal_external_workflow(
+            self._workflow_id,
+            signal_name,
+            temporalio.common._arg_or_args(arg, args),
+            run_id=self._run_id,
+        )
+
+
+# =============================================================================
+# External Workflow Public API
+# =============================================================================
+
+
+def get_external_workflow_handle(
+    workflow_id: str,
+    *,
+    run_id: str | None = None,
+) -> ExternalWorkflowHandle[Any]:
+    """Get a handle to an external workflow by its ID.
+
+    Mirrors temporalio.workflow.get_external_workflow_handle from the SDK.
+
+    This returns a handle that can be used to signal an external workflow (a
+    workflow running separately that is not a child of this workflow).
+
+    Example:
+        # Get a handle and send a signal
+        handle = workflow.get_external_workflow_handle("other-workflow-id")
+        await handle.signal("my_signal", "data")
+
+        # Signal a specific run
+        handle = workflow.get_external_workflow_handle(
+            "other-workflow-id",
+            run_id="specific-run-id"
+        )
+        await handle.signal("my_signal")
+
+    Args:
+        workflow_id: ID of the external workflow.
+        run_id: Optional run ID to target a specific run.
+
+    Returns:
+        Handle to the external workflow.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    return _Runtime.current().workflow_get_external_workflow_handle(
+        workflow_id, run_id=run_id
+    )
+
+
+def get_external_workflow_handle_for(
+    workflow: Callable[..., Awaitable[Any]],
+    workflow_id: str,
+    *,
+    run_id: str | None = None,
+) -> ExternalWorkflowHandle[Any]:
+    """Get a typed handle to an external workflow.
+
+    Mirrors temporalio.workflow.get_external_workflow_handle_for from the SDK.
+
+    This is the same as :py:func:`get_external_workflow_handle` but allows
+    passing a workflow type for better IDE support. Note that the workflow
+    type is not validated - it's only for typing purposes.
+
+    Example:
+        @workflow.defn
+        class OtherWorkflow:
+            @workflow.run
+            async def run(self) -> str:
+                return "result"
+
+            @workflow.signal
+            def my_signal(self, data: str) -> None:
+                pass
+
+        # Get typed handle
+        handle = workflow.get_external_workflow_handle_for(
+            OtherWorkflow.run,
+            "other-workflow-id",
+        )
+        # IDE knows handle.signal expects OtherWorkflow signals
+        await handle.signal(OtherWorkflow.my_signal, "data")
+
+    Args:
+        workflow: The workflow run method (for typing only, not validated).
+        workflow_id: ID of the external workflow.
+        run_id: Optional run ID to target a specific run.
+
+    Returns:
+        Handle to the external workflow.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    return get_external_workflow_handle(workflow_id, run_id=run_id)
 
 
 # =============================================================================
@@ -1250,3 +1572,61 @@ async def execute_child_workflow(
         retry_policy=retry_policy,
     )
     return await handle.result()
+
+
+def continue_as_new(
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    workflow: str | type | None = None,
+    task_queue: str | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+) -> NoReturn:
+    """Stop the workflow immediately and continue as a new execution.
+
+    Mirrors temporalio.workflow.continue_as_new from the SDK.
+
+    This function never returns. It raises :py:class:`ContinueAsNewError` to
+    signal that the workflow should stop and start a new execution with the
+    same workflow ID but a new run ID.
+
+    This is useful for long-running workflows to avoid unbounded history growth.
+    When a workflow continues as new, it starts fresh with a new event history.
+
+    Example:
+        @workflow.defn
+        class LongRunningWorkflow:
+            @workflow.run
+            async def run(self, iteration: int) -> str:
+                if iteration >= 100:
+                    return "done"
+                # Process iteration...
+                await workflow.sleep(60)
+                # Continue as new to reset history
+                workflow.continue_as_new(iteration + 1)
+
+    Args:
+        arg: Single argument to the new workflow execution.
+        args: Multiple arguments. Cannot be set if arg is set.
+        workflow: Workflow class or type name for the new execution. If None,
+            uses the same workflow type as the current workflow.
+        task_queue: Task queue for the new execution. If None, uses the same
+            task queue as the current workflow.
+        run_timeout: Timeout for a single run of the new workflow.
+        task_timeout: Timeout for a single workflow task.
+        retry_policy: Retry policy for the new workflow.
+
+    Raises:
+        ContinueAsNewError: Always raised to stop the workflow.
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    _Runtime.current().workflow_continue_as_new(
+        *temporalio.common._arg_or_args(arg, args),
+        workflow=workflow,
+        task_queue=task_queue,
+        run_timeout=run_timeout,
+        task_timeout=task_timeout,
+        retry_policy=retry_policy,
+    )

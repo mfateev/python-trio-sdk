@@ -2242,6 +2242,7 @@ name = "temporalio-trio-bridge"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "parking_lot",
  "prost",
  "pyo3",

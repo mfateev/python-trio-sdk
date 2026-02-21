@@ -134,10 +134,13 @@ class TrioActivityWorker:
 
     async def _poll_loop(self) -> None:
         """Poll for activity tasks until shutdown."""
+        logger.debug("Starting activity poll loop")
         try:
             while not self._shutdown_event.is_set():
                 try:
+                    logger.debug("Polling for activity task...")
                     task_bytes = await self._bridge.poll_activity_task()
+                    logger.debug(f"Received activity task: {len(task_bytes)} bytes")
                     task = temporalio.bridge.proto.activity_task.ActivityTask()
                     task.ParseFromString(task_bytes)
                 except Exception as e:
@@ -231,7 +234,12 @@ class TrioActivityWorker:
             except trio.WouldBlock:
                 logger.warning("Heartbeat queue full, dropping heartbeat")
             except trio.ClosedResourceError:
-                pass  # Activity finished
+                # Activity has finished or been cancelled - this is expected
+                # Heartbeats after activity completion are silently dropped
+                logger.debug(
+                    "Heartbeat channel closed (activity finished or cancelled). "
+                    "This is expected during activity completion or cancellation."
+                )
 
         # Create activity context
         context = activity._Context(
@@ -276,7 +284,14 @@ class TrioActivityWorker:
                 except Exception as e:
                     # Activity failed with exception
                     logger.exception(f"Activity {activity_type} failed")
-                    await self._send_failure(task_token, str(e), type(e).__name__)
+                    # For ApplicationError, use the error's type attribute
+                    # For other exceptions, use the class name
+                    from temporalio.exceptions import ApplicationError
+                    if isinstance(e, ApplicationError) and e.type:
+                        error_type = e.type
+                    else:
+                        error_type = type(e).__name__
+                    await self._send_failure(task_token, str(e), error_type)
 
                 # Cancel heartbeat processor
                 nursery.cancel_scope.cancel()
@@ -352,8 +367,13 @@ class TrioActivityWorker:
             if pending_details is not None:
                 try:
                     await self._send_heartbeat(task_token, pending_details)
-                except Exception:
-                    pass  # Best effort
+                except Exception as e:
+                    # Best effort heartbeat during cancellation - failures are expected
+                    # The activity is being cancelled, so heartbeat delivery is not critical
+                    logger.debug(
+                        f"Failed to send final heartbeat during cancellation: {e}. "
+                        f"This is expected during activity cancellation."
+                    )
             raise
 
     async def _send_heartbeat(

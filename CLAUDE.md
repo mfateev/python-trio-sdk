@@ -8,6 +8,10 @@ This is an experimental implementation of the Temporal Python SDK using [Trio](h
 
 **Status**: Experimental, not ready for production use.
 
+## Sprite Checkpoints (DO NOT USE)
+
+Do not create Sprite environment checkpoints. All code is saved when pushed to git. Git commits and pushes are the source of truth for code persistence.
+
 ## Git Workflow (IMPORTANT)
 
 **The `main` branch is protected.** All changes must go through pull requests.
@@ -26,24 +30,48 @@ git checkout task/trio-asyncio
 # 1. Create or switch to feature branch
 git checkout -b feature/description
 
-# 2. Make changes, test, lint
-uv run pytest -v -m "not temporal_server"
+# 2. Make changes, lint, format
 uv run poe lint
 uv run poe format
 
-# 3. Commit changes
+# 3. Run ALL tests including E2E (REQUIRED before push)
+temporal server start-dev &  # Start Temporal server if not running
+uv run pytest -v             # Run ALL tests (unit + E2E)
+
+# 4. Commit changes (only after all tests pass)
 git add <files>
 git commit -m "feat(component): description"
 
-# 4. Push branch
+# 5. Push branch
 git push -u origin feature/description
 
-# 5. Create PR to merge into main
+# 6. Create PR to merge into main
 gh pr create --base main --title "Description" --body "Details"
 ```
 
+### Pre-Push Requirements (CRITICAL)
+
+**NEVER push without running ALL tests first.** This includes E2E tests.
+
+```bash
+# Start Temporal server (required for E2E tests)
+temporal server start-dev &
+
+# Run ALL tests - this is MANDATORY before every push
+uv run pytest -v
+
+# Verify all tests pass before pushing
+# Zero failures allowed - fix issues before pushing
+```
+
+**Why E2E tests are mandatory:**
+- Unit tests alone miss integration issues
+- E2E tests validate real server behavior
+- Bugs caught by E2E tests are harder to debug later
+- The SDK must work end-to-end, not just in isolation
+
 ### Pull Request Requirements
-- All tests must pass
+- **All tests must pass** (unit AND E2E)
 - Code must be linted and formatted
 - PR description should explain the changes
 - Use `gh pr create` to create PRs from the command line
@@ -371,6 +399,95 @@ uv run pytest tests/ --log-cli-level=DEBUG
 # Stop on first failure
 uv run pytest -x tests/
 ```
+
+## Implementing New SDK-Core Features (CRITICAL)
+
+**Two rules for implementing new features:**
+
+1. **Follow sdk-python patterns** - Always check how the official SDK implements a feature first
+2. **Validate bridge behavior** - Write a bridge test to understand SDK-Core's protocol
+
+### Rule 1: Follow sdk-python Implementation
+
+**ALWAYS check sdk-python first** before implementing any feature. The trio SDK should mirror the official SDK as closely as possible - the only difference should be Trio vs asyncio.
+
+**Reference locations in sdk-python:**
+- `temporalio/workflow.py` - Public workflow API
+- `temporalio/worker/_workflow_instance.py` - Workflow execution, replay handling
+- `temporalio/worker/_replayer.py` - Replay logic
+- `temporalio/worker/_worker.py` - Worker implementation
+
+**Process:**
+1. Find the equivalent feature in sdk-python
+2. Read and understand how it works
+3. Implement the same logic with Trio primitives
+4. Match the behavior exactly (edge cases, error handling, etc.)
+
+**Why this matters:**
+- sdk-python is battle-tested and handles edge cases we might miss
+- Consistent behavior across SDKs is important for users
+- Less chance of introducing bugs by "inventing" solutions
+
+### Rule 2: Validate Bridge Behavior First
+
+**Before implementing any new SDK-Core interaction, ALWAYS validate the bridge behavior first.**
+
+### Bridge-First Development Workflow
+
+When adding support for new Temporal features (queries, signals, activities, timers, etc.):
+
+1. **Write a bridge pattern test FIRST** in `tests/bridge_patterns/`
+   - These tests interact directly with SDK-Core via the bridge
+   - They document the exact activation/completion protocol
+   - They reveal what jobs SDK-Core sends and expects
+
+2. **Run the bridge test** to observe SDK-Core behavior
+   - What jobs are in the activation?
+   - What is the expected completion structure?
+   - What happens on error/edge cases?
+
+3. **Document findings** in the test and gap analysis
+   - Protocol details that aren't obvious from reading code
+   - Edge cases discovered during testing
+
+4. **Then implement** the feature in the SDK
+   - Now you know exactly what bridge interaction to implement
+   - You have a working reference test
+
+### Why Bridge-First?
+
+- **SDK-Core is the source of truth** for the activation/completion protocol
+- **Assumptions are dangerous** - the protocol may not work as expected
+- **Bridge tests are fast** - no SDK overhead, direct verification
+- **Documentation as tests** - bridge tests document the protocol
+
+### Example: Query on Completed Workflow
+
+**Wrong approach:**
+```
+1. Assume SDK-Core sends initialize_workflow + query jobs
+2. Implement feature in SDK
+3. Write E2E test
+4. E2E test fails mysteriously
+5. Debug for hours wondering what SDK-Core actually sends
+```
+
+**Right approach:**
+```
+1. Write bridge test: test_bridge_query_on_completed_workflow
+2. Run test, observe: What does SDK-Core actually send?
+3. Document the protocol in the test
+4. Implement feature matching observed behavior
+5. E2E test passes
+```
+
+### Bridge Pattern Test Location
+
+All bridge pattern tests go in `tests/bridge_patterns/`:
+- `test_bridge_activities.py` - Activity patterns
+- `test_bridge_signals_queries.py` - Signal/query patterns
+- `test_bridge_eviction_replay.py` - Eviction/replay patterns
+- etc.
 
 ## Bridge Development
 

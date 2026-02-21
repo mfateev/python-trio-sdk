@@ -550,8 +550,8 @@ class TestWorkflowSleep:
         assert len(runtime.commands) == 1
         cmd = runtime.commands[0]
         assert isinstance(cmd, StartTimerCommand)
-        assert cmd.seq == 1
-        assert cmd.start_to_fire_timeout_ms == 5000
+        assert cmd.timer_id == 1
+        assert cmd.duration_ms == 5000
 
     @pytest.mark.trio
     async def test_workflow_sleep_suspends_on_event(self) -> None:
@@ -741,9 +741,9 @@ class TestMultipleTimers:
         # Should have three commands
         assert len(runtime.commands) == 3
         assert all(isinstance(cmd, StartTimerCommand) for cmd in runtime.commands)
-        assert runtime.commands[0].seq == 1
-        assert runtime.commands[1].seq == 2
-        assert runtime.commands[2].seq == 3
+        assert runtime.commands[0].timer_id == 1
+        assert runtime.commands[1].timer_id == 2
+        assert runtime.commands[2].timer_id == 3
 
         # Times should be recorded
         assert times == [1_000_000_000, 3_000_000_000, 6_000_000_000]
@@ -849,17 +849,17 @@ class TestStartTimerCommand:
 
     def test_start_timer_command_creation(self) -> None:
         """Test StartTimerCommand can be created with required fields."""
-        cmd = StartTimerCommand(seq=1, start_to_fire_timeout_ms=5000)
+        cmd = StartTimerCommand(timer_id=1, duration_ms=5000)
 
-        assert cmd.seq == 1
-        assert cmd.start_to_fire_timeout_ms == 5000
+        assert cmd.timer_id == 1
+        assert cmd.duration_ms == 5000
 
     def test_start_timer_command_equality(self) -> None:
         """Test StartTimerCommand equality comparison."""
-        cmd1 = StartTimerCommand(seq=1, start_to_fire_timeout_ms=5000)
-        cmd2 = StartTimerCommand(seq=1, start_to_fire_timeout_ms=5000)
-        cmd3 = StartTimerCommand(seq=2, start_to_fire_timeout_ms=5000)
-        cmd4 = StartTimerCommand(seq=1, start_to_fire_timeout_ms=10000)
+        cmd1 = StartTimerCommand(timer_id=1, duration_ms=5000)
+        cmd2 = StartTimerCommand(timer_id=1, duration_ms=5000)
+        cmd3 = StartTimerCommand(timer_id=2, duration_ms=5000)
+        cmd4 = StartTimerCommand(timer_id=1, duration_ms=10000)
 
         assert cmd1 == cmd2
         assert cmd1 != cmd3
@@ -868,20 +868,20 @@ class TestStartTimerCommand:
     def test_start_timer_command_duration_conversion(self) -> None:
         """Test StartTimerCommand handles various duration values."""
         # 1 second
-        cmd1 = StartTimerCommand(seq=1, start_to_fire_timeout_ms=1000)
-        assert cmd1.start_to_fire_timeout_ms == 1000
+        cmd1 = StartTimerCommand(timer_id=1, duration_ms=1000)
+        assert cmd1.duration_ms == 1000
 
         # Sub-second (500ms)
-        cmd2 = StartTimerCommand(seq=2, start_to_fire_timeout_ms=500)
-        assert cmd2.start_to_fire_timeout_ms == 500
+        cmd2 = StartTimerCommand(timer_id=2, duration_ms=500)
+        assert cmd2.duration_ms == 500
 
         # Multiple seconds (30s)
-        cmd3 = StartTimerCommand(seq=3, start_to_fire_timeout_ms=30000)
-        assert cmd3.start_to_fire_timeout_ms == 30000
+        cmd3 = StartTimerCommand(timer_id=3, duration_ms=30000)
+        assert cmd3.duration_ms == 30000
 
         # Very long duration (1 hour)
-        cmd4 = StartTimerCommand(seq=4, start_to_fire_timeout_ms=3600000)
-        assert cmd4.start_to_fire_timeout_ms == 3600000
+        cmd4 = StartTimerCommand(timer_id=4, duration_ms=3600000)
+        assert cmd4.duration_ms == 3600000
 
 
 # Phase 4 Tests: Activity Methods
@@ -958,7 +958,7 @@ class TestExecuteActivity:
         assert isinstance(cmd, ScheduleActivityCommand)
         assert cmd.seq == 1
         assert cmd.activity_type == "my_activity"
-        assert cmd.arguments == ("arg1", "arg2")
+        assert cmd.args == ("arg1", "arg2")
 
     @pytest.mark.trio
     async def test_execute_activity_suspends_on_event(self) -> None:
@@ -1028,13 +1028,13 @@ class TestExecuteActivity:
             nursery.start_soon(activity_task)
             nursery.start_soon(complete_activity)
 
-        # Verify command has timeout options
+        # Verify command has timeout options (stored as timedelta, not milliseconds)
         cmd = runtime.commands[0]
         assert isinstance(cmd, ScheduleActivityCommand)
-        assert cmd.start_to_close_timeout_ms == 30000
-        assert cmd.schedule_to_close_timeout_ms == 300000
-        assert cmd.schedule_to_start_timeout_ms == 10000
-        assert cmd.heartbeat_timeout_ms == 5000
+        assert cmd.start_to_close_timeout == timedelta(seconds=30)
+        assert cmd.schedule_to_close_timeout == timedelta(minutes=5)
+        assert cmd.schedule_to_start_timeout == timedelta(seconds=10)
+        assert cmd.heartbeat_timeout == timedelta(seconds=5)
 
     @pytest.mark.trio
     async def test_execute_activity_with_activity_id(self) -> None:
@@ -1373,56 +1373,72 @@ class TestConcurrentActivities:
 
 
 class TestScheduleActivityCommand:
-    """Tests for ScheduleActivityCommand dataclass."""
+    """Tests for ScheduleActivityCommand dataclass.
+
+    Note: ScheduleActivityCommand is imported from _activation, which uses:
+    - `args` (tuple) instead of `arguments`
+    - `activity_id` (str, required) instead of optional
+    - timedelta for timeouts instead of milliseconds
+    - includes `retry_policy` field
+    """
 
     def test_schedule_activity_command_creation(self) -> None:
         """Test ScheduleActivityCommand can be created with required fields."""
         cmd = ScheduleActivityCommand(
             seq=1,
+            activity_id="act-1",
             activity_type="my_activity",
-            arguments=("arg1", "arg2"),
+            args=("arg1", "arg2"),
         )
 
         assert cmd.seq == 1
+        assert cmd.activity_id == "act-1"
         assert cmd.activity_type == "my_activity"
-        assert cmd.arguments == ("arg1", "arg2")
-        assert cmd.activity_id is None
+        assert cmd.args == ("arg1", "arg2")
         assert cmd.task_queue is None
-        assert cmd.schedule_to_close_timeout_ms is None
-        assert cmd.schedule_to_start_timeout_ms is None
-        assert cmd.start_to_close_timeout_ms is None
-        assert cmd.heartbeat_timeout_ms is None
+        assert cmd.schedule_to_close_timeout is None
+        assert cmd.schedule_to_start_timeout is None
+        assert cmd.start_to_close_timeout is None
+        assert cmd.heartbeat_timeout is None
+        assert cmd.retry_policy is None
 
     def test_schedule_activity_command_with_all_options(self) -> None:
         """Test ScheduleActivityCommand with all optional fields."""
+        from datetime import timedelta
+
+        from temporalio.common import RetryPolicy
+
         cmd = ScheduleActivityCommand(
             seq=42,
-            activity_type="complex_activity",
-            arguments=("a", "b", "c"),
             activity_id="custom-id",
+            activity_type="complex_activity",
+            args=("a", "b", "c"),
             task_queue="custom-queue",
-            schedule_to_close_timeout_ms=300000,
-            schedule_to_start_timeout_ms=60000,
-            start_to_close_timeout_ms=30000,
-            heartbeat_timeout_ms=5000,
+            schedule_to_close_timeout=timedelta(minutes=5),
+            schedule_to_start_timeout=timedelta(seconds=60),
+            start_to_close_timeout=timedelta(seconds=30),
+            heartbeat_timeout=timedelta(seconds=5),
+            retry_policy=RetryPolicy(maximum_attempts=3),
         )
 
         assert cmd.seq == 42
-        assert cmd.activity_type == "complex_activity"
-        assert cmd.arguments == ("a", "b", "c")
         assert cmd.activity_id == "custom-id"
+        assert cmd.activity_type == "complex_activity"
+        assert cmd.args == ("a", "b", "c")
         assert cmd.task_queue == "custom-queue"
-        assert cmd.schedule_to_close_timeout_ms == 300000
-        assert cmd.schedule_to_start_timeout_ms == 60000
-        assert cmd.start_to_close_timeout_ms == 30000
-        assert cmd.heartbeat_timeout_ms == 5000
+        assert cmd.schedule_to_close_timeout == timedelta(minutes=5)
+        assert cmd.schedule_to_start_timeout == timedelta(seconds=60)
+        assert cmd.start_to_close_timeout == timedelta(seconds=30)
+        assert cmd.heartbeat_timeout == timedelta(seconds=5)
+        assert cmd.retry_policy is not None
+        assert cmd.retry_policy.maximum_attempts == 3
 
     def test_schedule_activity_command_equality(self) -> None:
         """Test ScheduleActivityCommand equality comparison."""
-        cmd1 = ScheduleActivityCommand(seq=1, activity_type="test", arguments=("arg",))
-        cmd2 = ScheduleActivityCommand(seq=1, activity_type="test", arguments=("arg",))
-        cmd3 = ScheduleActivityCommand(seq=2, activity_type="test", arguments=("arg",))
-        cmd4 = ScheduleActivityCommand(seq=1, activity_type="other", arguments=("arg",))
+        cmd1 = ScheduleActivityCommand(seq=1, activity_id="1", activity_type="test", args=("arg",))
+        cmd2 = ScheduleActivityCommand(seq=1, activity_id="1", activity_type="test", args=("arg",))
+        cmd3 = ScheduleActivityCommand(seq=2, activity_id="2", activity_type="test", args=("arg",))
+        cmd4 = ScheduleActivityCommand(seq=1, activity_id="1", activity_type="other", args=("arg",))
 
         assert cmd1 == cmd2
         assert cmd1 != cmd3
@@ -1739,7 +1755,7 @@ class TestExecuteChildWorkflow:
         assert cmd.seq == 1
         assert cmd.workflow_type == "ChildWorkflow"
         assert cmd.workflow_id == "child-wf-1"
-        assert cmd.arguments == ("arg1", "arg2")
+        assert cmd.args == ("arg1", "arg2")
 
     @pytest.mark.trio
     async def test_execute_child_workflow_suspends_on_event(self) -> None:
@@ -1816,9 +1832,9 @@ class TestExecuteChildWorkflow:
         # Verify command has timeout options
         cmd = runtime.commands[0]
         assert isinstance(cmd, StartChildWorkflowCommand)
-        assert cmd.execution_timeout_ms == 600000
-        assert cmd.run_timeout_ms == 300000
-        assert cmd.task_timeout_ms == 30000
+        assert cmd.execution_timeout == timedelta(minutes=10)
+        assert cmd.run_timeout == timedelta(minutes=5)
+        assert cmd.task_timeout == timedelta(seconds=30)
 
     @pytest.mark.trio
     async def test_execute_child_workflow_with_task_queue(self) -> None:
@@ -2152,53 +2168,55 @@ class TestStartChildWorkflowCommand:
             seq=1,
             workflow_type="ChildWorkflow",
             workflow_id="child-wf-1",
-            arguments=("arg1", "arg2"),
+            args=("arg1", "arg2"),
         )
 
         assert cmd.seq == 1
         assert cmd.workflow_type == "ChildWorkflow"
         assert cmd.workflow_id == "child-wf-1"
-        assert cmd.arguments == ("arg1", "arg2")
+        assert cmd.args == ("arg1", "arg2")
         assert cmd.task_queue is None
-        assert cmd.execution_timeout_ms is None
-        assert cmd.run_timeout_ms is None
-        assert cmd.task_timeout_ms is None
+        assert cmd.execution_timeout is None
+        assert cmd.run_timeout is None
+        assert cmd.task_timeout is None
 
     def test_start_child_workflow_command_with_all_options(self) -> None:
         """Test StartChildWorkflowCommand with all optional fields."""
+        from datetime import timedelta
+
         cmd = StartChildWorkflowCommand(
             seq=42,
             workflow_type="ComplexChild",
             workflow_id="child-42",
-            arguments=("a", "b", "c"),
+            args=("a", "b", "c"),
             task_queue="child-queue",
-            execution_timeout_ms=600000,
-            run_timeout_ms=300000,
-            task_timeout_ms=30000,
+            execution_timeout=timedelta(minutes=10),
+            run_timeout=timedelta(minutes=5),
+            task_timeout=timedelta(seconds=30),
         )
 
         assert cmd.seq == 42
         assert cmd.workflow_type == "ComplexChild"
         assert cmd.workflow_id == "child-42"
-        assert cmd.arguments == ("a", "b", "c")
+        assert cmd.args == ("a", "b", "c")
         assert cmd.task_queue == "child-queue"
-        assert cmd.execution_timeout_ms == 600000
-        assert cmd.run_timeout_ms == 300000
-        assert cmd.task_timeout_ms == 30000
+        assert cmd.execution_timeout == timedelta(minutes=10)
+        assert cmd.run_timeout == timedelta(minutes=5)
+        assert cmd.task_timeout == timedelta(seconds=30)
 
     def test_start_child_workflow_command_equality(self) -> None:
         """Test StartChildWorkflowCommand equality comparison."""
         cmd1 = StartChildWorkflowCommand(
-            seq=1, workflow_type="test", workflow_id="wf-1", arguments=("arg",)
+            seq=1, workflow_type="test", workflow_id="wf-1", args=("arg",)
         )
         cmd2 = StartChildWorkflowCommand(
-            seq=1, workflow_type="test", workflow_id="wf-1", arguments=("arg",)
+            seq=1, workflow_type="test", workflow_id="wf-1", args=("arg",)
         )
         cmd3 = StartChildWorkflowCommand(
-            seq=2, workflow_type="test", workflow_id="wf-1", arguments=("arg",)
+            seq=2, workflow_type="test", workflow_id="wf-1", args=("arg",)
         )
         cmd4 = StartChildWorkflowCommand(
-            seq=1, workflow_type="other", workflow_id="wf-1", arguments=("arg",)
+            seq=1, workflow_type="other", workflow_id="wf-1", args=("arg",)
         )
 
         assert cmd1 == cmd2

@@ -2,7 +2,7 @@
 
 import random
 from datetime import timedelta
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn, Sequence
 
 import pytest
 import temporalio.common
@@ -223,6 +223,12 @@ class TestRuntimeClass:
             ) -> ChildWorkflowHandle[Any, Any]:
                 raise NotImplementedError()
 
+            async def workflow_wait_child_workflow(
+                self,
+                handle: ChildWorkflowHandle[Any, Any],
+            ) -> Any:
+                raise NotImplementedError()
+
             async def workflow_wait_condition(
                 self,
                 fn: Callable[[], bool],
@@ -231,6 +237,35 @@ class TestRuntimeClass:
                 timeout_summary: str | None = None,
             ) -> None:
                 pass
+
+            def workflow_continue_as_new(
+                self,
+                *args: Any,
+                workflow: str | type | None,
+                task_queue: str | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> NoReturn:
+                raise NotImplementedError()
+
+            def workflow_get_external_workflow_handle(
+                self,
+                workflow_id: str,
+                *,
+                run_id: str | None,
+            ) -> workflow.ExternalWorkflowHandle[Any]:
+                raise NotImplementedError()
+
+            async def workflow_signal_external_workflow(
+                self,
+                workflow_id: str,
+                signal_name: str,
+                args: Sequence[Any],
+                *,
+                run_id: str | None,
+            ) -> None:
+                raise NotImplementedError()
 
             def workflow_random(self) -> random.Random:
                 return random.Random(12345)
@@ -307,6 +342,12 @@ class TestRuntimeClass:
             ) -> ChildWorkflowHandle[Any, Any]:
                 raise NotImplementedError()
 
+            async def workflow_wait_child_workflow(
+                self,
+                handle: ChildWorkflowHandle[Any, Any],
+            ) -> Any:
+                raise NotImplementedError()
+
             async def workflow_wait_condition(
                 self,
                 fn: Callable[[], bool],
@@ -315,6 +356,35 @@ class TestRuntimeClass:
                 timeout_summary: str | None = None,
             ) -> None:
                 pass
+
+            def workflow_continue_as_new(
+                self,
+                *args: Any,
+                workflow: str | type | None,
+                task_queue: str | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> NoReturn:
+                raise NotImplementedError()
+
+            def workflow_get_external_workflow_handle(
+                self,
+                workflow_id: str,
+                *,
+                run_id: str | None,
+            ) -> workflow.ExternalWorkflowHandle[Any]:
+                raise NotImplementedError()
+
+            async def workflow_signal_external_workflow(
+                self,
+                workflow_id: str,
+                signal_name: str,
+                args: Sequence[Any],
+                *,
+                run_id: str | None,
+            ) -> None:
+                raise NotImplementedError()
 
             def workflow_random(self) -> random.Random:
                 return random.Random(12345)
@@ -405,6 +475,12 @@ class TestPublicAPI:
             ) -> ChildWorkflowHandle[Any, Any]:
                 raise NotImplementedError()
 
+            async def workflow_wait_child_workflow(
+                self,
+                handle: ChildWorkflowHandle[Any, Any],
+            ) -> Any:
+                raise NotImplementedError()
+
             async def workflow_wait_condition(
                 self,
                 fn: Callable[[], bool],
@@ -413,6 +489,35 @@ class TestPublicAPI:
                 timeout_summary: str | None = None,
             ) -> None:
                 pass
+
+            def workflow_continue_as_new(
+                self,
+                *args: Any,
+                workflow: str | type | None,
+                task_queue: str | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> NoReturn:
+                raise NotImplementedError()
+
+            def workflow_get_external_workflow_handle(
+                self,
+                workflow_id: str,
+                *,
+                run_id: str | None,
+            ) -> workflow.ExternalWorkflowHandle[Any]:
+                raise NotImplementedError()
+
+            async def workflow_signal_external_workflow(
+                self,
+                workflow_id: str,
+                signal_name: str,
+                args: Sequence[Any],
+                *,
+                run_id: str | None,
+            ) -> None:
+                raise NotImplementedError()
 
             def workflow_random(self) -> random.Random:
                 return random.Random(12345)
@@ -491,6 +596,12 @@ class TestPublicAPI:
             ) -> ChildWorkflowHandle[Any, Any]:
                 raise NotImplementedError()
 
+            async def workflow_wait_child_workflow(
+                self,
+                handle: ChildWorkflowHandle[Any, Any],
+            ) -> Any:
+                raise NotImplementedError()
+
             async def workflow_wait_condition(
                 self,
                 fn: Callable[[], bool],
@@ -499,6 +610,35 @@ class TestPublicAPI:
                 timeout_summary: str | None = None,
             ) -> None:
                 pass
+
+            def workflow_continue_as_new(
+                self,
+                *args: Any,
+                workflow: str | type | None,
+                task_queue: str | None,
+                run_timeout: timedelta | None,
+                task_timeout: timedelta | None,
+                retry_policy: temporalio.common.RetryPolicy | None,
+            ) -> NoReturn:
+                raise NotImplementedError()
+
+            def workflow_get_external_workflow_handle(
+                self,
+                workflow_id: str,
+                *,
+                run_id: str | None,
+            ) -> workflow.ExternalWorkflowHandle[Any]:
+                raise NotImplementedError()
+
+            async def workflow_signal_external_workflow(
+                self,
+                workflow_id: str,
+                signal_name: str,
+                args: Sequence[Any],
+                *,
+                run_id: str | None,
+            ) -> None:
+                raise NotImplementedError()
 
             def workflow_random(self) -> random.Random:
                 return random.Random(12345)

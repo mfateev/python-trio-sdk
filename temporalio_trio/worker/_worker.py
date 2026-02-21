@@ -19,6 +19,7 @@ import temporalio.converter
 import trio
 
 from temporalio_trio._async_bridge import TrioBridgeWrapper
+from temporalio_trio.runtime import TelemetryConfig
 from temporalio_trio.worker._single_thread_worker import SingleThreadWorker
 
 if TYPE_CHECKING:
@@ -83,6 +84,7 @@ class Worker:
         max_concurrent_workflow_tasks: Optional[int] = None,
         max_concurrent_activities: Optional[int] = None,
         max_concurrent_local_activities: Optional[int] = None,
+        telemetry: Optional[TelemetryConfig] = None,
     ) -> None:
         """Create a worker to process Trio-based workflows and activities.
 
@@ -139,6 +141,9 @@ class Worker:
             max_concurrent_local_activities: Maximum number of local activity
                 tasks that will ever be given to this worker concurrently. If not
                 set, defaults to 100.
+            telemetry: Optional telemetry configuration for metrics export.
+                When provided, enables Prometheus or OpenTelemetry metrics
+                for all built-in SDK-Core worker metrics.
 
         Raises:
             ValueError: If no workflows or activities are provided, or if
@@ -178,6 +183,7 @@ class Worker:
         self._max_concurrent_workflow_tasks = max_concurrent_workflow_tasks or 100
         self._max_concurrent_activities = max_concurrent_activities or 100
         self._max_concurrent_local_activities = max_concurrent_local_activities or 100
+        self._telemetry = telemetry
 
         # Internal state
         self._single_thread_worker: Optional[SingleThreadWorker] = None
@@ -272,6 +278,10 @@ class Worker:
                 identity=self._identity,
                 max_cached_workflows=self._max_cached_workflows,
                 max_concurrent_workflow_task_polls=self._max_concurrent_workflow_task_polls,
+                sticky_queue_schedule_to_start_timeout_millis=int(
+                    self._sticky_queue_schedule_to_start_timeout.total_seconds() * 1000
+                ),
+                telemetry=self._telemetry._to_json_dict() if self._telemetry else None,
             )
 
             # Note: Skipping bridge validation - not implemented in Rust bridge yet
@@ -317,6 +327,10 @@ class Worker:
                 if self._single_thread_worker:
                     nursery.start_soon(self._single_thread_worker.run)
 
+                # Start activity worker
+                if self._activity_worker:
+                    nursery.start_soon(self._activity_worker.run)
+
                 await self._shutdown_event.wait()
 
                 # Initiate bridge shutdown to unblock poll_workflow_activation
@@ -353,6 +367,8 @@ class Worker:
         self._shutdown_event.set()
         if self._single_thread_worker:
             self._single_thread_worker.shutdown()
+        if self._activity_worker:
+            self._activity_worker.shutdown()
 
     async def __aenter__(self) -> Worker:
         """Start the worker and return self for use by ``async with``.

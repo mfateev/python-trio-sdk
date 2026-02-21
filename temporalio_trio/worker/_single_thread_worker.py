@@ -28,10 +28,14 @@ from temporalio_trio.worker._activation import (
     ActivityResolvedJob,
     CancelWorkflowJob,
     ChildWorkflowResolvedJob,
+    ChildWorkflowStartedJob,
+    ChildWorkflowStartFailedJob,
     CompleteWorkflowCommand,
+    ContinueAsNewCommand,
     FailWorkflowCommand,
     NotifyHasPatchJob,
     QueryWorkflowJob,
+    SignalExternalResolvedJob,
     SignalWorkflowJob,
     TimerFiredJob,
     WorkflowActivation,
@@ -47,7 +51,7 @@ from temporalio_trio.worker._runtime import (
     set_current_runtime,
 )
 from temporalio_trio.worker._workflow_state import WorkflowState
-from temporalio_trio.workflow import _Definition
+from temporalio_trio.workflow import ContinueAsNewError, _Definition, _Runtime
 
 if TYPE_CHECKING:
     from temporalio_trio._async_bridge import TrioBridgeWrapper
@@ -157,7 +161,11 @@ class SingleThreadWorker:
         while not self._shutdown_event.is_set():
             try:
                 # Poll for the next activation
+                logger.debug("Polling for next activation...")
                 activation_bytes = await self._bridge.poll_workflow_activation()
+                logger.debug(
+                    f"Received activation: {len(activation_bytes) if isinstance(activation_bytes, bytes) else 'parsed'}"
+                )
 
                 # Parse the activation
                 # For unit tests, we use our POC activation types directly
@@ -166,6 +174,7 @@ class SingleThreadWorker:
 
                 # Dispatch to the appropriate workflow
                 await self._dispatch_activation(activation)
+                logger.debug("Dispatch complete, continuing poll loop")
 
             except Exception as e:
                 # Check for shutdown error
@@ -197,8 +206,6 @@ class SingleThreadWorker:
         if isinstance(activation_bytes, WorkflowActivation):
             return activation_bytes
 
-        # For real bridges, we would parse protobuf here
-        # This is a placeholder for the actual implementation
         import temporalio.bridge.proto.workflow_activation.workflow_activation_pb2 as wa
 
         from temporalio_trio.worker._bridge_types import bridge_to_poc_activation
@@ -206,11 +213,20 @@ class SingleThreadWorker:
         bridge_act = wa.WorkflowActivation()
         bridge_act.ParseFromString(activation_bytes)
 
-        # Use default data converter for now
         import temporalio.converter
 
         data_converter = temporalio.converter.DataConverter()
-        return bridge_to_poc_activation(bridge_act, data_converter)
+        poc_act = bridge_to_poc_activation(bridge_act, data_converter)
+
+        # Check if the raw protobuf had a remove_from_cache eviction job
+        # (bridge_to_poc_activation tracks this via remove_from_cache flag,
+        # but double-check the raw protobuf to be safe)
+        for job in bridge_act.jobs:
+            if job.WhichOneof("variant") == "remove_from_cache":
+                poc_act.remove_from_cache = True
+                break
+
+        return poc_act
 
     async def _dispatch_activation(self, activation: WorkflowActivation) -> None:
         """Dispatch an activation to the appropriate workflow.
@@ -224,12 +240,56 @@ class SingleThreadWorker:
         # Extract run_id from activation
         run_id = self._extract_run_id(activation)
 
+        job_types = [type(j).__name__ for j in activation.jobs]
+        logger.debug(f"Dispatching activation for {run_id}: jobs={job_types}, "
+                     f"known={run_id in self._workflow_states}")
+
         # Check for eviction
         if self._is_eviction(activation):
             logger.debug(f"Evicting workflow {run_id}")
             if run_id in self._workflow_states:
                 del self._workflow_states[run_id]
             # Send empty completion
+            await self._send_empty_completion(run_id)
+            logger.debug(f"Eviction complete for {run_id}, returning to poll loop")
+            return
+
+        # Check if this is a workflow start/replay
+        has_workflow_start = any(
+            isinstance(job, WorkflowStartedJob) for job in activation.jobs
+        )
+
+        if has_workflow_start and run_id in self._workflow_states:
+            # SDK-Core sent initialize_workflow for a workflow we still have cached.
+            existing_state = self._workflow_states[run_id]
+            if existing_state.is_complete:
+                # Workflow completed and is still in our cache. Since the state is
+                # immutable after completion, we can safely use it for queries.
+                # We don't need to replay - just send CompleteWorkflow to match history.
+                # The query will come in a follow-up activation.
+                logger.debug(
+                    f"Received replay activation for completed workflow {run_id}, "
+                    "using cached state (immutable after completion)"
+                )
+                # Send CompleteWorkflow to match history
+                commands = [
+                    CompleteWorkflowCommand(result=existing_state.completion_result)
+                ]
+                await self._send_completion(run_id, commands)
+                return
+            else:
+                # Workflow is still running - this shouldn't happen
+                logger.warning(
+                    f"Cache already exists for activation with initialize job "
+                    f"(run_id={run_id}), workflow still running"
+                )
+                # Continue processing - deliver to existing workflow
+
+        # Handle empty activations for non-existent workflows (cleanup after completion)
+        if not has_workflow_start and run_id not in self._workflow_states:
+            logger.debug(
+                f"Empty activation for completed workflow {run_id}, sending empty completion"
+            )
             await self._send_empty_completion(run_id)
             return
 
@@ -247,17 +307,26 @@ class SingleThreadWorker:
         else:
             # Existing workflow - deliver activation
             state = self._workflow_states[run_id]
-            state.deliver_activation(activation)
 
-            # Wait for commands
-            commands = await state.wait_for_commands()
+            # Check if workflow has completed but we're getting a follow-up activation
+            # (typically a query after completion - workflow task is no longer running)
+            if state.is_complete:
+                # Handle queries directly - workflow task is done
+                commands = self._handle_activation_for_completed_workflow(
+                    state, activation
+                )
+            else:
+                # Workflow task is still running - deliver and wait
+                state.deliver_activation(activation)
+                commands = await state.wait_for_commands()
 
         # Send completion
         await self._send_completion(run_id, commands)
 
-        # Handle workflow completion
-        if state.is_complete:
-            del self._workflow_states[run_id]
+        # NOTE: Do NOT delete workflow state on completion.
+        # SDK-Core may send follow-up query activations after workflow completes.
+        # The workflow state will be cleaned up when SDK-Core sends remove_from_cache.
+        # This is critical for supporting queries on completed workflows.
 
     def _extract_run_id(self, activation: WorkflowActivation) -> str:
         """Extract the run_id from an activation.
@@ -271,16 +340,13 @@ class SingleThreadWorker:
         Raises:
             RuntimeError: If run_id cannot be determined.
         """
-        # Check if activation has run_id attribute (from bridge)
-        if hasattr(activation, "run_id"):
-            return activation.run_id  # type: ignore
+        # Use run_id from activation (set by bridge_to_poc_activation)
+        if activation.run_id:
+            return activation.run_id
 
-        # For test activations, we need to derive run_id from jobs
-        # In real usage, the bridge activation always has run_id
+        # Fallback for test activations that don't set run_id
         for job in activation.jobs:
             if isinstance(job, WorkflowStartedJob):
-                # Use workflow_type as a stand-in for run_id in tests
-                # Real implementations would have run_id from the bridge
                 return f"run-{id(activation)}"
 
         raise RuntimeError("Cannot determine run_id from activation")
@@ -294,10 +360,9 @@ class SingleThreadWorker:
         Returns:
             True if this is an eviction activation.
         """
-        # Check for eviction job
-        if hasattr(activation, "remove_from_cache"):
-            return bool(activation.remove_from_cache)  # type: ignore
-        return False
+        return getattr(activation, "is_eviction", False) or getattr(
+            activation, "remove_from_cache", False
+        )
 
     async def _run_workflow(
         self, state: WorkflowState, initial_activation: WorkflowActivation
@@ -344,19 +409,34 @@ class SingleThreadWorker:
         )
         state.runtime = runtime
 
-        # Set runtime as current
-        token = set_current_runtime(runtime)
+        # Create workflow instance BEFORE applying activation
+        # This allows queries in initial activation to be processed correctly
+        workflow_obj = defn.cls()
+        runtime.workflow_object = workflow_obj
+
+        # Register signal and query handlers from definition
+        self._register_handlers(runtime, defn, workflow_obj)
+
+        # Set runtime as current (both _runtime.py and workflow.py contextvars)
+        # WorkflowRuntime implements all _Runtime ABC methods directly via duck typing
+        token = _Runtime.set_current(runtime)
+        legacy_token = set_current_runtime(runtime)
         try:
-            # Apply initial activation jobs
+            # Apply initial activation jobs (now query handlers are registered)
             self._apply_activation(runtime, initial_activation)
 
             # Run the workflow
             async with trio.open_nursery() as nursery:
                 runtime.nursery = nursery
 
-                # Start the main workflow coroutine
+                # Start the main workflow coroutine (workflow object already created)
                 nursery.start_soon(
-                    self._execute_workflow_main, runtime, defn, started_job.args, state
+                    self._execute_workflow_main,
+                    runtime,
+                    defn,
+                    workflow_obj,
+                    started_job.args,
+                    state,
                 )
 
                 # Wait for main workflow to either complete or need suspension
@@ -378,6 +458,21 @@ class SingleThreadWorker:
                     # Apply activation jobs
                     self._apply_activation(runtime, activation)
 
+                    # Yield to scheduler to let woken tasks run
+                    # For activations with jobs that wake workflows (TimerFired, etc.),
+                    # we need to wait for the workflow to process and signal commands ready
+                    await trio.sleep(0)
+
+                    # If commands_ready is not set after yielding, signal it now.
+                    # This handles:
+                    # 1. Empty activations (heartbeat) - no jobs to wake workflow
+                    # 2. Informational jobs like ChildWorkflowStartedJob - don't wake workflow
+                    # 3. Jobs that wake workflow - workflow runs, produces commands, signals ready
+                    # After trio.sleep(0), any woken tasks have had a chance to run.
+                    if not state.commands_ready.is_set() and not state.is_complete:
+                        # No commands produced - signal with current (empty) commands
+                        state.signal_commands_ready()
+
         except Exception as e:
             # Workflow task failed
             runtime.commands.append(FailWorkflowCommand(exception=e))
@@ -385,12 +480,110 @@ class SingleThreadWorker:
             state.signal_commands_ready()
 
         finally:
-            reset_current_runtime(token)
+            _Runtime.reset_current(token)
+            reset_current_runtime(legacy_token)
+
+    def _handle_activation_for_completed_workflow(
+        self,
+        state: WorkflowState,
+        activation: WorkflowActivation,
+    ) -> list[Any]:
+        """Handle an activation for a workflow that has already completed.
+
+        This is called when an activation arrives for a workflow whose task
+        has already finished. This happens for queries after completion -
+        SDK-Core may send query activations after the workflow completes.
+
+        Args:
+            state: The workflow state (workflow is complete, task exited).
+            activation: The activation containing jobs (typically queries).
+
+        Returns:
+            List of commands to send in completion.
+        """
+        commands: list[Any] = []
+        runtime = state.runtime
+
+        if runtime is None:
+            logger.warning(
+                f"Received activation for completed workflow {state.run_id} "
+                "but runtime is None"
+            )
+            return commands
+
+        # Process jobs - only queries are meaningful for completed workflows
+        for job in activation.jobs:
+            if isinstance(job, QueryWorkflowJob):
+                # Execute query handler
+                handler = runtime.query_handlers.get(job.query_type)
+                if handler is None:
+                    commands.append(
+                        QueryFailureCommand(
+                            query_id=job.query_id,
+                            error=ValueError(
+                                f"No handler registered for query: {job.query_type}"
+                            ),
+                        )
+                    )
+                else:
+                    try:
+                        result = handler(*job.args)
+                        commands.append(
+                            QuerySuccessCommand(
+                                query_id=job.query_id,
+                                result=result,
+                            )
+                        )
+                    except Exception as e:
+                        commands.append(
+                            QueryFailureCommand(
+                                query_id=job.query_id,
+                                error=e,
+                            )
+                        )
+            else:
+                logger.debug(
+                    f"Ignoring non-query job for completed workflow: "
+                    f"{type(job).__name__}"
+                )
+
+        return commands
+
+    def _register_handlers(
+        self,
+        runtime: WorkflowRuntime,
+        defn: _Definition,
+        workflow_obj: Any,
+    ) -> None:
+        """Register signal and query handlers from workflow definition.
+
+        This binds handlers from the definition to the workflow instance
+        and registers them with the runtime.
+
+        Args:
+            runtime: The workflow runtime.
+            defn: The workflow definition.
+            workflow_obj: The workflow instance.
+        """
+        # Register signal handlers
+        for signal_name, signal_defn in defn.signals.items():
+            if signal_name is not None:  # Skip dynamic handler (None key)
+                # Bind the method to the workflow instance
+                bound_handler = signal_defn.fn.__get__(workflow_obj, type(workflow_obj))
+                runtime.register_signal_handler(signal_name, bound_handler)
+
+        # Register query handlers
+        for query_name, query_defn in defn.queries.items():
+            if query_name is not None:  # Skip dynamic handler (None key)
+                # Bind the method to the workflow instance
+                bound_handler = query_defn.fn.__get__(workflow_obj, type(workflow_obj))
+                runtime.register_query_handler(query_name, bound_handler)
 
     async def _execute_workflow_main(
         self,
         runtime: WorkflowRuntime,
         defn: _Definition,
+        workflow_obj: Any,
         args: tuple[Any, ...],
         state: WorkflowState,
     ) -> None:
@@ -399,23 +592,31 @@ class SingleThreadWorker:
         Args:
             runtime: The workflow runtime.
             defn: The workflow definition.
+            workflow_obj: The workflow instance.
             args: Arguments to pass to the workflow.
             state: The workflow state for signaling.
         """
         try:
-            # Create workflow instance
-            workflow_obj = defn.cls()
-            runtime.workflow_object = workflow_obj
-
-            # Run the workflow
+            # Run the workflow (instance already created)
             result = await defn.run_fn(workflow_obj, *args)
 
             # Workflow completed successfully
             runtime.commands.append(CompleteWorkflowCommand(result=result))
+            # Store result for potential replay (cached state is immutable after completion)
+            state.completion_result = result
 
         except trio.Cancelled:
             # Workflow was cancelled - emit CancelWorkflowCommand
             runtime.commands.append(CancelWorkflowCommand())
+
+        except ContinueAsNewError as e:
+            # Workflow requested continue as new - apply the command
+            logger.debug("Workflow requested continue as new")
+            if hasattr(e, "_apply_command"):
+                e._apply_command(runtime.commands)
+            else:
+                # Fallback: should not happen with proper implementation
+                logger.warning("ContinueAsNewError without _apply_command method")
 
         except Exception as e:
             # Workflow failed
@@ -451,10 +652,27 @@ class SingleThreadWorker:
                 self._apply_signal(runtime, job)
             elif isinstance(job, QueryWorkflowJob):
                 self._apply_query(runtime, job)
+            elif isinstance(job, ChildWorkflowStartedJob):
+                runtime.apply_child_workflow_started(
+                    seq=job.seq,
+                    run_id=job.run_id,
+                )
+            elif isinstance(job, ChildWorkflowStartFailedJob):
+                runtime.apply_child_workflow_start_failed(
+                    seq=job.seq,
+                    workflow_id=job.workflow_id,
+                    workflow_type=job.workflow_type,
+                    cause=job.cause,
+                )
             elif isinstance(job, ChildWorkflowResolvedJob):
                 runtime.apply_child_workflow_resolved(
                     seq=job.seq,
                     result=job.result,
+                    error=job.failure,
+                )
+            elif isinstance(job, SignalExternalResolvedJob):
+                runtime.apply_signal_external_resolved(
+                    seq=job.seq,
                     error=job.failure,
                 )
             elif isinstance(job, CancelWorkflowJob):
@@ -500,6 +718,9 @@ class SingleThreadWorker:
         except Exception as e:
             # Log but don't fail workflow - signal handlers should not crash workflows
             logger.warning(f"Signal handler error for {signal_job.signal_name}: {e}")
+
+        # Notify any wait_condition waiters that state may have changed
+        runtime.notify_condition_waiters()
 
     async def _run_signal_handler(
         self,
@@ -568,12 +789,7 @@ class SingleThreadWorker:
             run_id: The workflow run_id.
             commands: List of commands to send.
         """
-        # Convert to protobuf and send
-        # For now, just log the commands
         logger.debug(f"Sending completion for {run_id} with {len(commands)} commands")
-
-        # Create completion protobuf
-        import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2
 
         from temporalio_trio.worker._bridge_types import poc_to_bridge_completion
 

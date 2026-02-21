@@ -129,6 +129,8 @@ class TestConvertResolveChildWorkflow:
 
     def test_failed(self):
         """Test converting failed child workflow."""
+        from temporalio.exceptions import FailureError
+
         data_converter = temporalio.converter.DataConverter()
 
         # Create bridge protobuf
@@ -142,7 +144,8 @@ class TestConvertResolveChildWorkflow:
         assert result.seq == 3
         assert result.result is None
         assert result.failure is not None
-        assert "Child workflow failed" in str(result.failure)
+        # Now uses proper FailureError type instead of RuntimeError
+        assert isinstance(result.failure, FailureError)
         assert "Child workflow error" in str(result.failure)
 
     def test_cancelled(self):

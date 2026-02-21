@@ -31,6 +31,7 @@ from temporalio_trio.worker._activation import (
     ChildWorkflowStartedJob,
     ChildWorkflowStartFailedJob,
     CompleteWorkflowCommand,
+    ContinueAsNewCommand,
     FailWorkflowCommand,
     NotifyHasPatchJob,
     QueryResultCommand,
@@ -38,13 +39,21 @@ from temporalio_trio.worker._activation import (
     RequestCancelActivityCommand,
     ScheduleActivityCommand,
     SetPatchMarkerCommand,
+    SignalExternalResolvedJob,
+    SignalExternalWorkflowCommand,
     SignalWorkflowJob,
     StartChildWorkflowCommand,
     StartTimerCommand,
     TimerFiredJob,
+    UpsertSearchAttributesCommand,
     WorkflowActivation,
     WorkflowActivationCompletion,
     WorkflowStartedJob,
+)
+from temporalio_trio.worker._failure_converter import failure_to_exception
+from temporalio_trio.worker._runtime import (
+    QueryFailureCommand,
+    QuerySuccessCommand,
 )
 
 __all__ = [
@@ -85,8 +94,10 @@ def bridge_to_poc_activation(
         | ChildWorkflowStartedJob
         | ChildWorkflowStartFailedJob
         | ChildWorkflowResolvedJob
+        | SignalExternalResolvedJob
         | NotifyHasPatchJob
     ] = []
+    is_eviction = False
     for job in bridge_act.jobs:
         # Check which job type this is (oneof field)
         job_type = job.WhichOneof("variant")
@@ -121,11 +132,17 @@ def bridge_to_poc_activation(
                     job.resolve_child_workflow_execution, data_converter
                 )
             )
+        elif job_type == "resolve_signal_external_workflow":
+            poc_jobs.append(
+                _convert_resolve_signal_external_workflow(
+                    job.resolve_signal_external_workflow, data_converter
+                )
+            )
         elif job_type == "notify_has_patch":
             poc_jobs.append(_convert_notify_has_patch(job.notify_has_patch))
         elif job_type == "remove_from_cache":
-            # Eviction jobs are handled separately in the bridge worker
-            # They should not be passed to the workflow instance
+            # Track eviction - this activation is a cache eviction request
+            is_eviction = True
             continue
         else:
             # Unsupported job types - raise error with helpful message
@@ -134,9 +151,18 @@ def bridge_to_poc_activation(
                 f"Please file an issue if this is needed."
             )
 
+    # Get randomness_seed safely - it may not be present on all activations
+    randomness_seed = getattr(bridge_act, "randomness_seed", None)
+    if randomness_seed == 0:
+        randomness_seed = None  # 0 is the protobuf default for unset
+
     return WorkflowActivation(
         jobs=poc_jobs,
         timestamp_ns=timestamp_ns,
+        run_id=bridge_act.run_id,
+        remove_from_cache=is_eviction,
+        is_replaying=bridge_act.is_replaying,
+        randomness_seed=randomness_seed,
     )
 
 
@@ -251,7 +277,9 @@ def _convert_resolve_activity(
         data_converter: Data converter for deserializing result payload
 
     Returns:
-        POC ActivityResolvedJob with result or failure
+        POC ActivityResolvedJob with result or failure.
+        Failures are converted to proper exception types (ActivityError, etc.)
+        using the failure converter.
     """
     seq = resolve.seq
     result = None
@@ -268,17 +296,19 @@ def _convert_resolve_activity(
                 resolution.completed.result
             )
     elif status == "failed":
-        # Activity failed - convert to exception
-        failure_msg = resolution.failed.failure.message
-        failure = RuntimeError(f"Activity failed: {failure_msg}")
-    elif status == "cancelled":
-        # Activity was cancelled
-        cancel_msg = (
-            resolution.cancelled.failure.message
-            if resolution.cancelled.failure.message
-            else "Activity cancelled"
+        # Activity failed - convert to proper exception type
+        # The failure converter produces ActivityError with __cause__ set to
+        # the underlying exception (e.g., ApplicationError)
+        failure = failure_to_exception(
+            resolution.failed.failure,
+            data_converter.payload_converter,
         )
-        failure = RuntimeError(f"Activity cancelled: {cancel_msg}")
+    elif status == "cancelled":
+        # Activity was cancelled - convert to proper exception type
+        failure = failure_to_exception(
+            resolution.cancelled.failure,
+            data_converter.payload_converter,
+        )
     elif status == "backoff":
         # Activity needs to retry after backoff - treat as transient failure
         # The SDK core handles retry scheduling, so this shouldn't typically reach here
@@ -349,7 +379,9 @@ def _convert_resolve_child_workflow(
         data_converter: Data converter for deserializing result payload
 
     Returns:
-        POC ChildWorkflowResolvedJob with result or failure
+        POC ChildWorkflowResolvedJob with result or failure.
+        Failures are converted to proper exception types (ChildWorkflowError, etc.)
+        using the failure converter.
     """
     seq = resolve.seq
     result = None
@@ -366,23 +398,59 @@ def _convert_resolve_child_workflow(
                 child_result.completed.result
             )
     elif status == "failed":
-        # Child workflow failed
-        failure_msg = child_result.failed.failure.message
-        failure = RuntimeError(f"Child workflow failed: {failure_msg}")
-    elif status == "cancelled":
-        # Child workflow was cancelled
-        cancel_msg = (
-            child_result.cancelled.failure.message
-            if child_result.cancelled.failure.message
-            else "Child workflow cancelled"
+        # Child workflow failed - convert to proper exception type
+        # The failure converter produces ChildWorkflowError with __cause__ set
+        # to the underlying exception (e.g., ApplicationError)
+        failure = failure_to_exception(
+            child_result.failed.failure,
+            data_converter.payload_converter,
         )
-        failure = RuntimeError(f"Child workflow cancelled: {cancel_msg}")
+    elif status == "cancelled":
+        # Child workflow was cancelled - convert to proper exception type
+        failure = failure_to_exception(
+            child_result.cancelled.failure,
+            data_converter.payload_converter,
+        )
     else:
         failure = RuntimeError(f"Unknown child workflow result status: {status}")
 
     return ChildWorkflowResolvedJob(
         seq=seq,
         result=result,
+        failure=failure,
+    )
+
+
+def _convert_resolve_signal_external_workflow(
+    resolve: act_pb.ResolveSignalExternalWorkflow,
+    data_converter: temporalio.converter.DataConverter,
+) -> SignalExternalResolvedJob:
+    """Convert ResolveSignalExternalWorkflow to SignalExternalResolvedJob.
+
+    Args:
+        resolve: Bridge ResolveSignalExternalWorkflow job
+        data_converter: Data converter for deserializing failure details
+
+    Returns:
+        POC SignalExternalResolvedJob with failure (if any).
+        Failures are converted to proper exception types using the failure converter.
+
+    Note:
+        Success is indicated by ABSENCE of failure field.
+        Check: if resolve.failure.ByteSize() > 0 then failed, else succeeded.
+    """
+    seq = resolve.seq
+    failure = None
+
+    # Check if failure is present - success is indicated by absence of failure
+    if resolve.failure.ByteSize() > 0:
+        failure = failure_to_exception(
+            resolve.failure,
+            data_converter.payload_converter,
+        )
+
+    return SignalExternalResolvedJob(
+        seq=seq,
         failure=failure,
     )
 
@@ -468,16 +536,16 @@ def poc_to_bridge_completion(
 
         elif isinstance(cmd, FailWorkflowCommand):
             # Convert FailWorkflowCommand to FailWorkflowExecution
-            # For now, just create a simple failure message
-            # In a full implementation, we'd convert the exception properly
-            bridge_cmd.fail_workflow_execution.failure.message = str(cmd.exception)
-            bridge_cmd.fail_workflow_execution.failure.stack_trace = ""
-            if hasattr(cmd.exception, "__traceback__") and cmd.exception.__traceback__:
-                import traceback
-
-                bridge_cmd.fail_workflow_execution.failure.stack_trace = "".join(
-                    traceback.format_tb(cmd.exception.__traceback__)
-                )
+            # Use the SDK's failure converter to properly set application_failure_info
+            # for ApplicationError, etc. to_failure modifies the failure object in place.
+            failure_converter = temporalio.converter.DefaultFailureConverter()
+            failure = temporalio.api.failure.v1.Failure()
+            failure_converter.to_failure(
+                cmd.exception,
+                data_converter.payload_converter,
+                failure,
+            )
+            bridge_cmd.fail_workflow_execution.failure.CopyFrom(failure)
 
         elif isinstance(cmd, CancelWorkflowCommand):
             # Convert CancelWorkflowCommand to CancelWorkflowExecution
@@ -556,6 +624,18 @@ def poc_to_bridge_completion(
                 payload = data_converter.payload_converter.to_payload(cmd.result)
                 bridge_cmd.respond_to_query.succeeded.response.CopyFrom(payload)
 
+        elif isinstance(cmd, QuerySuccessCommand):
+            # Convert QuerySuccessCommand to RespondToQuery with success
+            bridge_cmd.respond_to_query.query_id = cmd.query_id
+            payload = data_converter.payload_converter.to_payload(cmd.result)
+            bridge_cmd.respond_to_query.succeeded.response.CopyFrom(payload)
+
+        elif isinstance(cmd, QueryFailureCommand):
+            # Convert QueryFailureCommand to RespondToQuery with failure
+            bridge_cmd.respond_to_query.query_id = cmd.query_id
+            error_msg = str(cmd.error) if cmd.error else "Query handler failed"
+            bridge_cmd.respond_to_query.failed.message = error_msg
+
         elif isinstance(cmd, StartChildWorkflowCommand):
             # Convert StartChildWorkflowCommand to StartChildWorkflowExecution
             bridge_cmd.start_child_workflow_execution.seq = cmd.seq
@@ -586,15 +666,15 @@ def poc_to_bridge_completion(
                     cmd.task_timeout,
                 )
 
-            # Set policies
+            # Set policies (int values work for protobuf enums at runtime)
             bridge_cmd.start_child_workflow_execution.parent_close_policy = (
-                cmd.parent_close_policy
+                cmd.parent_close_policy  # type: ignore[assignment]
             )
             bridge_cmd.start_child_workflow_execution.cancellation_type = (
-                cmd.cancellation_type
+                cmd.cancellation_type  # type: ignore[assignment]
             )
             bridge_cmd.start_child_workflow_execution.workflow_id_reuse_policy = (
-                cmd.id_reuse_policy
+                cmd.id_reuse_policy  # type: ignore[assignment]
             )
 
             # Convert retry policy if present
@@ -621,6 +701,80 @@ def poc_to_bridge_completion(
         elif isinstance(cmd, CancelChildWorkflowCommand):
             # Convert CancelChildWorkflowCommand to CancelChildWorkflowExecution
             bridge_cmd.cancel_child_workflow_execution.child_workflow_seq = cmd.seq
+
+        elif isinstance(cmd, SignalExternalWorkflowCommand):
+            # Convert SignalExternalWorkflowCommand to SignalExternalWorkflowExecution
+            bridge_cmd.signal_external_workflow_execution.seq = cmd.seq
+            bridge_cmd.signal_external_workflow_execution.workflow_execution.workflow_id = cmd.workflow_id
+            # Set run_id only if provided (empty = signal current run)
+            if cmd.run_id:
+                bridge_cmd.signal_external_workflow_execution.workflow_execution.run_id = cmd.run_id
+            bridge_cmd.signal_external_workflow_execution.signal_name = cmd.signal_name
+
+            # Encode signal arguments
+            for arg in cmd.args:
+                payload = data_converter.payload_converter.to_payload(arg)
+                bridge_cmd.signal_external_workflow_execution.args.append(payload)
+
+        elif isinstance(cmd, UpsertSearchAttributesCommand):
+            # Convert UpsertSearchAttributesCommand to UpsertWorkflowSearchAttributes
+            # Each search attribute value is encoded as a payload and placed in
+            # upsert_workflow_search_attributes.search_attributes[key]
+            for key, value in cmd.search_attributes.items():
+                payload = data_converter.payload_converter.to_payload(value)
+                bridge_cmd.upsert_workflow_search_attributes.search_attributes[
+                    key
+                ].CopyFrom(payload)
+
+        elif isinstance(cmd, ContinueAsNewCommand):
+            # Convert ContinueAsNewCommand to ContinueAsNewWorkflowExecution
+            bridge_cmd.continue_as_new_workflow_execution.workflow_type = (
+                cmd.workflow_type
+            )
+
+            # Set task queue if provided
+            if cmd.task_queue:
+                bridge_cmd.continue_as_new_workflow_execution.task_queue = (
+                    cmd.task_queue
+                )
+
+            # Encode arguments
+            for arg in cmd.args:
+                payload = data_converter.payload_converter.to_payload(arg)
+                bridge_cmd.continue_as_new_workflow_execution.arguments.append(payload)
+
+            # Convert timeouts to Duration protobufs
+            if cmd.run_timeout:
+                _set_duration(
+                    bridge_cmd.continue_as_new_workflow_execution.workflow_run_timeout,
+                    cmd.run_timeout,
+                )
+            if cmd.task_timeout:
+                _set_duration(
+                    bridge_cmd.continue_as_new_workflow_execution.workflow_task_timeout,
+                    cmd.task_timeout,
+                )
+
+            # Convert retry policy if present
+            if cmd.retry_policy:
+                if cmd.retry_policy.initial_interval:
+                    _set_duration(
+                        bridge_cmd.continue_as_new_workflow_execution.retry_policy.initial_interval,
+                        cmd.retry_policy.initial_interval,
+                    )
+                if cmd.retry_policy.maximum_interval:
+                    _set_duration(
+                        bridge_cmd.continue_as_new_workflow_execution.retry_policy.maximum_interval,
+                        cmd.retry_policy.maximum_interval,
+                    )
+                if cmd.retry_policy.backoff_coefficient:
+                    bridge_cmd.continue_as_new_workflow_execution.retry_policy.backoff_coefficient = cmd.retry_policy.backoff_coefficient
+                if cmd.retry_policy.maximum_attempts:
+                    bridge_cmd.continue_as_new_workflow_execution.retry_policy.maximum_attempts = cmd.retry_policy.maximum_attempts
+                for exc_type in cmd.retry_policy.non_retryable_error_types or []:
+                    bridge_cmd.continue_as_new_workflow_execution.retry_policy.non_retryable_error_types.append(
+                        exc_type
+                    )
 
         elif isinstance(cmd, SetPatchMarkerCommand):
             # Convert SetPatchMarkerCommand to SetPatchMarker
