@@ -275,6 +275,12 @@ class TestRuntimeClass:
             ) -> bool:
                 return True
 
+            def workflow_upsert_search_attributes(
+                self,
+                attributes: dict[str, Any],
+            ) -> None:
+                pass
+
         mock = MockRuntime()
 
         # Initially None
@@ -393,6 +399,12 @@ class TestRuntimeClass:
                 self, patch_id: str, *, deprecated: bool = False
             ) -> bool:
                 return True
+
+            def workflow_upsert_search_attributes(
+                self,
+                attributes: dict[str, Any],
+            ) -> None:
+                pass
 
         mock1 = MockRuntime("mock1")
         mock2 = MockRuntime("mock2")
@@ -527,6 +539,12 @@ class TestPublicAPI:
             ) -> bool:
                 return True
 
+            def workflow_upsert_search_attributes(
+                self,
+                attributes: dict[str, Any],
+            ) -> None:
+                pass
+
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
         try:
@@ -647,6 +665,12 @@ class TestPublicAPI:
                 self, patch_id: str, *, deprecated: bool = False
             ) -> bool:
                 return True
+
+            def workflow_upsert_search_attributes(
+                self,
+                attributes: dict[str, Any],
+            ) -> None:
+                pass
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
