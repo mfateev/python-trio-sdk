@@ -426,16 +426,16 @@ class _Runtime(ABC):
     @abstractmethod
     def workflow_upsert_search_attributes(
         self,
-        attributes: dict[str, Any],
+        attributes: Sequence[temporalio.common.SearchAttributeUpdate],
     ) -> None:
         """Upsert search attributes for this workflow.
 
         Search attributes are used for workflow visibility and querying.
-        This method updates existing attributes and adds new ones.
+        Receives typed search attribute updates and converts them to the
+        appropriate bridge command.
 
         Args:
-            attributes: Dictionary mapping attribute name to value.
-                Values can be str, int, float, bool, datetime, or Sequence[str].
+            attributes: Sequence of typed search attribute updates.
         """
         ...
 
@@ -1649,45 +1649,45 @@ def continue_as_new(
     )
 
 
-def upsert_search_attributes(attributes: dict[str, Any]) -> None:
+def upsert_search_attributes(
+    attributes: Sequence[temporalio.common.SearchAttributeUpdate],
+) -> None:
     """Upsert search attributes for this workflow.
 
-    Mirrors temporalio.workflow.upsert_search_attributes from the SDK.
+    Mirrors temporalio.workflow.upsert_search_attributes from the SDK (typed
+    form only; the deprecated dict form is not supported).
 
     Search attributes are metadata fields that can be used to filter and search
     for workflows in the Temporal UI and CLI. This function updates existing
     attributes and adds new ones. Attributes not mentioned are left unchanged.
 
     Custom search attributes must be registered with the Temporal server before
-    use. The Temporal dev server includes some default custom attributes like
-    'CustomKeywordField' and 'CustomIntField'.
+    use.
 
     Example:
+        from temporalio.common import SearchAttributeKey
+
+        MY_KEYWORD = SearchAttributeKey.for_keyword("CustomKeywordField")
+        MY_INT = SearchAttributeKey.for_int("CustomIntField")
+
         @workflow.defn
         class MyWorkflow:
             @workflow.run
             async def run(self) -> str:
-                # Set search attributes for visibility
-                workflow.upsert_search_attributes({
-                    "CustomKeywordField": "processing",
-                    "CustomIntField": 42,
-                })
-                # Process work...
+                workflow.upsert_search_attributes([
+                    MY_KEYWORD.value_set("processing"),
+                    MY_INT.value_set(42),
+                ])
                 await workflow.sleep(10)
-                # Update status
-                workflow.upsert_search_attributes({
-                    "CustomKeywordField": "completed",
-                })
+                workflow.upsert_search_attributes([
+                    MY_KEYWORD.value_set("completed"),
+                ])
                 return "done"
 
     Args:
-        attributes: Dictionary mapping attribute name to value. Values can be:
-            - str: Text or keyword fields
-            - int: Integer fields
-            - float: Double fields
-            - bool: Boolean fields
-            - datetime: Datetime fields
-            - Sequence[str]: Keyword list fields
+        attributes: A sequence of search attribute updates created via
+            ``SearchAttributeKey.value_set()`` or
+            ``SearchAttributeKey.value_unset()``.
 
     Raises:
         _NotInWorkflowContextError: If not in a workflow context.

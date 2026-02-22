@@ -277,7 +277,7 @@ class TestRuntimeClass:
 
             def workflow_upsert_search_attributes(
                 self,
-                attributes: dict[str, Any],
+                attributes: Sequence[temporalio.common.SearchAttributeUpdate],
             ) -> None:
                 pass
 
@@ -402,7 +402,7 @@ class TestRuntimeClass:
 
             def workflow_upsert_search_attributes(
                 self,
-                attributes: dict[str, Any],
+                attributes: Sequence[temporalio.common.SearchAttributeUpdate],
             ) -> None:
                 pass
 
@@ -541,7 +541,7 @@ class TestPublicAPI:
 
             def workflow_upsert_search_attributes(
                 self,
-                attributes: dict[str, Any],
+                attributes: Sequence[temporalio.common.SearchAttributeUpdate],
             ) -> None:
                 pass
 
@@ -668,7 +668,7 @@ class TestPublicAPI:
 
             def workflow_upsert_search_attributes(
                 self,
-                attributes: dict[str, Any],
+                attributes: Sequence[temporalio.common.SearchAttributeUpdate],
             ) -> None:
                 pass
 

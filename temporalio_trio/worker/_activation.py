@@ -9,6 +9,7 @@ designed for the POC to demonstrate the activation/completion pattern.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -701,9 +702,9 @@ class UpsertSearchAttributesCommand:
     added, and missing attributes remain unchanged (not deleted).
 
     Attributes:
-        search_attributes: Map of attribute name to value. Values are typed
-            (Keyword, Int, Bool, etc.) but passed as Python values here;
-            the data_converter handles encoding to Payloads.
+        search_attributes: Typed search attribute updates. The bridge
+            conversion uses ``encode_typed_search_attribute_value`` to
+            produce payloads with the correct type metadata.
 
     Note:
         - Search attributes are eventually consistent
@@ -711,8 +712,8 @@ class UpsertSearchAttributesCommand:
         - This command does not generate a response job (one-way command)
     """
 
-    search_attributes: dict[str, Any]
-    """Map of attribute name to value."""
+    search_attributes: Sequence[temporalio.common.SearchAttributeUpdate]
+    """Typed search attribute updates."""
 
 
 # =============================================================================

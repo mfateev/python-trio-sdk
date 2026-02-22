@@ -804,7 +804,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
 
     def workflow_upsert_search_attributes(
         self,
-        attributes: dict[str, Any],
+        attributes: Sequence[temporalio.common.SearchAttributeUpdate],
     ) -> None:
         """Upsert search attributes for this workflow.
 
@@ -817,16 +817,13 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         a response job.
 
         Args:
-            attributes: Dictionary mapping attribute name to value.
-                Values can be str, int, float, bool, datetime, or Sequence[str].
+            attributes: Sequence of typed search attribute updates.
 
         Note:
             - Search attributes are eventually consistent
             - Custom attributes must be registered with the Temporal server
             - This command does not block workflow execution
         """
-        # Add the command to upsert search attributes
-        # This is a one-way command - no response job, so we don't yield
         cmd = UpsertSearchAttributesCommand(search_attributes=attributes)
         self._commands.append(cmd)
 
