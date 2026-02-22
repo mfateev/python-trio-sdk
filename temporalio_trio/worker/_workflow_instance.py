@@ -43,6 +43,7 @@ from temporalio_trio.worker._activation import (
     StartChildWorkflowCommand,
     StartTimerCommand,
     TimerFiredJob,
+    UpsertSearchAttributesCommand,
     WorkflowActivation,
     WorkflowActivationCompletion,
     WorkflowStartedJob,
@@ -800,6 +801,34 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         # Memoize and return
         self._patches_memoized[patch_id] = result
         return result
+
+    def workflow_upsert_search_attributes(
+        self,
+        attributes: dict[str, Any],
+    ) -> None:
+        """Upsert search attributes for this workflow.
+
+        This adds an UpsertSearchAttributesCommand to update the workflow's
+        search attributes. Search attributes are used for workflow visibility
+        and querying in the Temporal UI and CLI.
+
+        This is a one-way command - it does not wait for a response or yield.
+        The command is recorded in history during replay but doesn't produce
+        a response job.
+
+        Args:
+            attributes: Dictionary mapping attribute name to value.
+                Values can be str, int, float, bool, datetime, or Sequence[str].
+
+        Note:
+            - Search attributes are eventually consistent
+            - Custom attributes must be registered with the Temporal server
+            - This command does not block workflow execution
+        """
+        # Add the command to upsert search attributes
+        # This is a one-way command - no response job, so we don't yield
+        cmd = UpsertSearchAttributesCommand(search_attributes=attributes)
+        self._commands.append(cmd)
 
     async def workflow_sleep(self, duration: float, summary: str | None) -> None:
         """Sleep for the given duration.
