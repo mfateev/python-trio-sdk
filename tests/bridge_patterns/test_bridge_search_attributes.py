@@ -20,6 +20,7 @@ from uuid import uuid4
 
 import pytest
 import trio
+from temporalio.common import SearchAttributeKey
 
 from temporalio_trio._async_bridge import TrioBridgeWrapper
 from temporalio_trio.worker._activation import (
@@ -28,6 +29,9 @@ from temporalio_trio.worker._activation import (
     WorkflowActivationCompletion,
 )
 from temporalio_trio.worker._bridge_types import poc_to_bridge_completion
+
+KW_KEY = SearchAttributeKey.for_keyword("CustomKeywordField")
+INT_KEY = SearchAttributeKey.for_int("CustomIntField")
 
 from .conftest import (
     DEFAULT_TIMEOUT,
@@ -156,9 +160,9 @@ async def test_pattern_19_upsert_search_attributes(unique_task_queue: str) -> No
         completion.run_id = run_id
         completion.successful.SetInParent()
 
-        # Create UpsertSearchAttributes command using our POC types
+        # Create UpsertSearchAttributes command using typed updates
         upsert_cmd = UpsertSearchAttributesCommand(
-            search_attributes={"CustomKeywordField": "test-value-123"}
+            search_attributes=[KW_KEY.value_set("test-value-123")]
         )
 
         # Convert using our bridge conversion function
@@ -282,10 +286,10 @@ async def test_pattern_19_multiple_search_attributes(unique_task_queue: str) -> 
         dc = DataConverter.default
 
         upsert_cmd = UpsertSearchAttributesCommand(
-            search_attributes={
-                "CustomKeywordField": "multi-test-value",
-                "CustomIntField": 42,
-            }
+            search_attributes=[
+                KW_KEY.value_set("multi-test-value"),
+                INT_KEY.value_set(42),
+            ]
         )
 
         poc_completion = WorkflowActivationCompletion(
@@ -334,13 +338,17 @@ async def test_upsert_search_attributes_command_conversion() -> None:
 
     dc = DataConverter.default
 
-    # Create command
+    # Create command with typed keys
+    kw_attr = SearchAttributeKey.for_keyword("KeywordAttr")
+    int_attr = SearchAttributeKey.for_int("IntAttr")
+    bool_attr = SearchAttributeKey.for_bool("BoolAttr")
+
     cmd = UpsertSearchAttributesCommand(
-        search_attributes={
-            "KeywordAttr": "test-value",
-            "IntAttr": 123,
-            "BoolAttr": True,
-        }
+        search_attributes=[
+            kw_attr.value_set("test-value"),
+            int_attr.value_set(123),
+            bool_attr.value_set(True),
+        ]
     )
 
     # Convert using bridge function

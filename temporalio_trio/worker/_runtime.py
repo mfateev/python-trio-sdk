@@ -30,6 +30,7 @@ from temporalio_trio.worker._activation import (
     SignalExternalWorkflowCommand,
     StartChildWorkflowCommand,
     StartTimerCommand,
+    UpsertSearchAttributesCommand,
 )
 
 __all__ = [
@@ -1155,6 +1156,21 @@ class WorkflowRuntime:
         # Memoize and return
         self.patches_memoized[patch_id] = result
         return result
+
+    def workflow_upsert_search_attributes(
+        self,
+        attributes: Sequence[temporalio.common.SearchAttributeUpdate],
+    ) -> None:
+        """Upsert search attributes for this workflow.
+
+        Emits an UpsertSearchAttributesCommand with the typed updates.
+
+        Args:
+            attributes: Sequence of typed search attribute updates.
+        """
+        self.commands.append(
+            UpsertSearchAttributesCommand(search_attributes=attributes)
+        )
 
     # External signal methods
 

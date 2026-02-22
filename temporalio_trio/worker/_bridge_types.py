@@ -718,13 +718,16 @@ def poc_to_bridge_completion(
 
         elif isinstance(cmd, UpsertSearchAttributesCommand):
             # Convert UpsertSearchAttributesCommand to UpsertWorkflowSearchAttributes
-            # Each search attribute value is encoded as a payload and placed in
-            # upsert_workflow_search_attributes.search_attributes[key]
-            for key, value in cmd.search_attributes.items():
-                payload = data_converter.payload_converter.to_payload(value)
+            # Uses encode_typed_search_attribute_value to produce payloads with
+            # correct type metadata (matching sdk-python's typed path)
+            for update in cmd.search_attributes:
                 bridge_cmd.upsert_workflow_search_attributes.search_attributes[
-                    key
-                ].CopyFrom(payload)
+                    update.key.name
+                ].CopyFrom(
+                    temporalio.converter.encode_typed_search_attribute_value(
+                        update.key, update.value
+                    )
+                )
 
         elif isinstance(cmd, ContinueAsNewCommand):
             # Convert ContinueAsNewCommand to ContinueAsNewWorkflowExecution
