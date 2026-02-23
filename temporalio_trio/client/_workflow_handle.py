@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
+import temporalio.exceptions
 import trio
 from temporalio.api.common.v1 import Payloads
 from temporalio.api.enums.v1 import EventType
@@ -15,6 +16,26 @@ if TYPE_CHECKING:
     from ._client import Client
 
 logger = logging.getLogger(__name__)
+
+
+class WorkflowFailureError(temporalio.exceptions.TemporalError):
+    """Error that occurs when a workflow is unsuccessful.
+
+    This is raised by :py:meth:`WorkflowHandle.result` when the workflow
+    fails, is cancelled, or is terminated. The :py:attr:`cause` attribute
+    contains the underlying error.
+    """
+
+    def __init__(self, *, cause: BaseException) -> None:
+        """Create workflow failure error."""
+        super().__init__("Workflow execution failed")
+        self.__cause__ = cause
+
+    @property
+    def cause(self) -> BaseException:
+        """Cause of the workflow failure."""
+        assert self.__cause__
+        return self.__cause__
 
 
 class WorkflowHandle:
@@ -92,8 +113,7 @@ class WorkflowHandle:
             The workflow result (deserialized)
 
         Raises:
-            WorkflowFailureError: If workflow failed
-            RuntimeError: If workflow was canceled or terminated
+            WorkflowFailureError: If workflow failed, was cancelled, or terminated
             trio.TooSlowError: If timeout exceeded
 
         Example:
@@ -266,7 +286,7 @@ class WorkflowHandle:
             _WorkflowResult wrapper if terminal event found, None if still running
 
         Raises:
-            RuntimeError: If workflow failed, was canceled, or terminated
+            WorkflowFailureError: If workflow failed, was cancelled, or terminated
         """
         # Find terminal event in history
         for event in response.history.events:
@@ -282,18 +302,28 @@ class WorkflowHandle:
                 return _WorkflowResult(None)
 
             elif event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED:
-                # Workflow failed
+                # Workflow failed - decode the failure chain
                 failed = event.workflow_execution_failed_event_attributes
-                raise RuntimeError(
-                    f"Workflow failed: {failed.failure.message if failed.failure else 'Unknown error'}"
-                )
+                if failed.failure and failed.failure.ByteSize():
+                    cause = await self._client.data_converter.decode_failure(
+                        failed.failure
+                    )
+                else:
+                    cause = temporalio.exceptions.ApplicationError("Unknown error")
+                raise WorkflowFailureError(cause=cause)
 
             elif event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_CANCELED:
-                raise RuntimeError("Workflow was canceled")
+                raise WorkflowFailureError(
+                    cause=temporalio.exceptions.CancelledError("Workflow cancelled")
+                )
 
             elif event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_TERMINATED:
                 terminated = event.workflow_execution_terminated_event_attributes
-                raise RuntimeError(f"Workflow was terminated: {terminated.reason}")
+                raise WorkflowFailureError(
+                    cause=temporalio.exceptions.TerminatedError(
+                        terminated.reason or "Workflow terminated"
+                    )
+                )
 
         # No terminal event found - workflow still running
         return None
@@ -310,7 +340,8 @@ class WorkflowHandle:
             Deserialized workflow result
 
         Raises:
-            RuntimeError: If workflow failed, canceled, terminated, or not complete
+            WorkflowFailureError: If workflow failed, cancelled, or terminated
+            RuntimeError: If workflow not complete
         """
         result = await self._try_extract_result_from_history(response)
         if result is None:
@@ -327,4 +358,4 @@ class _WorkflowResult:
         self.value = value
 
 
-__all__ = ["WorkflowHandle"]
+__all__ = ["WorkflowFailureError", "WorkflowHandle"]

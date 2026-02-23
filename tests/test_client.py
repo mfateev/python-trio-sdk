@@ -11,7 +11,7 @@ from temporalio.api.workflowservice.v1 import (
 )
 from temporalio.converter import DataConverter
 
-from temporalio_trio.client import Client, WorkflowHandle
+from temporalio_trio.client import Client, WorkflowFailureError, WorkflowHandle
 
 
 @pytest.fixture
@@ -221,5 +221,5 @@ async def test_workflow_failed(mock_bridge):
     client = await Client.connect("localhost:7233")
     handle = client.get_workflow_handle("wf-123")
 
-    with pytest.raises(RuntimeError, match="Workflow failed"):
+    with pytest.raises(WorkflowFailureError):
         await handle.result()

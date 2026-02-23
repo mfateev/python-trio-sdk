@@ -317,9 +317,7 @@ class TrioActivityWorker:
                 except BaseException as e:
                     err = e
 
-                if activity_scope.cancelled_caught or isinstance(
-                    err, trio.Cancelled
-                ):
+                if activity_scope.cancelled_caught or isinstance(err, trio.Cancelled):
                     # Activity was cancelled
                     if running.cancelled_due_to_heartbeat_error:
                         # Heartbeat error -> FAILED (matches SDK)
@@ -352,16 +350,15 @@ class TrioActivityWorker:
                         exc_info=True,
                     )
                     await self._data_converter.encode_failure(
-                        err, completion.result.failed.failure  # type: ignore[arg-type]
+                        err,
+                        completion.result.failed.failure,  # type: ignore[arg-type]
                     )
                 else:
                     # Activity returned successfully
                     if result is not None:
                         payloads = await self._data_converter.encode([result])
                         if payloads:
-                            completion.result.completed.result.CopyFrom(
-                                payloads[0]
-                            )
+                            completion.result.completed.result.CopyFrom(payloads[0])
                     else:
                         completion.result.completed.SetInParent()
 
@@ -464,19 +461,13 @@ class TrioActivityWorker:
                 heartbeat.details.extend(payloads)
 
             # Send to bridge
-            await self._bridge.record_activity_heartbeat(
-                heartbeat.SerializeToString()
-            )
+            await self._bridge.record_activity_heartbeat(heartbeat.SerializeToString())
 
         except Exception as e:
             if running.done:
-                logger.exception(
-                    "Failed recording heartbeat (activity already done)"
-                )
+                logger.exception("Failed recording heartbeat (activity already done)")
             else:
-                logger.warning(
-                    "Cancelling activity because failed recording heartbeat"
-                )
+                logger.warning("Cancelling activity because failed recording heartbeat")
                 running.cancel(cancelled_due_to_heartbeat_error=e)
 
     async def _send_failure(
@@ -511,10 +502,11 @@ class TrioActivityWorker:
             return datetime.fromtimestamp(ts.seconds + ts.nanos / 1e9, tz=timezone.utc)
 
         # Decode heartbeat details from previous attempt (for retries)
+        # heartbeat_details is a RepeatedCompositeContainer of Payload protos
         heartbeat_details: list[Any] = []
-        if start.heartbeat_details and len(start.heartbeat_details.payloads) > 0:
+        if start.heartbeat_details and len(start.heartbeat_details) > 0:
             try:
-                for payload in start.heartbeat_details.payloads:
+                for payload in start.heartbeat_details:
                     value = self._data_converter.payload_converter.from_payload(payload)
                     heartbeat_details.append(value)
             except Exception as e:

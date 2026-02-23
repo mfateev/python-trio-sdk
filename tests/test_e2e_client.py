@@ -19,9 +19,10 @@ import time
 
 import pytest
 import trio
+from temporalio.exceptions import CancelledError, TerminatedError
 
 from temporalio_trio import workflow
-from temporalio_trio.client import Client
+from temporalio_trio.client import Client, WorkflowFailureError
 from temporalio_trio.worker import Worker
 
 
@@ -186,9 +187,10 @@ async def test_workflow_cancel(client, worker_with_workflows):
     # Wait a bit for cancellation to process
     await trio.sleep(0.5)
 
-    # Try to get result - should raise error about cancellation
-    with pytest.raises(RuntimeError, match="canceled"):
+    # Try to get result - should raise WorkflowFailureError with CancelledError cause
+    with pytest.raises(WorkflowFailureError) as exc_info:
         await handle.result()
+    assert isinstance(exc_info.value.cause, CancelledError)
 
 
 @pytest.mark.temporal_server
@@ -215,9 +217,10 @@ async def test_workflow_terminate(client, worker_with_workflows):
     # Wait a bit for termination to process
     await trio.sleep(0.5)
 
-    # Try to get result - should raise error about termination
-    with pytest.raises(RuntimeError, match="terminated"):
+    # Try to get result - should raise WorkflowFailureError with TerminatedError cause
+    with pytest.raises(WorkflowFailureError) as exc_info:
         await handle.result()
+    assert isinstance(exc_info.value.cause, TerminatedError)
 
 
 @pytest.mark.temporal_server
