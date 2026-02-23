@@ -9,11 +9,13 @@ import inspect
 import logging
 import random
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Callable, NoReturn, Sequence
 
 import outcome
+import temporalio.api.common.v1
 import temporalio.common
 import trio
 import trio.lowlevel
@@ -408,6 +410,9 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         self._is_replaying: bool = False
         """Whether the current activation is replaying from history."""
 
+        self._headers: Mapping[str, temporalio.api.common.v1.Payload] = {}
+        """Headers from the workflow start (e.g. for tracing/auth interceptors)."""
+
     @property
     def defn(self) -> _Definition:
         """Get the workflow definition.
@@ -464,6 +469,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             if isinstance(job, WorkflowStartedJob):
                 has_workflow_start = True
                 self._start_args = job.args
+                self._headers = job.headers
             elif isinstance(job, TimerFiredJob):
                 self._fired_timers.add(job.timer_id)
                 if self._pending_timer_id == job.timer_id:
@@ -750,7 +756,13 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         Returns:
             Info about the current workflow execution.
         """
-        return self._info
+        return Info(
+            workflow_id=self._info.workflow_id,
+            workflow_type=self._info.workflow_type,
+            run_id=self._info.run_id,
+            task_queue=self._info.task_queue,
+            headers=self._headers,
+        )
 
     def workflow_random(self) -> random.Random:
         """Get the deterministic random number generator for this workflow.

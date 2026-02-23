@@ -19,6 +19,7 @@ import temporalio.bridge.proto.activity_result.activity_result_pb2 as act_result
 import temporalio.bridge.proto.workflow_activation.workflow_activation_pb2 as act_pb
 import temporalio.bridge.proto.workflow_commands.workflow_commands_pb2 as cmd_pb
 import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
+import temporalio.common
 import temporalio.converter
 
 from temporalio_trio.worker._activation import (
@@ -195,6 +196,7 @@ def _convert_initialize_workflow(
     return WorkflowStartedJob(
         workflow_type=init.workflow_type,
         args=args,
+        headers=dict(init.headers),
     )
 
 
@@ -240,6 +242,7 @@ def _convert_signal_workflow(
     return SignalWorkflowJob(
         signal_name=signal.signal_name,
         args=args,
+        headers=dict(signal.headers),
     )
 
 
@@ -263,6 +266,7 @@ def _convert_query_workflow(
         query_id=query.query_id,
         query_type=query.query_type,
         args=args,
+        headers=dict(query.headers),
     )
 
 
@@ -614,6 +618,11 @@ def poc_to_bridge_completion(
             # Set cancellation type
             bridge_cmd.schedule_activity.cancellation_type = cmd.cancellation_type
 
+            # Apply headers
+            temporalio.common._apply_headers(
+                cmd.headers, bridge_cmd.schedule_activity.headers
+            )
+
         elif isinstance(cmd, RequestCancelActivityCommand):
             # Convert RequestCancelActivityCommand to RequestCancelActivity
             bridge_cmd.request_cancel_activity.seq = cmd.seq
@@ -701,6 +710,11 @@ def poc_to_bridge_completion(
                         exc_type
                     )
 
+            # Apply headers
+            temporalio.common._apply_headers(
+                cmd.headers, bridge_cmd.start_child_workflow_execution.headers
+            )
+
         elif isinstance(cmd, CancelChildWorkflowCommand):
             # Convert CancelChildWorkflowCommand to CancelChildWorkflowExecution
             bridge_cmd.cancel_child_workflow_execution.child_workflow_seq = cmd.seq
@@ -718,6 +732,12 @@ def poc_to_bridge_completion(
             for arg in cmd.args:
                 payload = data_converter.payload_converter.to_payload(arg)
                 bridge_cmd.signal_external_workflow_execution.args.append(payload)
+
+            # Apply headers
+            temporalio.common._apply_headers(
+                cmd.headers,
+                bridge_cmd.signal_external_workflow_execution.headers,
+            )
 
         elif isinstance(cmd, UpsertSearchAttributesCommand):
             # Convert UpsertSearchAttributesCommand to UpsertWorkflowSearchAttributes
@@ -781,6 +801,12 @@ def poc_to_bridge_completion(
                     bridge_cmd.continue_as_new_workflow_execution.retry_policy.non_retryable_error_types.append(
                         exc_type
                     )
+
+            # Apply headers
+            temporalio.common._apply_headers(
+                cmd.headers,
+                bridge_cmd.continue_as_new_workflow_execution.headers,
+            )
 
         elif isinstance(cmd, SetPatchMarkerCommand):
             # Convert SetPatchMarkerCommand to SetPatchMarker
