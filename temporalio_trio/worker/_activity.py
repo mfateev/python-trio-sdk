@@ -16,6 +16,7 @@ import temporalio.bridge.proto.activity_result
 import temporalio.bridge.proto.activity_task
 import temporalio.common
 import temporalio.converter
+import temporalio.exceptions
 import trio
 
 from temporalio_trio import activity
@@ -50,6 +51,34 @@ class _RunningActivity:
 
     cancel_scope: trio.CancelScope | None = None
     """Cancel scope for the activity execution."""
+
+    done: bool = False
+    """Whether activity has completed (prevents heartbeats after completion)."""
+
+    cancelled_by_request: bool = False
+    """Whether cancellation was explicitly requested by SDK-Core."""
+
+    cancelled_due_to_heartbeat_error: Exception | None = None
+    """Heartbeat failure that caused cancellation, if any."""
+
+    def cancel(
+        self,
+        *,
+        cancelled_by_request: bool = False,
+        cancelled_due_to_heartbeat_error: Exception | None = None,
+    ) -> None:
+        """Cancel this activity.
+
+        Args:
+            cancelled_by_request: True if cancel was explicitly requested.
+            cancelled_due_to_heartbeat_error: Exception if heartbeat failed.
+        """
+        self.cancelled_by_request = cancelled_by_request
+        self.cancelled_due_to_heartbeat_error = cancelled_due_to_heartbeat_error
+        if self.cancelled_event:
+            self.cancelled_event.set()
+        if not self.done and self.cancel_scope is not None:
+            self.cancel_scope.cancel()
 
 
 class TrioActivityWorker:
@@ -118,8 +147,8 @@ class TrioActivityWorker:
         logger.info(f"Starting Trio activity worker on {self._task_queue}")
 
         async with trio.open_nursery() as nursery:
-            # Start the polling loop
-            nursery.start_soon(self._poll_loop)
+            # Start the polling loop, passing nursery for non-blocking dispatch
+            nursery.start_soon(self._poll_loop, nursery)
 
             # Wait for shutdown signal
             await self._shutdown_event.wait()
@@ -132,8 +161,12 @@ class TrioActivityWorker:
 
         logger.info("Trio activity worker stopped")
 
-    async def _poll_loop(self) -> None:
-        """Poll for activity tasks until shutdown."""
+    async def _poll_loop(self, nursery: trio.Nursery) -> None:
+        """Poll for activity tasks until shutdown.
+
+        Args:
+            nursery: Parent nursery for non-blocking task dispatch.
+        """
         logger.debug("Starting activity poll loop")
         try:
             while not self._shutdown_event.is_set():
@@ -158,9 +191,8 @@ class TrioActivityWorker:
                     await trio.sleep(1.0)  # Brief delay before retrying
                     continue
 
-                # Handle the activity task
-                async with trio.open_nursery() as task_nursery:
-                    task_nursery.start_soon(self._handle_task, task)
+                # Dispatch task non-blocking in the parent nursery
+                nursery.start_soon(self._handle_task, task)
 
         except Exception:
             logger.exception("Error in activity poll loop")
@@ -191,6 +223,8 @@ class TrioActivityWorker:
         """Execute an activity.
 
         Sets up context, executes the activity function, and sends completion.
+        Uses a separate cancel scope for the activity so that completion
+        can always be sent even after cancellation.
         """
         activity_type = start.activity_type
 
@@ -235,10 +269,8 @@ class TrioActivityWorker:
                 logger.warning("Heartbeat queue full, dropping heartbeat")
             except trio.ClosedResourceError:
                 # Activity has finished or been cancelled - this is expected
-                # Heartbeats after activity completion are silently dropped
                 logger.debug(
-                    "Heartbeat channel closed (activity finished or cancelled). "
-                    "This is expected during activity completion or cancellation."
+                    "Heartbeat channel closed (activity finished or cancelled)."
                 )
 
         # Create activity context
@@ -258,47 +290,92 @@ class TrioActivityWorker:
             await self._send_failure(task_token, str(e), "InputDecodingError")
             return
 
+        # Build completion upfront
+        completion = temporalio.bridge.proto.ActivityTaskCompletion()
+        completion.task_token = task_token
+
         # Execute the activity with context
         token = activity._Context.set(context)
         try:
             async with trio.open_nursery() as nursery:
-                # Store cancel scope for potential cancellation
-                running.cancel_scope = nursery.cancel_scope
+                # Create a separate cancel scope for the activity itself
+                # so cancellation doesn't prevent sending the completion
+                activity_scope = trio.CancelScope()
+                running.cancel_scope = activity_scope
 
                 # Start heartbeat processor
                 nursery.start_soon(
                     self._process_heartbeats, task_token, heartbeat_receive
                 )
 
+                err: BaseException | None = None
+                result: Any = None
                 try:
-                    # Execute the activity
-                    result = await defn.fn(*args)
+                    with activity_scope:
+                        # Execute the activity
+                        result = await defn.fn(*args)
+                except BaseException as e:
+                    err = e
 
-                    # Encode and send success result
-                    await self._send_success(task_token, result, defn)
-
-                except trio.Cancelled:
+                if activity_scope.cancelled_caught or isinstance(
+                    err, trio.Cancelled
+                ):
                     # Activity was cancelled
-                    await self._send_cancellation(task_token)
-                    raise
-                except Exception as e:
-                    # Activity failed with exception
-                    logger.exception(f"Activity {activity_type} failed")
-                    # For ApplicationError, use the error's type attribute
-                    # For other exceptions, use the class name
-                    from temporalio.exceptions import ApplicationError
-                    if isinstance(e, ApplicationError) and e.type:
-                        error_type = e.type
+                    if running.cancelled_due_to_heartbeat_error:
+                        # Heartbeat error -> FAILED (matches SDK)
+                        logger.warning(
+                            "Completing as failure during heartbeat with error of "
+                            f"type {type(running.cancelled_due_to_heartbeat_error)}: "
+                            f"{running.cancelled_due_to_heartbeat_error}",
+                        )
+                        await self._data_converter.encode_failure(
+                            running.cancelled_due_to_heartbeat_error,
+                            completion.result.failed.failure,
+                        )
+                    elif running.cancelled_by_request:
+                        # Explicit cancel -> CANCELLED (matches SDK)
+                        logger.debug("Completing as cancelled")
+                        await self._data_converter.encode_failure(
+                            temporalio.exceptions.CancelledError("Cancelled"),
+                            completion.result.cancelled.failure,
+                        )
                     else:
-                        error_type = type(e).__name__
-                    await self._send_failure(task_token, str(e), error_type)
+                        # Unknown cancellation
+                        completion.result.cancelled.failure.message = (
+                            "Activity cancelled"
+                        )
+                        completion.result.cancelled.failure.cancelled_failure_info.SetInParent()
+                elif err is not None:
+                    # Activity failed with exception
+                    logger.warning(
+                        f"Completing activity {activity_type} as failed",
+                        exc_info=True,
+                    )
+                    await self._data_converter.encode_failure(
+                        err, completion.result.failed.failure  # type: ignore[arg-type]
+                    )
+                else:
+                    # Activity returned successfully
+                    if result is not None:
+                        payloads = await self._data_converter.encode([result])
+                        if payloads:
+                            completion.result.completed.result.CopyFrom(
+                                payloads[0]
+                            )
+                    else:
+                        completion.result.completed.SetInParent()
 
                 # Cancel heartbeat processor
                 nursery.cancel_scope.cancel()
-
         finally:
+            running.done = True
+            try:
+                await self._bridge.complete_activity_task(
+                    completion.SerializeToString()
+                )
+            except Exception:
+                logger.exception("Failed completing activity task")
             activity._Context.reset(token)
-            # Clean up
             del self._running_activities[task_token]
             await heartbeat_send.aclose()
             await heartbeat_receive.aclose()
@@ -308,21 +385,14 @@ class TrioActivityWorker:
         task_token: bytes,
         cancel: temporalio.bridge.proto.activity_task.Cancel,
     ) -> None:
-        """Handle activity cancellation request.
-
-        Sets the cancellation event for the running activity.
-        """
+        """Handle activity cancellation request."""
         running = self._running_activities.get(task_token)
         if running is None:
             logger.warning(f"Cancel for unknown activity token: {task_token!r}")
             return
 
         logger.info(f"Cancelling activity {running.info.activity_type}")
-        running.cancelled_event.set()
-
-        # Also cancel the activity's cancel scope if available
-        if running.cancel_scope is not None:
-            running.cancel_scope.cancel()
+        running.cancel(cancelled_by_request=True)
 
     async def _process_heartbeats(
         self,
@@ -368,11 +438,8 @@ class TrioActivityWorker:
                 try:
                     await self._send_heartbeat(task_token, pending_details)
                 except Exception as e:
-                    # Best effort heartbeat during cancellation - failures are expected
-                    # The activity is being cancelled, so heartbeat delivery is not critical
                     logger.debug(
-                        f"Failed to send final heartbeat during cancellation: {e}. "
-                        f"This is expected during activity cancellation."
+                        f"Failed to send final heartbeat during cancellation: {e}."
                     )
             raise
 
@@ -394,60 +461,33 @@ class TrioActivityWorker:
             heartbeat = temporalio.bridge.proto.ActivityHeartbeat()
             heartbeat.task_token = task_token
             if payloads:
-                heartbeat.details.CopyFrom(payloads)
+                heartbeat.details.extend(payloads)
 
             # Send to bridge
-            response_bytes = await self._bridge.record_activity_heartbeat(
+            await self._bridge.record_activity_heartbeat(
                 heartbeat.SerializeToString()
             )
 
-            # Note: Cancellation info comes via poll_activity_task (Cancel task type),
-            # not from heartbeat response. The response is empty on success.
-            # SDK Core handles heartbeat delivery internally.
-
         except Exception as e:
-            # Heartbeat failure should cancel the activity (matches SDK behavior)
-            logger.warning(f"Heartbeat failed, cancelling activity: {e}")
-            running.cancelled_event.set()
-            if running.cancel_scope is not None:
-                running.cancel_scope.cancel()
-
-    async def _send_success(
-        self, task_token: bytes, result: Any, defn: activity._Definition
-    ) -> None:
-        """Send activity success completion."""
-        completion = temporalio.bridge.proto.ActivityTaskCompletion()
-        completion.task_token = task_token
-
-        # Encode result - encode returns a list of Payload objects
-        if result is not None:
-            payloads = await self._data_converter.encode([result])
-            if payloads:
-                # CopyFrom the first (and only) payload
-                completion.result.completed.result.CopyFrom(payloads[0])
-        else:
-            completion.result.completed.SetInParent()
-
-        await self._bridge.complete_activity_task(completion.SerializeToString())
+            if running.done:
+                logger.exception(
+                    "Failed recording heartbeat (activity already done)"
+                )
+            else:
+                logger.warning(
+                    "Cancelling activity because failed recording heartbeat"
+                )
+                running.cancel(cancelled_due_to_heartbeat_error=e)
 
     async def _send_failure(
         self, task_token: bytes, message: str, error_type: str
     ) -> None:
-        """Send activity failure completion."""
+        """Send activity failure completion (for pre-execution failures)."""
         completion = temporalio.bridge.proto.ActivityTaskCompletion()
         completion.task_token = task_token
         completion.result.failed.failure.message = message
         completion.result.failed.failure.source = "PythonSDK"
         completion.result.failed.failure.application_failure_info.type = error_type
-
-        await self._bridge.complete_activity_task(completion.SerializeToString())
-
-    async def _send_cancellation(self, task_token: bytes) -> None:
-        """Send activity cancellation completion."""
-        completion = temporalio.bridge.proto.ActivityTaskCompletion()
-        completion.task_token = task_token
-        completion.result.cancelled.failure.message = "Activity cancelled"
-        completion.result.cancelled.failure.cancelled_failure_info.SetInParent()
 
         await self._bridge.complete_activity_task(completion.SerializeToString())
 
@@ -474,8 +514,6 @@ class TrioActivityWorker:
         heartbeat_details: list[Any] = []
         if start.heartbeat_details and len(start.heartbeat_details.payloads) > 0:
             try:
-                # Decode heartbeat details synchronously
-                # These are details from the previous attempt's last heartbeat
                 for payload in start.heartbeat_details.payloads:
                     value = self._data_converter.payload_converter.from_payload(payload)
                     heartbeat_details.append(value)

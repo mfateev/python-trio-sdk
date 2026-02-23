@@ -73,10 +73,7 @@ async def test_pattern_8_activity_execution_success(unique_task_queue: str) -> N
         )
 
         # 2. Poll for workflow activation (initialize_workflow)
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
 
         assert activation.has_job_type("initialize_workflow"), (
             f"Expected initialize_workflow job, got: "
@@ -88,19 +85,23 @@ async def test_pattern_8_activity_execution_success(unique_task_queue: str) -> N
         print(f"Pattern 8: Received initialize_workflow for {init_job.workflow_type}")
 
         # 3. Complete with ScheduleActivity command
-        completion = (
-            CompletionBuilder(run_id)
-            .schedule_activity(
-                seq=1,
-                activity_type="TestActivity",
-                task_queue=unique_task_queue,
-                args=("activity_arg",),
-                schedule_to_close_timeout=timedelta(seconds=60),
-                start_to_close_timeout=timedelta(seconds=30),
+        def build_schedule_activity(rid: str) -> bytes:
+            return (
+                CompletionBuilder(rid)
+                .schedule_activity(
+                    seq=1,
+                    activity_type="TestActivity",
+                    task_queue=unique_task_queue,
+                    args=("activity_arg",),
+                    schedule_to_close_timeout=timedelta(seconds=60),
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
+                .build()
             )
-            .build()
+
+        await bridge.complete_workflow_activation(
+            build_schedule_activity(run_id), timeout=DEFAULT_TIMEOUT
         )
-        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
         print("Pattern 8: Sent ScheduleActivity(seq=1)")
 
         # 4. Poll for activity task
@@ -132,10 +133,10 @@ async def test_pattern_8_activity_execution_success(unique_task_queue: str) -> N
         print("Pattern 8: Completed activity with result")
 
         # 6. Poll for workflow activation (resolve_activity)
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
+        activation = await poll_and_handle_eviction(
+            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            replay_commands=[build_schedule_activity],
         )
-        activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("resolve_activity"), (
             f"Expected resolve_activity job, got: "
@@ -217,28 +218,29 @@ async def test_pattern_9_activity_failure(unique_task_queue: str) -> None:
         )
 
         # 2. Poll for workflow activation (initialize_workflow)
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
 
         assert activation.has_job_type("initialize_workflow")
         run_id = activation.run_id
         print("Pattern 9: Received initialize_workflow")
 
         # 3. Complete with ScheduleActivity command
-        completion = (
-            CompletionBuilder(run_id)
-            .schedule_activity(
-                seq=1,
-                activity_type="FailingActivity",
-                task_queue=unique_task_queue,
-                schedule_to_close_timeout=timedelta(seconds=10),
-                start_to_close_timeout=timedelta(seconds=5),
+        def build_schedule_failing_activity(rid: str) -> bytes:
+            return (
+                CompletionBuilder(rid)
+                .schedule_activity(
+                    seq=1,
+                    activity_type="FailingActivity",
+                    task_queue=unique_task_queue,
+                    schedule_to_close_timeout=timedelta(seconds=10),
+                    start_to_close_timeout=timedelta(seconds=5),
+                )
+                .build()
             )
-            .build()
+
+        await bridge.complete_workflow_activation(
+            build_schedule_failing_activity(run_id), timeout=DEFAULT_TIMEOUT
         )
-        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
         print("Pattern 9: Sent ScheduleActivity(seq=1)")
 
         # 4. Poll for activity task
@@ -267,10 +269,10 @@ async def test_pattern_9_activity_failure(unique_task_queue: str) -> None:
         print("Pattern 9: Completed activity with failure")
 
         # 6. Poll for workflow activation (resolve_activity with failure)
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
+        activation = await poll_and_handle_eviction(
+            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            replay_commands=[build_schedule_failing_activity],
         )
-        activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("resolve_activity"), (
             f"Expected resolve_activity job, got: "
@@ -362,30 +364,34 @@ async def test_pattern_10_activity_cancellation(unique_task_queue: str) -> None:
         )
 
         # 2. Poll for workflow activation (initialize_workflow)
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
 
         assert activation.has_job_type("initialize_workflow")
         run_id = activation.run_id
         print("Pattern 10: Received initialize_workflow")
 
         # 3. Schedule activity + short timer (to wake up workflow for cancellation)
-        completion = (
-            CompletionBuilder(run_id)
-            .schedule_activity(
-                seq=1,
-                activity_type="LongRunningActivity",
-                task_queue=unique_task_queue,
-                schedule_to_close_timeout=timedelta(seconds=60),
-                start_to_close_timeout=timedelta(seconds=60),
-                heartbeat_timeout=timedelta(seconds=5),
+        def build_schedule_activity_and_timer(rid: str) -> bytes:
+            return (
+                CompletionBuilder(rid)
+                .schedule_activity(
+                    seq=1,
+                    activity_type="LongRunningActivity",
+                    task_queue=unique_task_queue,
+                    schedule_to_close_timeout=timedelta(seconds=60),
+                    start_to_close_timeout=timedelta(seconds=60),
+                    heartbeat_timeout=timedelta(seconds=5),
+                )
+                .start_timer(seq=2, duration=timedelta(milliseconds=100))
+                .build()
             )
-            .start_timer(seq=2, duration=timedelta(milliseconds=100))
-            .build()
+
+        def build_request_cancel_activity(rid: str) -> bytes:
+            return CompletionBuilder(rid).request_cancel_activity(seq=1).build()
+
+        await bridge.complete_workflow_activation(
+            build_schedule_activity_and_timer(run_id), timeout=DEFAULT_TIMEOUT
         )
-        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
         print("Pattern 10: Sent ScheduleActivity(seq=1) + StartTimer(seq=2)")
 
         # 4. Poll for activity task (activity starts running)
@@ -395,10 +401,10 @@ async def test_pattern_10_activity_cancellation(unique_task_queue: str) -> None:
         print("Pattern 10: Received activity task (activity running)")
 
         # 5. Poll for timer to fire (wakes up workflow)
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
+        activation = await poll_and_handle_eviction(
+            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            replay_commands=[build_schedule_activity_and_timer],
         )
-        activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("fire_timer"), (
             f"Expected fire_timer job, got: "
@@ -407,8 +413,9 @@ async def test_pattern_10_activity_cancellation(unique_task_queue: str) -> None:
         print("Pattern 10: Timer fired, workflow woke up")
 
         # 6. Send RequestCancelActivity
-        completion = CompletionBuilder(run_id).request_cancel_activity(seq=1).build()
-        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+        await bridge.complete_workflow_activation(
+            build_request_cancel_activity(run_id), timeout=DEFAULT_TIMEOUT
+        )
         print("Pattern 10: Sent RequestCancelActivity(seq=1)")
 
         # 7. Complete activity with cancelled status
@@ -426,10 +433,13 @@ async def test_pattern_10_activity_cancellation(unique_task_queue: str) -> None:
         print("Pattern 10: Completed activity with cancelled status")
 
         # 8. Poll for workflow activation (resolve_activity with cancelled)
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
+        activation = await poll_and_handle_eviction(
+            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            replay_commands=[
+                build_schedule_activity_and_timer,
+                build_request_cancel_activity,
+            ],
         )
-        activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("resolve_activity"), (
             f"Expected resolve_activity job, got: "
@@ -498,10 +508,7 @@ async def test_pattern_8_activity_with_retry(unique_task_queue: str) -> None:
         )
 
         # Poll and get run_id
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
         run_id = activation.run_id
 
         # Schedule activity with retry policy
@@ -510,29 +517,31 @@ async def test_pattern_8_activity_with_retry(unique_task_queue: str) -> None:
         import temporalio.bridge.proto.workflow_commands.workflow_commands_pb2 as cmd_pb
         import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as comp_pb
 
-        completion = comp_pb.WorkflowActivationCompletion()
-        completion.run_id = run_id
-        completion.successful.SetInParent()
+        def build_schedule_retryable_activity(rid: str) -> bytes:
+            comp = comp_pb.WorkflowActivationCompletion()
+            comp.run_id = rid
+            comp.successful.SetInParent()
 
-        cmd = cmd_pb.WorkflowCommand()
-        cmd.schedule_activity.seq = 1
-        cmd.schedule_activity.activity_id = "1"
-        cmd.schedule_activity.activity_type = "RetryableActivity"
-        cmd.schedule_activity.task_queue = unique_task_queue
+            cmd = cmd_pb.WorkflowCommand()
+            cmd.schedule_activity.seq = 1
+            cmd.schedule_activity.activity_id = "1"
+            cmd.schedule_activity.activity_type = "RetryableActivity"
+            cmd.schedule_activity.task_queue = unique_task_queue
 
-        # Set timeout
-        cmd.schedule_activity.schedule_to_close_timeout.seconds = 30
+            # Set timeout
+            cmd.schedule_activity.schedule_to_close_timeout.seconds = 30
 
-        # Set retry policy
-        cmd.schedule_activity.retry_policy.initial_interval.seconds = 1
-        cmd.schedule_activity.retry_policy.backoff_coefficient = 2.0
-        cmd.schedule_activity.retry_policy.maximum_interval.seconds = 10
-        cmd.schedule_activity.retry_policy.maximum_attempts = 3
+            # Set retry policy
+            cmd.schedule_activity.retry_policy.initial_interval.seconds = 1
+            cmd.schedule_activity.retry_policy.backoff_coefficient = 2.0
+            cmd.schedule_activity.retry_policy.maximum_interval.seconds = 10
+            cmd.schedule_activity.retry_policy.maximum_attempts = 3
 
-        completion.successful.commands.append(cmd)
+            comp.successful.commands.append(cmd)
+            return comp.SerializeToString()
 
         await bridge.complete_workflow_activation(
-            completion.SerializeToString(), timeout=DEFAULT_TIMEOUT
+            build_schedule_retryable_activity(run_id), timeout=DEFAULT_TIMEOUT
         )
         print("Pattern 8 (retry): Scheduled activity with retry policy")
 
@@ -581,10 +590,10 @@ async def test_pattern_8_activity_with_retry(unique_task_queue: str) -> None:
         )
 
         # Poll for resolve_activity
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
+        activation = await poll_and_handle_eviction(
+            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            replay_commands=[build_schedule_retryable_activity],
         )
-        activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("resolve_activity")
         resolve_job = activation.get_job("resolve_activity")

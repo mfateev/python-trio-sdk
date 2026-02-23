@@ -23,6 +23,7 @@ from .conftest import (
     ActivationParser,
     CompletionBuilder,
     get_workflow_status_via_cli,
+    poll_and_handle_eviction,
     query_workflow_via_cli,
     query_workflow_via_cli_async,
     safe_shutdown,
@@ -70,22 +71,23 @@ async def test_pattern_11_signal_workflow(unique_task_queue: str) -> None:
         )
 
         # 2. Poll for workflow activation (initialize_workflow)
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
 
         assert activation.has_job_type("initialize_workflow")
         run_id = activation.run_id
         print("Pattern 11: Received initialize_workflow")
 
         # 3. Complete with a long timer to keep workflow alive
-        completion = (
-            CompletionBuilder(run_id)
-            .start_timer(seq=1, duration=timedelta(seconds=60))
-            .build()
+        def build_start_timer(rid: str) -> bytes:
+            return (
+                CompletionBuilder(rid)
+                .start_timer(seq=1, duration=timedelta(seconds=60))
+                .build()
+            )
+
+        await bridge.complete_workflow_activation(
+            build_start_timer(run_id), timeout=DEFAULT_TIMEOUT
         )
-        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
         print("Pattern 11: Started timer to keep workflow alive")
 
         # Give server time to process
@@ -100,10 +102,10 @@ async def test_pattern_11_signal_workflow(unique_task_queue: str) -> None:
         print("Pattern 11: Sent signal via CLI")
 
         # 5. Poll for workflow activation (signal_workflow)
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
+        activation = await poll_and_handle_eviction(
+            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            replay_commands=[build_start_timer],
         )
-        activation = ActivationParser(activation_bytes)
 
         assert activation.has_job_type("signal_workflow"), (
             f"Expected signal_workflow job, got: "
@@ -173,19 +175,20 @@ async def test_pattern_11_multiple_signals(unique_task_queue: str) -> None:
         )
 
         # Get initial activation
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
         run_id = activation.run_id
 
         # Start timer to keep workflow alive
-        completion = (
-            CompletionBuilder(run_id)
-            .start_timer(seq=1, duration=timedelta(seconds=60))
-            .build()
+        def build_start_timer_multi(rid: str) -> bytes:
+            return (
+                CompletionBuilder(rid)
+                .start_timer(seq=1, duration=timedelta(seconds=60))
+                .build()
+            )
+
+        await bridge.complete_workflow_activation(
+            build_start_timer_multi(run_id), timeout=DEFAULT_TIMEOUT
         )
-        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
 
         await trio.sleep(0.3)
 
@@ -199,8 +202,10 @@ async def test_pattern_11_multiple_signals(unique_task_queue: str) -> None:
         # Poll for signals - may come in one or multiple activations
         received_signals = []
         for _ in range(3):  # At most 3 activations
-            activation_bytes = await bridge.poll_workflow_activation(timeout=5.0)
-            activation = ActivationParser(activation_bytes)
+            activation = await poll_and_handle_eviction(
+                bridge, run_id, timeout=5.0,
+                replay_commands=[build_start_timer_multi],
+            )
 
             signal_jobs = activation.get_all_jobs("signal_workflow")
             for sig in signal_jobs:
@@ -282,10 +287,7 @@ async def test_pattern_12_query_workflow(unique_task_queue: str) -> None:
         )
 
         # 2. Poll for workflow activation (initialize_workflow)
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
 
         assert activation.has_job_type("initialize_workflow")
         run_id = activation.run_id
@@ -294,13 +296,17 @@ async def test_pattern_12_query_workflow(unique_task_queue: str) -> None:
         # 3. Complete with TWO timers:
         #    - seq=1: Short timer (1s) to wake up workflow after query
         #    - seq=2: Long timer (60s) to keep workflow alive for query
-        completion = (
-            CompletionBuilder(run_id)
-            .start_timer(seq=1, duration=timedelta(seconds=1))
-            .start_timer(seq=2, duration=timedelta(seconds=60))
-            .build()
+        def build_two_timers(rid: str) -> bytes:
+            return (
+                CompletionBuilder(rid)
+                .start_timer(seq=1, duration=timedelta(seconds=1))
+                .start_timer(seq=2, duration=timedelta(seconds=60))
+                .build()
+            )
+
+        await bridge.complete_workflow_activation(
+            build_two_timers(run_id), timeout=DEFAULT_TIMEOUT
         )
-        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
         print("Pattern 12: Started timers to keep workflow alive")
 
         await trio.sleep(0.3)
@@ -320,10 +326,10 @@ async def test_pattern_12_query_workflow(unique_task_queue: str) -> None:
             nursery.start_soon(send_query)
 
             # 5. Poll for workflow activation (query_workflow)
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
+            activation = await poll_and_handle_eviction(
+                bridge, run_id, timeout=DEFAULT_TIMEOUT,
+                replay_commands=[build_two_timers],
             )
-            activation = ActivationParser(activation_bytes)
 
             # Query might come with other jobs
             if activation.has_job_type("query_workflow"):
@@ -372,8 +378,10 @@ async def test_pattern_12_query_workflow(unique_task_queue: str) -> None:
         assert query_result is not None
 
         # 7. Wait for short timer to fire
-        activation_bytes = await bridge.poll_workflow_activation(timeout=5.0)
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(
+            bridge, run_id, timeout=5.0,
+            replay_commands=[build_two_timers],
+        )
         assert activation.has_job_type("fire_timer"), (
             f"Expected fire_timer, got {[j.WhichOneof('variant') for j in activation.jobs]}"
         )
@@ -438,19 +446,20 @@ async def test_pattern_13_query_failure(unique_task_queue: str) -> None:
         )
 
         # Get initial activation
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
         run_id = activation.run_id
 
         # Start timer
-        completion = (
-            CompletionBuilder(run_id)
-            .start_timer(seq=1, duration=timedelta(seconds=60))
-            .build()
+        def build_long_timer_13(rid: str) -> bytes:
+            return (
+                CompletionBuilder(rid)
+                .start_timer(seq=1, duration=timedelta(seconds=60))
+                .build()
+            )
+
+        await bridge.complete_workflow_activation(
+            build_long_timer_13(run_id), timeout=DEFAULT_TIMEOUT
         )
-        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
 
         await trio.sleep(0.5)
 
@@ -471,10 +480,10 @@ async def test_pattern_13_query_failure(unique_task_queue: str) -> None:
             nursery.start_soon(send_failing_query)
 
             # Poll for query
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
+            activation = await poll_and_handle_eviction(
+                bridge, run_id, timeout=DEFAULT_TIMEOUT,
+                replay_commands=[build_long_timer_13],
             )
-            activation = ActivationParser(activation_bytes)
 
             if activation.has_job_type("query_workflow"):
                 query_job = activation.get_job("query_workflow")
@@ -507,8 +516,10 @@ async def test_pattern_13_query_failure(unique_task_queue: str) -> None:
         # Need to poll and handle any pending activations
         try:
             with trio.move_on_after(2.0):
-                activation_bytes = await bridge.poll_workflow_activation(timeout=2.0)
-                activation = ActivationParser(activation_bytes)
+                activation = await poll_and_handle_eviction(
+                    bridge, run_id, timeout=2.0,
+                    replay_commands=[build_long_timer_13],
+                )
                 completion = (
                     CompletionBuilder(run_id)
                     .cancel_timer(seq=1)
@@ -554,19 +565,20 @@ async def test_pattern_12_query_with_arguments(unique_task_queue: str) -> None:
         )
 
         # Get initial activation
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
         run_id = activation.run_id
 
         # Start timer
-        completion = (
-            CompletionBuilder(run_id)
-            .start_timer(seq=1, duration=timedelta(seconds=60))
-            .build()
+        def build_long_timer_12args(rid: str) -> bytes:
+            return (
+                CompletionBuilder(rid)
+                .start_timer(seq=1, duration=timedelta(seconds=60))
+                .build()
+            )
+
+        await bridge.complete_workflow_activation(
+            build_long_timer_12args(run_id), timeout=DEFAULT_TIMEOUT
         )
-        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
 
         await trio.sleep(0.5)
 
@@ -583,10 +595,10 @@ async def test_pattern_12_query_with_arguments(unique_task_queue: str) -> None:
             query_task = nursery.start_soon(send_query)
 
             # Poll for query
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
+            activation = await poll_and_handle_eviction(
+                bridge, run_id, timeout=DEFAULT_TIMEOUT,
+                replay_commands=[build_long_timer_12args],
             )
-            activation = ActivationParser(activation_bytes)
 
             if activation.has_job_type("query_workflow"):
                 query_job = activation.get_job("query_workflow")

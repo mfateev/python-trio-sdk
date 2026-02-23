@@ -23,7 +23,7 @@ from temporalio_trio import workflow
 from temporalio_trio.client import Client
 from temporalio_trio.worker import Worker
 
-TEMPORAL_CLI_PATH = "/home/sprite/workarea/bin/temporal"
+TEMPORAL_CLI_PATH = "/home/dev/.temporalio/bin/temporal"
 
 
 @pytest.fixture
@@ -75,7 +75,7 @@ async def test_e2e_workflow_execution(trio_client):
 
     Requires:
         - Temporal server running on localhost:7233
-        - temporal CLI at /home/sprite/workarea/bin/temporal
+        - temporal CLI at /home/dev/.temporalio/bin/temporal
     """
     # Configuration
     namespace = "default"
@@ -329,7 +329,7 @@ async def test_e2e_timer_summary_in_history(trio_client):
 
     Requires:
         - Temporal server running on localhost:7233
-        - temporal CLI at /home/sprite/workarea/bin/temporal
+        - temporal CLI at /home/dev/.temporalio/bin/temporal
     """
     # Configuration
     namespace = "default"

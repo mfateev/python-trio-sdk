@@ -26,6 +26,7 @@ from .conftest import (
     ActivationParser,
     CompletionBuilder,
     get_workflow_status_via_cli,
+    poll_and_handle_eviction,
     safe_shutdown,
     start_workflow_via_cli,
 )
@@ -77,15 +78,33 @@ async def test_pattern_20_parallel_workflows_basic(unique_task_queue: str) -> No
         # Track: run_id -> workflow info
         workflows: dict[str, dict] = {}
         activation_order: list[str] = []
+        # Track replay commands per run_id
+        replay_map: dict[str, list] = {}
+
+        def build_short_timer(rid: str) -> bytes:
+            return (
+                CompletionBuilder(rid)
+                .start_timer(seq=1, duration=timedelta(milliseconds=100))
+                .build()
+            )
 
         for _ in range(10):  # Safety limit
             if len(workflows) == 3:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
-            )
-            activation = ActivationParser(activation_bytes)
+            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
+
+            # Handle replay
+            if (
+                activation.has_job_type("initialize_workflow")
+                and activation.activation.is_replaying
+                and activation.run_id in workflows
+            ):
+                await bridge.complete_workflow_activation(
+                    build_short_timer(activation.run_id), timeout=DEFAULT_TIMEOUT
+                )
+                print(f"Pattern 20: Replayed timer for run_id={activation.run_id[:8]}...")
+                continue
 
             if activation.has_job_type("initialize_workflow"):
                 run_id = activation.run_id
@@ -105,13 +124,8 @@ async def test_pattern_20_parallel_workflows_basic(unique_task_queue: str) -> No
                 )
 
                 # Start a short timer for each
-                completion = (
-                    CompletionBuilder(run_id)
-                    .start_timer(seq=1, duration=timedelta(milliseconds=100))
-                    .build()
-                )
                 await bridge.complete_workflow_activation(
-                    completion, timeout=DEFAULT_TIMEOUT
+                    build_short_timer(run_id), timeout=DEFAULT_TIMEOUT
                 )
 
         assert len(workflows) == 3, f"Expected 3 workflows, got {len(workflows)}"
@@ -125,10 +139,19 @@ async def test_pattern_20_parallel_workflows_basic(unique_task_queue: str) -> No
             if not pending:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
-            )
-            activation = ActivationParser(activation_bytes)
+            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
+
+            # Handle replay
+            if (
+                activation.has_job_type("initialize_workflow")
+                and activation.activation.is_replaying
+                and activation.run_id in workflows
+            ):
+                await bridge.complete_workflow_activation(
+                    build_short_timer(activation.run_id), timeout=DEFAULT_TIMEOUT
+                )
+                continue
+
             run_id = activation.run_id
 
             if activation.has_job_type("fire_timer"):
@@ -210,14 +233,31 @@ async def test_pattern_20_parallel_workflows_interleaved_completion(
         # Collect initializations and start timers with different durations
         workflows: dict[str, dict] = {}
 
+        def build_timer_for_run(rid: str) -> bytes:
+            """Build timer completion using the duration stored for this run_id."""
+            dur = workflows[rid]["duration_ms"]
+            return (
+                CompletionBuilder(rid)
+                .start_timer(seq=1, duration=timedelta(milliseconds=dur))
+                .build()
+            )
+
         for _ in range(10):
             if len(workflows) == 3:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
-            )
-            activation = ActivationParser(activation_bytes)
+            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
+
+            # Handle replay
+            if (
+                activation.has_job_type("initialize_workflow")
+                and activation.activation.is_replaying
+                and activation.run_id in workflows
+            ):
+                await bridge.complete_workflow_activation(
+                    build_timer_for_run(activation.run_id), timeout=DEFAULT_TIMEOUT
+                )
+                continue
 
             if activation.has_job_type("initialize_workflow"):
                 run_id = activation.run_id
@@ -240,13 +280,8 @@ async def test_pattern_20_parallel_workflows_interleaved_completion(
                 )
 
                 # Start timer with workflow-specific duration
-                completion = (
-                    CompletionBuilder(run_id)
-                    .start_timer(seq=1, duration=timedelta(milliseconds=duration_ms))
-                    .build()
-                )
                 await bridge.complete_workflow_activation(
-                    completion, timeout=DEFAULT_TIMEOUT
+                    build_timer_for_run(run_id), timeout=DEFAULT_TIMEOUT
                 )
 
         assert len(workflows) == 3
@@ -258,10 +293,19 @@ async def test_pattern_20_parallel_workflows_interleaved_completion(
             if len(completion_order) == 3:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
-            )
-            activation = ActivationParser(activation_bytes)
+            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
+
+            # Handle replay
+            if (
+                activation.has_job_type("initialize_workflow")
+                and activation.activation.is_replaying
+                and activation.run_id in workflows
+            ):
+                await bridge.complete_workflow_activation(
+                    build_timer_for_run(activation.run_id), timeout=DEFAULT_TIMEOUT
+                )
+                continue
+
             run_id = activation.run_id
 
             if activation.has_job_type("fire_timer"):
@@ -338,10 +382,7 @@ async def test_pattern_20_parallel_workflows_out_of_order_completion(
             if len(pending_activations) == 3:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
-            )
-            activation = ActivationParser(activation_bytes)
+            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
 
             if activation.has_job_type("initialize_workflow"):
                 run_id = activation.run_id
@@ -415,15 +456,50 @@ async def test_pattern_20_parallel_workflows_mixed_operations(
         # Track workflows
         workflows: dict[str, dict] = {}
 
+        def build_mixed_completion(rid: str) -> bytes:
+            """Build completion based on the workflow type stored for this run_id."""
+            wf_type = workflows[rid]["type"]
+            if wf_type == "timer":
+                return (
+                    CompletionBuilder(rid)
+                    .start_timer(seq=1, duration=timedelta(milliseconds=100))
+                    .build()
+                )
+            elif wf_type == "activity":
+                return (
+                    CompletionBuilder(rid)
+                    .schedule_activity(
+                        seq=1,
+                        activity_type="TestActivity",
+                        task_queue=unique_task_queue,
+                        schedule_to_close_timeout=timedelta(seconds=30),
+                    )
+                    .build()
+                )
+            else:  # signal
+                return (
+                    CompletionBuilder(rid)
+                    .start_timer(seq=1, duration=timedelta(seconds=60))
+                    .build()
+                )
+
         # Initialize all workflows with their specific operations
         for _ in range(10):
             if len(workflows) == 3:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
-            )
-            activation = ActivationParser(activation_bytes)
+            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
+
+            # Handle replay
+            if (
+                activation.has_job_type("initialize_workflow")
+                and activation.activation.is_replaying
+                and activation.run_id in workflows
+            ):
+                await bridge.complete_workflow_activation(
+                    build_mixed_completion(activation.run_id), timeout=DEFAULT_TIMEOUT
+                )
+                continue
 
             if activation.has_job_type("initialize_workflow"):
                 run_id = activation.run_id
@@ -438,34 +514,13 @@ async def test_pattern_20_parallel_workflows_mixed_operations(
 
                 if workflow_id == wf_timer:
                     workflows[run_id]["type"] = "timer"
-                    completion = (
-                        CompletionBuilder(run_id)
-                        .start_timer(seq=1, duration=timedelta(milliseconds=100))
-                        .build()
-                    )
                 elif workflow_id == wf_activity:
                     workflows[run_id]["type"] = "activity"
-                    completion = (
-                        CompletionBuilder(run_id)
-                        .schedule_activity(
-                            seq=1,
-                            activity_type="TestActivity",
-                            task_queue=unique_task_queue,
-                            schedule_to_close_timeout=timedelta(seconds=30),
-                        )
-                        .build()
-                    )
                 else:  # signal workflow
                     workflows[run_id]["type"] = "signal"
-                    # Start a timer to keep it alive while waiting for signal
-                    completion = (
-                        CompletionBuilder(run_id)
-                        .start_timer(seq=1, duration=timedelta(seconds=60))
-                        .build()
-                    )
 
                 await bridge.complete_workflow_activation(
-                    completion, timeout=DEFAULT_TIMEOUT
+                    build_mixed_completion(run_id), timeout=DEFAULT_TIMEOUT
                 )
                 print(f"Pattern 20: Initialized {workflows[run_id]['type']} workflow")
 
@@ -483,10 +538,19 @@ async def test_pattern_20_parallel_workflows_mixed_operations(
             if not pending:
                 break
 
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
-            )
-            activation = ActivationParser(activation_bytes)
+            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
+
+            # Handle replay
+            if (
+                activation.has_job_type("initialize_workflow")
+                and activation.activation.is_replaying
+                and activation.run_id in workflows
+            ):
+                await bridge.complete_workflow_activation(
+                    build_mixed_completion(activation.run_id), timeout=DEFAULT_TIMEOUT
+                )
+                continue
+
             run_id = activation.run_id
 
             if run_id not in workflows:
@@ -569,10 +633,7 @@ async def test_pattern_20_parallel_workflows_mixed_operations(
 
             try:
                 with trio.move_on_after(2.0):
-                    activation_bytes = await bridge.poll_workflow_activation(
-                        timeout=2.0
-                    )
-                    activation = ActivationParser(activation_bytes)
+                    activation = await poll_and_handle_eviction(bridge, "", timeout=2.0)
                     run_id = activation.run_id
 
                     if run_id in workflows and activation.has_job_type(

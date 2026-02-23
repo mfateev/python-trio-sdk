@@ -7,7 +7,7 @@ This is the simplest way to see the Trio-based Temporal SDK in action!
 Open a terminal and run:
 
 ```bash
-/home/sprite/workarea/bin/temporal server start-dev
+/home/dev/.temporalio/bin/temporal server start-dev
 ```
 
 Keep this running in the background.
@@ -36,7 +36,7 @@ Keep this running.
 In a **third terminal**, run:
 
 ```bash
-/home/sprite/workarea/bin/temporal workflow start \
+/home/dev/.temporalio/bin/temporal workflow start \
   --type TimerWorkflow \
   --task-queue trio-example-queue \
   --input '5.0' \
@@ -54,7 +54,7 @@ TimerWorkflow completed: workflow_id=my-timer-workflow
 ## Step 5: Check the Result
 
 ```bash
-/home/sprite/workarea/bin/temporal workflow describe --workflow-id my-timer-workflow
+/home/dev/.temporalio/bin/temporal workflow describe --workflow-id my-timer-workflow
 ```
 
 You should see:
@@ -68,7 +68,7 @@ Result: "Slept for 5.0 seconds"
 To see the timer events in the workflow history:
 
 ```bash
-/home/sprite/workarea/bin/temporal workflow show --workflow-id my-timer-workflow
+/home/dev/.temporalio/bin/temporal workflow show --workflow-id my-timer-workflow
 ```
 
 You'll see events including:

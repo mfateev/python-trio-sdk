@@ -14,7 +14,7 @@ import json
 import subprocess
 import time
 from datetime import timedelta
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 import google.protobuf.duration_pb2
@@ -29,7 +29,7 @@ import trio
 
 from temporalio_trio._async_bridge import TrioBridgeWrapper
 
-TEMPORAL_CLI_PATH = "/home/sprite/workarea/bin/temporal"
+TEMPORAL_CLI_PATH = "/home/dev/.temporalio/bin/temporal"
 DEFAULT_NAMESPACE = "default"
 DEFAULT_TIMEOUT = 30.0
 
@@ -565,24 +565,61 @@ def cancel_workflow_via_cli(
         )
 
 
+class CompletionHistory:
+    """Tracks completion history per run_id for replay handling.
+
+    When SDK-Core evicts a workflow and replays it, we need to re-send
+    the same completion commands that were originally sent. This class
+    records all completions and can replay them automatically.
+    """
+
+    def __init__(self) -> None:
+        # Map from run_id to list of completion-builder callables
+        self._history: dict[str, list[Callable[[str], bytes]]] = {}
+
+    def record(self, run_id: str, build_fn: "Callable[[str], bytes]") -> None:
+        """Record a completion for a run_id."""
+        if run_id not in self._history:
+            self._history[run_id] = []
+        self._history[run_id].append(build_fn)
+
+    def get_replay_commands(self, run_id: str) -> "list[Callable[[str], bytes]]":
+        """Get all recorded completions for a run_id."""
+        return self._history.get(run_id, [])
+
+    def has_history(self, run_id: str) -> bool:
+        """Check if any history exists for a run_id."""
+        return run_id in self._history and len(self._history[run_id]) > 0
+
+
 async def poll_and_handle_eviction(
     bridge: TrioBridgeWrapper,
     run_id: str,
     timeout: float = DEFAULT_TIMEOUT,
+    replay_commands: "list[Callable[[str], bytes]] | None" = None,
+    history: "CompletionHistory | None" = None,
 ) -> "ActivationParser":
-    """Poll for workflow activation, handling cache eviction if needed.
+    """Poll for workflow activation, handling cache eviction and replay if needed.
 
     If a remove_from_cache activation is received, complete it and poll again.
-    This handles the case where SDK-Core evicts a workflow from cache and
-    needs to replay it.
+    If replay_commands is provided (or history has commands for the run_id) and
+    we get an initialize_workflow with is_replaying=True, we replay each command
+    sequence and poll again until we get a non-replay, non-eviction activation.
 
     Args:
         bridge: The bridge wrapper
         run_id: The expected run_id (used for completing eviction)
         timeout: Poll timeout
+        replay_commands: Optional list of callables, each taking run_id and
+            returning completion bytes. When a replay initialize_workflow is
+            received, these are sent in order (each followed by a poll) to
+            replay the workflow history before returning the final activation.
+        history: Optional CompletionHistory to look up replay commands by run_id.
+            If both replay_commands and history are provided, replay_commands
+            takes precedence.
 
     Returns:
-        ActivationParser for the non-eviction activation
+        ActivationParser for the non-eviction, non-replay activation
     """
     while True:
         activation_bytes = await bridge.poll_workflow_activation(timeout=timeout)
@@ -594,6 +631,41 @@ async def poll_and_handle_eviction(
             completion = CompletionBuilder(evict_run_id).build()
             await bridge.complete_workflow_activation(completion, timeout=timeout)
             print(f"Handled cache eviction for run_id={evict_run_id}")
+            continue
+
+        # Determine replay commands to use
+        cmds = replay_commands
+        if (
+            cmds is None
+            and history is not None
+            and activation.has_job_type("initialize_workflow")
+            and activation.activation.is_replaying
+        ):
+            cmds = history.get_replay_commands(activation.run_id)
+
+        if (
+            cmds
+            and activation.has_job_type("initialize_workflow")
+            and activation.activation.is_replaying
+        ):
+            # Handle replay by re-sending the original commands
+            replay_run_id = activation.run_id
+            print(f"Handling replay for run_id={replay_run_id[:8]}...")
+            for i, build_completion in enumerate(cmds):
+                completion_bytes = build_completion(replay_run_id)
+                await bridge.complete_workflow_activation(
+                    completion_bytes, timeout=timeout
+                )
+                print(f"  Replayed command {i + 1}/{len(cmds)}")
+                if i < len(cmds) - 1:
+                    # Poll for next replay activation between commands
+                    next_bytes = await bridge.poll_workflow_activation(timeout=timeout)
+                    next_act = ActivationParser(next_bytes)
+                    if next_act.has_job_type("remove_from_cache"):
+                        evict_completion = CompletionBuilder(next_act.run_id).build()
+                        await bridge.complete_workflow_activation(
+                            evict_completion, timeout=timeout
+                        )
             continue
 
         return activation

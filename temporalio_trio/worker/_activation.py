@@ -415,6 +415,9 @@ class ScheduleActivityCommand:
     retry_policy: temporalio.common.RetryPolicy | None = None
     """Retry policy for the activity."""
 
+    cancellation_type: int = 0
+    """Activity cancellation type. Default: TRY_CANCEL (0)."""
+
 
 @dataclass
 class RequestCancelActivityCommand:

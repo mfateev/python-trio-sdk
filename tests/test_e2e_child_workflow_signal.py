@@ -20,7 +20,7 @@ from temporalio_trio import workflow
 from temporalio_trio.client import Client
 from temporalio_trio.worker import Worker
 
-TEMPORAL_CLI_PATH = "/home/sprite/workarea/bin/temporal"
+TEMPORAL_CLI_PATH = "/home/dev/.temporalio/bin/temporal"
 
 
 @pytest.fixture
