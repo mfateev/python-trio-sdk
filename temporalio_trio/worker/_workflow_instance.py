@@ -872,6 +872,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         heartbeat_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
         activity_id: str | None = None,
+        cancellation_type: int = 0,
     ) -> Any:
         """Execute an activity and wait for its result.
 
@@ -947,6 +948,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 start_to_close_timeout=start_to_close_timeout,
                 heartbeat_timeout=heartbeat_timeout,
                 retry_policy=retry_policy,
+                cancellation_type=int(cancellation_type),
             )
         )
         self._pending_activity_seq = seq

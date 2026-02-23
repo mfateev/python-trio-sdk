@@ -39,6 +39,7 @@ from .conftest import (
     ActivationParser,
     CompletionBuilder,
     get_workflow_status_via_cli,
+    poll_and_handle_eviction,
     safe_shutdown,
     start_workflow_via_cli,
 )
@@ -139,10 +140,7 @@ async def test_pattern_19_upsert_search_attributes(unique_task_queue: str) -> No
         )
 
         # 2. Poll for initialization
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
 
         assert activation.has_job_type("initialize_workflow")
         run_id = activation.run_id
@@ -156,62 +154,34 @@ async def test_pattern_19_upsert_search_attributes(unique_task_queue: str) -> No
 
         dc = DataConverter.default
 
-        completion = comp_pb.WorkflowActivationCompletion()
-        completion.run_id = run_id
-        completion.successful.SetInParent()
+        def build_upsert_and_timer(rid: str) -> bytes:
+            upsert_cmd = UpsertSearchAttributesCommand(
+                search_attributes=[KW_KEY.value_set("test-value-123")]
+            )
+            poc_comp = WorkflowActivationCompletion(commands=[upsert_cmd])
+            bridge_comp = poc_to_bridge_completion(rid, poc_comp, dc)
 
-        # Create UpsertSearchAttributes command using typed updates
-        upsert_cmd = UpsertSearchAttributesCommand(
-            search_attributes=[KW_KEY.value_set("test-value-123")]
-        )
+            # Add a timer to wake up workflow
+            cmd2 = cmd_pb.WorkflowCommand()
+            cmd2.start_timer.seq = 1
+            cmd2.start_timer.start_to_fire_timeout.seconds = 0
+            cmd2.start_timer.start_to_fire_timeout.nanos = 100_000_000  # 100ms
+            bridge_comp.successful.commands.append(cmd2)
 
-        # Convert using our bridge conversion function
-        poc_completion = WorkflowActivationCompletion(commands=[upsert_cmd])
-        bridge_completion = poc_to_bridge_completion(run_id, poc_completion, dc)
-
-        # Add a timer to wake up workflow
-        cmd2 = cmd_pb.WorkflowCommand()
-        cmd2.start_timer.seq = 1
-        cmd2.start_timer.start_to_fire_timeout.seconds = 0
-        cmd2.start_timer.start_to_fire_timeout.nanos = 100_000_000  # 100ms
-        bridge_completion.successful.commands.append(cmd2)
+            return bridge_comp.SerializeToString()
 
         await bridge.complete_workflow_activation(
-            bridge_completion.SerializeToString(), timeout=DEFAULT_TIMEOUT
+            build_upsert_and_timer(run_id), timeout=DEFAULT_TIMEOUT
         )
         print("Pattern 19: Sent UpsertSearchAttributesCommand + timer")
 
-        # 4. Wait for timer to fire and handle potential cache eviction
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
+        # 4. Wait for timer to fire (handles eviction + replay)
+        activation = await poll_and_handle_eviction(
+            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            replay_commands=[build_upsert_and_timer],
         )
-        activation = ActivationParser(activation_bytes)
 
-        # Handle single cache eviction/replay if needed
-        if activation.has_job_type("remove_from_cache"):
-            print("Pattern 19: Handling cache eviction")
-            evict_completion = CompletionBuilder(activation.run_id).build()
-            await bridge.complete_workflow_activation(
-                evict_completion, timeout=DEFAULT_TIMEOUT
-            )
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
-            )
-            activation = ActivationParser(activation_bytes)
-
-        # If we get initialize_workflow (replay), complete with just workflow done
-        if activation.has_job_type("initialize_workflow"):
-            print("Pattern 19: Replaying - completing workflow directly")
-            run_id = activation.run_id
-            final_completion = (
-                CompletionBuilder(run_id)
-                .complete_workflow("search_attrs_set_replayed")
-                .build()
-            )
-            await bridge.complete_workflow_activation(
-                final_completion, timeout=DEFAULT_TIMEOUT
-            )
-        elif activation.has_job_type("fire_timer"):
+        if activation.has_job_type("fire_timer"):
             print("Pattern 19: Timer fired")
             # 5. Complete workflow
             final_completion = (
@@ -274,10 +244,7 @@ async def test_pattern_19_multiple_search_attributes(unique_task_queue: str) -> 
         )
 
         # Get initialization
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
         run_id = activation.run_id
 
         # Upsert multiple search attributes

@@ -31,6 +31,7 @@ from .conftest import (
     ActivationParser,
     CompletionBuilder,
     get_workflow_status_via_cli,
+    poll_and_handle_eviction,
     safe_shutdown,
     start_workflow_via_cli,
 )
@@ -75,18 +76,19 @@ async def test_signal_external_workflow_success(unique_task_queue: str) -> None:
         )
 
         # Keep target running with timer
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
         target_run_id = activation.run_id
 
-        completion = (
-            CompletionBuilder(target_run_id)
-            .start_timer(seq=1, duration=timedelta(seconds=300))
-            .build()
+        def build_target_timer(rid: str) -> bytes:
+            return (
+                CompletionBuilder(rid)
+                .start_timer(seq=1, duration=timedelta(seconds=300))
+                .build()
+            )
+
+        await bridge.complete_workflow_activation(
+            build_target_timer(target_run_id), timeout=DEFAULT_TIMEOUT
         )
-        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
         print("Test: Target workflow started and waiting")
 
         await trio.sleep(0.3)
@@ -99,10 +101,10 @@ async def test_signal_external_workflow_success(unique_task_queue: str) -> None:
         )
 
         # 3. Poll for signaling workflow initialization
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
+        activation = await poll_and_handle_eviction(
+            bridge, target_run_id, timeout=DEFAULT_TIMEOUT,
+            replay_commands=[build_target_timer],
         )
-        activation = ActivationParser(activation_bytes)
         signaling_run_id = activation.run_id
         print("Test: Signaling workflow received initialize_workflow")
 
@@ -116,20 +118,19 @@ async def test_signal_external_workflow_success(unique_task_queue: str) -> None:
             WorkflowActivationCompletion,
         )
 
-        signal_cmd = SignalExternalWorkflowCommand(
-            seq=1,
-            workflow_id=target_workflow_id,
-            signal_name="external_signal",
-            args=("signal_data_from_external",),
-        )
-
-        poc_completion = WorkflowActivationCompletion(commands=[signal_cmd])
-        bridge_completion = poc_to_bridge_completion(
-            signaling_run_id, poc_completion, dc
-        )
+        def build_signal_external(rid: str) -> bytes:
+            signal_cmd = SignalExternalWorkflowCommand(
+                seq=1,
+                workflow_id=target_workflow_id,
+                signal_name="external_signal",
+                args=("signal_data_from_external",),
+            )
+            poc_completion = WorkflowActivationCompletion(commands=[signal_cmd])
+            bridge_comp = poc_to_bridge_completion(rid, poc_completion, dc)
+            return bridge_comp.SerializeToString()
 
         await bridge.complete_workflow_activation(
-            bridge_completion.SerializeToString(), timeout=DEFAULT_TIMEOUT
+            build_signal_external(signaling_run_id), timeout=DEFAULT_TIMEOUT
         )
         print("Test: Sent SignalExternalWorkflowExecution via POC types")
 
@@ -138,10 +139,31 @@ async def test_signal_external_workflow_success(unique_task_queue: str) -> None:
         target_received_signal = False
 
         for _ in range(10):
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
-            )
-            activation = ActivationParser(activation_bytes)
+            if signal_resolved and target_received_signal:
+                break
+
+            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
+
+            # Handle replay for either workflow
+            if (
+                activation.has_job_type("initialize_workflow")
+                and activation.activation.is_replaying
+            ):
+                if activation.run_id == target_run_id:
+                    await bridge.complete_workflow_activation(
+                        build_target_timer(activation.run_id), timeout=DEFAULT_TIMEOUT
+                    )
+                elif activation.run_id == signaling_run_id:
+                    await bridge.complete_workflow_activation(
+                        build_signal_external(activation.run_id), timeout=DEFAULT_TIMEOUT
+                    )
+                else:
+                    completion = CompletionBuilder(activation.run_id).build()
+                    await bridge.complete_workflow_activation(
+                        completion, timeout=DEFAULT_TIMEOUT
+                    )
+                print(f"Test: Replayed commands for run_id={activation.run_id[:8]}...")
+                continue
 
             # Check for signal resolution in signaling workflow
             if activation.has_job_type("resolve_signal_external_workflow"):
@@ -163,7 +185,7 @@ async def test_signal_external_workflow_success(unique_task_queue: str) -> None:
                 import temporalio.bridge.proto.workflow_activation.workflow_activation_pb2 as act_pb
 
                 bridge_act = act_pb.WorkflowActivation()
-                bridge_act.ParseFromString(activation_bytes)
+                bridge_act.ParseFromString(activation.activation.SerializeToString())
                 poc_activation = bridge_to_poc_activation(bridge_act, dc)
 
                 # Find the SignalExternalResolvedJob
@@ -270,20 +292,21 @@ async def test_signal_external_workflow_with_run_id(unique_task_queue: str) -> N
         )
 
         # Get target's run_id
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
         target_run_id = activation.run_id
         print(f"Test: Target run_id = {target_run_id}")
 
         # Keep target running
-        completion = (
-            CompletionBuilder(target_run_id)
-            .start_timer(seq=1, duration=timedelta(seconds=300))
-            .build()
+        def build_target_timer_runid(rid: str) -> bytes:
+            return (
+                CompletionBuilder(rid)
+                .start_timer(seq=1, duration=timedelta(seconds=300))
+                .build()
+            )
+
+        await bridge.complete_workflow_activation(
+            build_target_timer_runid(target_run_id), timeout=DEFAULT_TIMEOUT
         )
-        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
 
         await trio.sleep(0.3)
 
@@ -294,10 +317,10 @@ async def test_signal_external_workflow_with_run_id(unique_task_queue: str) -> N
             task_queue=unique_task_queue,
         )
 
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
+        activation = await poll_and_handle_eviction(
+            bridge, target_run_id, timeout=DEFAULT_TIMEOUT,
+            replay_commands=[build_target_timer_runid],
         )
-        activation = ActivationParser(activation_bytes)
         signaling_run_id = activation.run_id
 
         # 3. Send signal with specific run_id
@@ -310,21 +333,20 @@ async def test_signal_external_workflow_with_run_id(unique_task_queue: str) -> N
             WorkflowActivationCompletion,
         )
 
-        signal_cmd = SignalExternalWorkflowCommand(
-            seq=1,
-            workflow_id=target_workflow_id,
-            run_id=target_run_id,  # Specify the exact run
-            signal_name="specific_run_signal",
-            args=("data_for_specific_run",),
-        )
-
-        poc_completion = WorkflowActivationCompletion(commands=[signal_cmd])
-        bridge_completion = poc_to_bridge_completion(
-            signaling_run_id, poc_completion, dc
-        )
+        def build_signal_with_runid(rid: str) -> bytes:
+            signal_cmd = SignalExternalWorkflowCommand(
+                seq=1,
+                workflow_id=target_workflow_id,
+                run_id=target_run_id,
+                signal_name="specific_run_signal",
+                args=("data_for_specific_run",),
+            )
+            poc_completion = WorkflowActivationCompletion(commands=[signal_cmd])
+            bridge_comp = poc_to_bridge_completion(rid, poc_completion, dc)
+            return bridge_comp.SerializeToString()
 
         await bridge.complete_workflow_activation(
-            bridge_completion.SerializeToString(), timeout=DEFAULT_TIMEOUT
+            build_signal_with_runid(signaling_run_id), timeout=DEFAULT_TIMEOUT
         )
         print("Test: Sent signal with specific run_id")
 
@@ -333,10 +355,30 @@ async def test_signal_external_workflow_with_run_id(unique_task_queue: str) -> N
         target_received_signal = False
 
         for _ in range(10):
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
-            )
-            activation = ActivationParser(activation_bytes)
+            if signal_resolved and target_received_signal:
+                break
+
+            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
+
+            # Handle replay
+            if (
+                activation.has_job_type("initialize_workflow")
+                and activation.activation.is_replaying
+            ):
+                if activation.run_id == target_run_id:
+                    await bridge.complete_workflow_activation(
+                        build_target_timer_runid(activation.run_id), timeout=DEFAULT_TIMEOUT
+                    )
+                elif activation.run_id == signaling_run_id:
+                    await bridge.complete_workflow_activation(
+                        build_signal_with_runid(activation.run_id), timeout=DEFAULT_TIMEOUT
+                    )
+                else:
+                    completion = CompletionBuilder(activation.run_id).build()
+                    await bridge.complete_workflow_activation(
+                        completion, timeout=DEFAULT_TIMEOUT
+                    )
+                continue
 
             if activation.has_job_type("resolve_signal_external_workflow"):
                 resolve_job = activation.get_job("resolve_signal_external_workflow")
@@ -417,10 +459,7 @@ async def test_signal_external_workflow_nonexistent_target(
             task_queue=unique_task_queue,
         )
 
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
         signaling_run_id = activation.run_id
 
         # Send signal to non-existent workflow
@@ -433,20 +472,19 @@ async def test_signal_external_workflow_nonexistent_target(
             WorkflowActivationCompletion,
         )
 
-        signal_cmd = SignalExternalWorkflowCommand(
-            seq=1,
-            workflow_id=nonexistent_workflow_id,
-            signal_name="test_signal",
-            args=(),
-        )
-
-        poc_completion = WorkflowActivationCompletion(commands=[signal_cmd])
-        bridge_completion = poc_to_bridge_completion(
-            signaling_run_id, poc_completion, dc
-        )
+        def build_signal_nonexistent(rid: str) -> bytes:
+            signal_cmd = SignalExternalWorkflowCommand(
+                seq=1,
+                workflow_id=nonexistent_workflow_id,
+                signal_name="test_signal",
+                args=(),
+            )
+            poc_completion = WorkflowActivationCompletion(commands=[signal_cmd])
+            bridge_comp = poc_to_bridge_completion(rid, poc_completion, dc)
+            return bridge_comp.SerializeToString()
 
         await bridge.complete_workflow_activation(
-            bridge_completion.SerializeToString(), timeout=DEFAULT_TIMEOUT
+            build_signal_nonexistent(signaling_run_id), timeout=DEFAULT_TIMEOUT
         )
         print("Test: Sent signal to non-existent workflow")
 
@@ -454,10 +492,10 @@ async def test_signal_external_workflow_nonexistent_target(
         signal_failed = False
 
         for _ in range(5):
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
+            activation = await poll_and_handle_eviction(
+                bridge, signaling_run_id, timeout=DEFAULT_TIMEOUT,
+                replay_commands=[build_signal_nonexistent],
             )
-            activation = ActivationParser(activation_bytes)
 
             if activation.has_job_type("resolve_signal_external_workflow"):
                 resolve_job = activation.get_job("resolve_signal_external_workflow")
@@ -473,7 +511,7 @@ async def test_signal_external_workflow_nonexistent_target(
                     import temporalio.bridge.proto.workflow_activation.workflow_activation_pb2 as act_pb
 
                     bridge_act = act_pb.WorkflowActivation()
-                    bridge_act.ParseFromString(activation_bytes)
+                    bridge_act.ParseFromString(activation.activation.SerializeToString())
                     poc_activation = bridge_to_poc_activation(bridge_act, dc)
 
                     for job in poc_activation.jobs:

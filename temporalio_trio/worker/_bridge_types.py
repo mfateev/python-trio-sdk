@@ -611,6 +611,9 @@ def poc_to_bridge_completion(
                         exc_type
                     )
 
+            # Set cancellation type
+            bridge_cmd.schedule_activity.cancellation_type = cmd.cancellation_type
+
         elif isinstance(cmd, RequestCancelActivityCommand):
             # Convert RequestCancelActivityCommand to RequestCancelActivity
             bridge_cmd.request_cancel_activity.seq = cmd.seq

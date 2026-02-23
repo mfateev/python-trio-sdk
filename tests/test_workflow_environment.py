@@ -29,7 +29,7 @@ def find_temporal_cli() -> str | None:
     # Check common locations
     common_paths = [
         Path.home() / "workarea" / "bin" / "temporal",
-        Path("/home/sprite/workarea/bin/temporal"),
+        Path("/home/dev/.temporalio/bin/temporal"),
         Path.home() / ".temporalio" / "bin" / "temporal",
         Path("/usr/local/bin/temporal"),
     ]

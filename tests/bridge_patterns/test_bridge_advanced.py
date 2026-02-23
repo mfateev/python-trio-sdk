@@ -24,6 +24,7 @@ from .conftest import (
     ActivationParser,
     CompletionBuilder,
     get_workflow_status_via_cli,
+    poll_and_handle_eviction,
     safe_shutdown,
     signal_workflow_via_cli,
     start_workflow_via_cli,
@@ -367,18 +368,19 @@ async def test_pattern_18_signal_external_workflow(unique_task_queue: str) -> No
         )
 
         # Keep target running with timer
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
         target_run_id = activation.run_id
 
-        completion = (
-            CompletionBuilder(target_run_id)
-            .start_timer(seq=1, duration=timedelta(seconds=300))
-            .build()
+        def build_target_timer(rid: str) -> bytes:
+            return (
+                CompletionBuilder(rid)
+                .start_timer(seq=1, duration=timedelta(seconds=300))
+                .build()
+            )
+
+        await bridge.complete_workflow_activation(
+            build_target_timer(target_run_id), timeout=DEFAULT_TIMEOUT
         )
-        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
         print("Pattern 18: Target workflow started and waiting")
 
         await trio.sleep(0.3)
@@ -391,10 +393,10 @@ async def test_pattern_18_signal_external_workflow(unique_task_queue: str) -> No
         )
 
         # 3. Poll for signaling workflow initialization
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
+        activation = await poll_and_handle_eviction(
+            bridge, target_run_id, timeout=DEFAULT_TIMEOUT,
+            replay_commands=[build_target_timer],
         )
-        activation = ActivationParser(activation_bytes)
         signaling_run_id = activation.run_id
         print("Pattern 18: Signaling workflow received initialize_workflow")
 
@@ -405,39 +407,71 @@ async def test_pattern_18_signal_external_workflow(unique_task_queue: str) -> No
 
         dc = DataConverter.default
 
-        completion = comp_pb.WorkflowActivationCompletion()
-        completion.run_id = signaling_run_id
-        completion.successful.SetInParent()
+        def build_signal_external(rid: str) -> bytes:
+            comp = comp_pb.WorkflowActivationCompletion()
+            comp.run_id = rid
+            comp.successful.SetInParent()
 
-        cmd = cmd_pb.WorkflowCommand()
-        cmd.signal_external_workflow_execution.seq = 1
-        cmd.signal_external_workflow_execution.workflow_execution.workflow_id = (
-            target_workflow_id
-        )
-        # run_id is optional - if not set, signals most recent run
-        cmd.signal_external_workflow_execution.signal_name = "external_signal"
+            cmd = cmd_pb.WorkflowCommand()
+            cmd.signal_external_workflow_execution.seq = 1
+            cmd.signal_external_workflow_execution.workflow_execution.workflow_id = (
+                target_workflow_id
+            )
+            cmd.signal_external_workflow_execution.signal_name = "external_signal"
 
-        # Add signal arguments
-        signal_arg_payload = dc.payload_converter.to_payload(
-            "signal_data_from_external"
-        )
-        cmd.signal_external_workflow_execution.args.append(signal_arg_payload)
+            signal_arg_payload = dc.payload_converter.to_payload(
+                "signal_data_from_external"
+            )
+            cmd.signal_external_workflow_execution.args.append(signal_arg_payload)
 
-        completion.successful.commands.append(cmd)
+            comp.successful.commands.append(cmd)
+            return comp.SerializeToString()
+
         await bridge.complete_workflow_activation(
-            completion.SerializeToString(), timeout=DEFAULT_TIMEOUT
+            build_signal_external(signaling_run_id), timeout=DEFAULT_TIMEOUT
         )
         print("Pattern 18: Sent SignalExternalWorkflowExecution")
+
+        # Track replay commands per workflow run_id
+        replay_map: dict[str, list] = {}
+
+        def get_replay_commands_for(act_run_id: str) -> list:
+            """Return replay commands based on which workflow is being replayed."""
+            if act_run_id == target_run_id:
+                return [build_target_timer]
+            elif act_run_id == signaling_run_id:
+                return [build_signal_external]
+            return []
 
         # 5. Poll for resolution
         signal_resolved = False
         target_received_signal = False
 
         for _ in range(10):
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
-            )
-            activation = ActivationParser(activation_bytes)
+            if signal_resolved and target_received_signal:
+                break
+
+            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
+
+            # Handle replay for either workflow
+            if (
+                activation.has_job_type("initialize_workflow")
+                and activation.activation.is_replaying
+            ):
+                replay_cmds = get_replay_commands_for(activation.run_id)
+                if replay_cmds:
+                    for build_fn in replay_cmds:
+                        await bridge.complete_workflow_activation(
+                            build_fn(activation.run_id), timeout=DEFAULT_TIMEOUT
+                        )
+                    print(f"Pattern 18: Replayed commands for run_id={activation.run_id[:8]}...")
+                    continue
+                # Unknown workflow - complete with empty
+                completion = CompletionBuilder(activation.run_id).build()
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
+                continue
 
             # Check for signal resolution in signaling workflow
             if activation.has_job_type("resolve_signal_external_workflow"):
@@ -488,9 +522,6 @@ async def test_pattern_18_signal_external_workflow(unique_task_queue: str) -> No
                 completion, timeout=DEFAULT_TIMEOUT
             )
 
-            if signal_resolved and target_received_signal:
-                break
-
         assert signal_resolved, "Signal should have been resolved"
         # Note: target_received_signal might not always be true if we poll order differs
 
@@ -540,10 +571,7 @@ async def test_pattern_19_search_attributes(unique_task_queue: str) -> None:
         )
 
         # Get initialization
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
-        )
-        activation = ActivationParser(activation_bytes)
+        activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
         run_id = activation.run_id
         print("Pattern 19: Received initialize_workflow")
 
@@ -556,33 +584,35 @@ async def test_pattern_19_search_attributes(unique_task_queue: str) -> None:
 
         dc = DataConverter.default
 
-        completion = comp_pb.WorkflowActivationCompletion()
-        completion.run_id = run_id
-        completion.successful.SetInParent()
+        def build_upsert_and_timer(rid: str) -> bytes:
+            comp = comp_pb.WorkflowActivationCompletion()
+            comp.run_id = rid
+            comp.successful.SetInParent()
 
-        cmd = cmd_pb.WorkflowCommand()
+            cmd = cmd_pb.WorkflowCommand()
 
-        # Add search attribute - using Keyword type
-        # The key must be a registered search attribute
-        keyword_payload = dc.payload_converter.to_payload("test-value-123")
-        keyword_payload.metadata["encoding"] = b"json/plain"
-        keyword_payload.metadata["type"] = b"Keyword"
-        cmd.upsert_workflow_search_attributes.search_attributes[
-            "CustomKeywordField"
-        ].CopyFrom(keyword_payload)
+            # Add search attribute - using Keyword type
+            keyword_payload = dc.payload_converter.to_payload("test-value-123")
+            keyword_payload.metadata["encoding"] = b"json/plain"
+            keyword_payload.metadata["type"] = b"Keyword"
+            cmd.upsert_workflow_search_attributes.search_attributes[
+                "CustomKeywordField"
+            ].CopyFrom(keyword_payload)
 
-        completion.successful.commands.append(cmd)
+            comp.successful.commands.append(cmd)
 
-        # Add a timer to wake up workflow and complete
-        cmd2 = cmd_pb.WorkflowCommand()
-        cmd2.start_timer.seq = 1
-        cmd2.start_timer.start_to_fire_timeout.seconds = 0
-        cmd2.start_timer.start_to_fire_timeout.nanos = 100_000_000  # 100ms
-        completion.successful.commands.append(cmd2)
+            # Add a timer to wake up workflow and complete
+            cmd2 = cmd_pb.WorkflowCommand()
+            cmd2.start_timer.seq = 1
+            cmd2.start_timer.start_to_fire_timeout.seconds = 0
+            cmd2.start_timer.start_to_fire_timeout.nanos = 100_000_000  # 100ms
+            comp.successful.commands.append(cmd2)
+
+            return comp.SerializeToString()
 
         try:
             await bridge.complete_workflow_activation(
-                completion.SerializeToString(), timeout=DEFAULT_TIMEOUT
+                build_upsert_and_timer(run_id), timeout=DEFAULT_TIMEOUT
             )
             print("Pattern 19: Sent UpsertWorkflowSearchAttributes + timer")
         except Exception as e:
@@ -592,40 +622,14 @@ async def test_pattern_19_search_attributes(unique_task_queue: str) -> None:
             )
             raise
 
-        # Wait for timer to fire
-        # Note: This test may fail due to cache eviction issues with search attributes
-        # The UpsertSearchAttributes command combined with short timers can cause
-        # repeated eviction/replay cycles. This is a known limitation.
-        activation_bytes = await bridge.poll_workflow_activation(
-            timeout=DEFAULT_TIMEOUT
+        # Wait for timer to fire (poll_and_handle_eviction handles cache eviction + replay)
+        activation = await poll_and_handle_eviction(
+            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            replay_commands=[build_upsert_and_timer],
         )
-        activation = ActivationParser(activation_bytes)
 
-        # Handle single cache eviction/replay if needed
-        if activation.has_job_type("remove_from_cache"):
-            print("Pattern 19: Handling cache eviction")
-            evict_completion = CompletionBuilder(activation.run_id).build()
-            await bridge.complete_workflow_activation(
-                evict_completion, timeout=DEFAULT_TIMEOUT
-            )
-            activation_bytes = await bridge.poll_workflow_activation(
-                timeout=DEFAULT_TIMEOUT
-            )
-            activation = ActivationParser(activation_bytes)
-
-        # If we get initialize_workflow (replay), complete with just timer + workflow done
-        if activation.has_job_type("initialize_workflow"):
-            print("Pattern 19: Replaying - completing workflow directly")
-            run_id = activation.run_id
-            completion = (
-                CompletionBuilder(run_id)
-                .complete_workflow("search_attrs_set_replayed")
-                .build()
-            )
-            await bridge.complete_workflow_activation(
-                completion, timeout=DEFAULT_TIMEOUT
-            )
-        elif activation.has_job_type("fire_timer"):
+        # After eviction+replay, we may get fire_timer or need to complete
+        if activation.has_job_type("fire_timer"):
             print("Pattern 19: Timer fired")
             # Complete workflow
             completion = (
@@ -638,7 +642,6 @@ async def test_pattern_19_search_attributes(unique_task_queue: str) -> None:
             pytest.fail(
                 f"Unexpected activation: {[j.WhichOneof('variant') for j in activation.jobs]}"
             )
-        await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
 
         await trio.sleep(0.5)
         status = get_workflow_status_via_cli(workflow_id)

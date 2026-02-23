@@ -22,14 +22,14 @@ The server should be accessible at `localhost:7233`.
 
 The tests use the Temporal CLI to validate workflow results. The CLI should be in your PATH.
 
-If you have the temporal binary in a different location (like `/home/sprite/workarea/bin/temporal`), you can:
+If you have the temporal binary in a different location (like `/home/dev/.temporalio/bin/temporal`), you can:
 
 ```bash
 # Add to PATH temporarily
 export PATH="/home/sprite/workarea/bin:$PATH"
 
 # Or create a symlink
-ln -s /home/sprite/workarea/bin/temporal ~/.local/bin/temporal
+ln -s /home/dev/.temporalio/bin/temporal ~/.local/bin/temporal
 ```
 
 Verify the CLI is accessible:

@@ -24,7 +24,7 @@ from temporalio_trio import workflow
 from temporalio_trio.client import Client
 from temporalio_trio.worker import Worker
 
-TEMPORAL_CLI_PATH = "/home/sprite/workarea/bin/temporal"
+TEMPORAL_CLI_PATH = "/home/dev/.temporalio/bin/temporal"
 
 
 @pytest.fixture
@@ -353,6 +353,9 @@ async def test_get_external_workflow_handle_properties() -> None:
 
         def workflow_patch(self, patch_id, *, deprecated=False):
             return True
+
+        def workflow_upsert_search_attributes(self, attributes):
+            pass
 
     mock = MockRuntime()
     token = workflow._Runtime.set_current(mock)

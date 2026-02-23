@@ -53,6 +53,7 @@ __all__ = [
     "Info",
     "ChildWorkflowHandle",
     "ExternalWorkflowHandle",
+    "ActivityCancellationType",
     "ChildWorkflowCancellationType",
     "ParentClosePolicy",
     "ContinueAsNewError",
@@ -89,6 +90,19 @@ class ChildWorkflowCancellationType(IntEnum):
 
     WAIT_CANCELLATION_REQUESTED = 3
     """Request cancellation and wait for confirmation that the request was received."""
+
+
+class ActivityCancellationType(IntEnum):
+    """How an activity cancellation should be handled."""
+
+    TRY_CANCEL = 0
+    """Initiate a cancellation request and immediately report cancellation to the parent."""
+
+    WAIT_CANCELLATION_COMPLETED = 1
+    """Wait for activity cancellation completion before reporting cancellation."""
+
+    ABANDON = 2
+    """Do not request cancellation of the activity if already scheduled."""
 
 
 class ParentClosePolicy(IntEnum):
@@ -240,6 +254,7 @@ class _Runtime(ABC):
         heartbeat_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
         activity_id: str | None = None,
+        cancellation_type: "ActivityCancellationType" = ActivityCancellationType.TRY_CANCEL,
     ) -> Any:
         """Execute an activity and wait for its result.
 
@@ -253,6 +268,7 @@ class _Runtime(ABC):
             heartbeat_timeout: Max time between heartbeats.
             retry_policy: Retry policy for the activity.
             activity_id: Optional unique identifier for the activity.
+            cancellation_type: How an activity cancellation should be handled.
 
         Returns:
             The activity result.
@@ -996,6 +1012,7 @@ async def execute_activity(
     heartbeat_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
     activity_id: str | None = None,
+    cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
 ) -> Any:
     """Execute an activity and wait for its result.
 
@@ -1022,6 +1039,8 @@ async def execute_activity(
             server-defined default is used. Set maximum attempts to 1 to disable
             retries.
         activity_id: Optional unique identifier for the activity.
+        cancellation_type: How an activity cancellation should be handled.
+            Default: TRY_CANCEL.
 
     Returns:
         The result of the activity execution.
@@ -1040,6 +1059,7 @@ async def execute_activity(
         heartbeat_timeout=heartbeat_timeout,
         retry_policy=retry_policy,
         activity_id=activity_id,
+        cancellation_type=cancellation_type,
     )
 
 

@@ -272,6 +272,7 @@ class WorkflowRuntime:
         heartbeat_timeout: timedelta | None = None,
         retry_policy: Any = None,
         activity_id: str | None = None,
+        cancellation_type: int = 0,
     ) -> Any:
         """Execute an activity and wait for its result.
 
