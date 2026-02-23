@@ -9,11 +9,12 @@ designed for the POC to demonstrate the activation/completion pattern.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
+import temporalio.api.common.v1
 import temporalio.common
 
 __all__ = [
@@ -80,6 +81,11 @@ class WorkflowStartedJob:
     args: tuple[Any, ...]
     """Arguments to pass to the workflow's run method."""
 
+    headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Headers from the workflow start (e.g. for tracing/auth interceptors)."""
+
 
 @dataclass
 class TimerFiredJob:
@@ -129,8 +135,10 @@ class SignalWorkflowJob:
     args: tuple[Any, ...]
     """Arguments to pass to the signal handler."""
 
-    headers: dict[str, Any] | None = None
-    """Optional headers associated with the signal."""
+    headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Headers associated with the signal (e.g. for tracing/auth interceptors)."""
 
 
 @dataclass
@@ -156,8 +164,10 @@ class QueryWorkflowJob:
     args: tuple[Any, ...]
     """Arguments to pass to the query handler."""
 
-    headers: dict[str, Any] | None = None
-    """Optional headers associated with the query."""
+    headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Headers associated with the query (e.g. for tracing/auth interceptors)."""
 
 
 @dataclass
@@ -418,6 +428,11 @@ class ScheduleActivityCommand:
     cancellation_type: int = 0
     """Activity cancellation type. Default: TRY_CANCEL (0)."""
 
+    headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Headers to attach to the activity (e.g. for tracing/auth interceptors)."""
+
 
 @dataclass
 class RequestCancelActivityCommand:
@@ -617,6 +632,11 @@ class StartChildWorkflowCommand:
     id_reuse_policy: int = 1
     """How existing workflow IDs are treated. Default: ALLOW_DUPLICATE (1)."""
 
+    headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Headers to attach to the child workflow (e.g. for tracing/auth interceptors)."""
+
 
 @dataclass
 class CancelChildWorkflowCommand:
@@ -668,6 +688,11 @@ class SignalExternalWorkflowCommand:
 
     args: tuple[Any, ...] = field(default_factory=tuple)
     """Arguments to pass with the signal."""
+
+    headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Headers to attach to the signal (e.g. for tracing/auth interceptors)."""
 
 
 @dataclass
@@ -758,6 +783,11 @@ class ContinueAsNewCommand:
 
     retry_policy: temporalio.common.RetryPolicy | None = None
     """Retry policy for the new workflow."""
+
+    headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Headers to attach to the new execution (e.g. for tracing/auth interceptors)."""
 
 
 # =============================================================================

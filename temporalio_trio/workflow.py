@@ -19,11 +19,13 @@ from typing import (
     Awaitable,
     Callable,
     Generic,
+    Mapping,
     NoReturn,
     Sequence,
     TypeVar,
 )
 
+import temporalio.api.common.v1
 import temporalio.common
 
 if TYPE_CHECKING:
@@ -1130,6 +1132,11 @@ class Info:
 
     task_queue: str
     """Task queue the workflow is running on."""
+
+    headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Headers from the workflow start (e.g. for tracing/auth interceptors)."""
 
 
 # =============================================================================

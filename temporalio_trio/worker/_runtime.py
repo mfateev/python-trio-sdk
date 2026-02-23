@@ -14,12 +14,13 @@ This implements Phases 1, 2, and 4 of the single-threaded migration plan:
 from __future__ import annotations
 
 import random
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Callable, NoReturn
 
+import temporalio.api.common.v1
 import temporalio.common
 import trio
 
@@ -141,6 +142,11 @@ class WorkflowRuntime:
     is_replaying: bool = False
     """Whether this activation is replaying from history."""
 
+    headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Headers from the workflow start (e.g. for tracing/auth interceptors)."""
+
     # Sequence counters
     timer_seq: int = 0
     """Sequence counter for timer IDs."""
@@ -259,6 +265,7 @@ class WorkflowRuntime:
             workflow_type=self.workflow_type,
             run_id=self.run_id,
             task_queue=self.task_queue,
+            headers=self.headers,
         )
 
     async def workflow_execute_activity(

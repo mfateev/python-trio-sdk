@@ -407,6 +407,7 @@ class SingleThreadWorker:
             random=random.Random(randomness_seed),
             time_ns=initial_activation.timestamp_ns,
             is_replaying=getattr(initial_activation, "is_replaying", False),
+            headers=started_job.headers,
             on_suspend=state.signal_commands_ready,  # Signal when workflow suspends
         )
         state.runtime = runtime
