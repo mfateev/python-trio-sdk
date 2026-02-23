@@ -72,15 +72,14 @@ async def worker_with_workflows(client):
         # Start worker
         nursery.start_soon(worker.run)
 
-        # Give worker time to start and connect to Temporal
-        # 3 seconds is needed for full initialization
-        await trio.sleep(3)
+        # Task queue is durable - no need to wait for worker startup
+        await trio.sleep(0)
 
         yield task_queue
 
         # Shutdown worker gracefully
         worker.shutdown()
-        await trio.sleep(0.5)
+        await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
 
@@ -179,13 +178,13 @@ async def test_workflow_cancel(client, worker_with_workflows):
     )
 
     # Give workflow time to start
-    await trio.sleep(1.0)
+    await trio.sleep(0.5)
 
     # Cancel workflow
     await handle.cancel()
 
     # Wait a bit for cancellation to process
-    await trio.sleep(1.0)
+    await trio.sleep(0.5)
 
     # Try to get result - should raise error about cancellation
     with pytest.raises(RuntimeError, match="canceled"):
@@ -208,13 +207,13 @@ async def test_workflow_terminate(client, worker_with_workflows):
     )
 
     # Give workflow time to start
-    await trio.sleep(1.0)
+    await trio.sleep(0.5)
 
     # Terminate workflow
     await handle.terminate(reason="Test termination")
 
     # Wait a bit for termination to process
-    await trio.sleep(1.0)
+    await trio.sleep(0.5)
 
     # Try to get result - should raise error about termination
     with pytest.raises(RuntimeError, match="terminated"):

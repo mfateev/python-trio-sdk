@@ -479,7 +479,7 @@ async def test_pattern_20_parallel_workflows_mixed_operations(
             else:  # signal
                 return (
                     CompletionBuilder(rid)
-                    .start_timer(seq=1, duration=timedelta(seconds=60))
+                    .start_timer(seq=1, duration=timedelta(seconds=5))
                     .build()
                 )
 
@@ -532,87 +532,23 @@ async def test_pattern_20_parallel_workflows_mixed_operations(
         signal_workflow_via_cli(wf_signal, "complete_signal")
         print("Pattern 20: Sent signal to signal workflow")
 
-        # Process mixed activations until all complete
-        for _ in range(15):
-            pending = [r for r, w in workflows.items() if not w["done"]]
-            if not pending:
-                break
+        # Poll activity tasks concurrently with workflow activations.
+        # The activity workflow needs: schedule -> poll_activity_task ->
+        # complete_activity -> resolve_activity. Activity task polling
+        # happens on a separate channel, so we must poll both in parallel.
+        activity_done = False
 
-            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
-
-            # Handle replay
-            if (
-                activation.has_job_type("initialize_workflow")
-                and activation.activation.is_replaying
-                and activation.run_id in workflows
-            ):
-                await bridge.complete_workflow_activation(
-                    build_mixed_completion(activation.run_id), timeout=DEFAULT_TIMEOUT
-                )
-                continue
-
-            run_id = activation.run_id
-
-            if run_id not in workflows:
-                # Activity task - complete it
-                continue
-
-            wf = workflows[run_id]
-
-            if activation.has_job_type("fire_timer"):
-                if wf["type"] == "timer":
-                    # Timer workflow done
-                    completion = (
-                        CompletionBuilder(run_id)
-                        .complete_workflow("timer_done")
-                        .build()
-                    )
-                    await bridge.complete_workflow_activation(
-                        completion, timeout=DEFAULT_TIMEOUT
-                    )
-                    wf["done"] = True
-                    print("Pattern 20: Timer workflow completed")
-
-            elif activation.has_job_type("resolve_activity"):
-                # Activity workflow got result
-                completion = (
-                    CompletionBuilder(run_id).complete_workflow("activity_done").build()
-                )
-                await bridge.complete_workflow_activation(
-                    completion, timeout=DEFAULT_TIMEOUT
-                )
-                wf["done"] = True
-                print("Pattern 20: Activity workflow completed")
-
-            elif activation.has_job_type("signal_workflow"):
-                # Signal workflow got signal - cancel timer and complete
-                completion = (
-                    CompletionBuilder(run_id)
-                    .cancel_timer(seq=1)
-                    .complete_workflow("signal_done")
-                    .build()
-                )
-                await bridge.complete_workflow_activation(
-                    completion, timeout=DEFAULT_TIMEOUT
-                )
-                wf["done"] = True
-                print("Pattern 20: Signal workflow completed")
-
-            else:
-                # Handle activity task polling
-                pass
-
-        # Handle activity task if needed
-        try:
-            with trio.move_on_after(2.0):
-                activity_bytes = await bridge.poll_activity_task(timeout=2.0)
+        async def handle_activity_tasks():
+            """Poll and complete activity tasks in parallel."""
+            nonlocal activity_done
+            try:
+                activity_bytes = await bridge.poll_activity_task(timeout=DEFAULT_TIMEOUT)
                 if activity_bytes:
                     import temporalio.bridge.proto.activity_task.activity_task_pb2 as activity_task_pb
 
                     activity_task = activity_task_pb.ActivityTask()
                     activity_task.ParseFromString(activity_bytes)
 
-                    # Complete the activity
                     completion = temporalio.bridge.proto.ActivityTaskCompletion()
                     completion.task_token = activity_task.task_token
                     result = activity_result_pb.ActivityExecutionResult()
@@ -622,37 +558,78 @@ async def test_pattern_20_parallel_workflows_mixed_operations(
                         completion.SerializeToString(), timeout=DEFAULT_TIMEOUT
                     )
                     print("Pattern 20: Completed activity task")
-        except Exception:
-            pass
+                    activity_done = True
+            except Exception:
+                pass
 
-        # Final poll to complete activity workflow if needed
-        for _ in range(5):
-            pending = [r for r, w in workflows.items() if not w["done"]]
-            if not pending:
-                break
+        async def handle_workflow_activations(task_nursery):
+            """Process workflow activations until all complete."""
+            for _ in range(20):
+                pending = [r for r, w in workflows.items() if not w["done"]]
+                if not pending:
+                    break
 
-            try:
-                with trio.move_on_after(2.0):
-                    activation = await poll_and_handle_eviction(bridge, "", timeout=2.0)
-                    run_id = activation.run_id
+                activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
 
-                    if run_id in workflows and activation.has_job_type(
-                        "resolve_activity"
-                    ):
+                # Handle replay
+                if (
+                    activation.has_job_type("initialize_workflow")
+                    and activation.activation.is_replaying
+                    and activation.run_id in workflows
+                ):
+                    await bridge.complete_workflow_activation(
+                        build_mixed_completion(activation.run_id), timeout=DEFAULT_TIMEOUT
+                    )
+                    continue
+
+                run_id = activation.run_id
+                if run_id not in workflows:
+                    continue
+
+                wf = workflows[run_id]
+
+                if activation.has_job_type("fire_timer"):
+                    if wf["type"] == "timer":
                         completion = (
                             CompletionBuilder(run_id)
-                            .complete_workflow("activity_done")
+                            .complete_workflow("timer_done")
                             .build()
                         )
                         await bridge.complete_workflow_activation(
                             completion, timeout=DEFAULT_TIMEOUT
                         )
-                        workflows[run_id]["done"] = True
-                        print("Pattern 20: Activity workflow completed (late)")
-            except Exception:
-                break
+                        wf["done"] = True
+                        print("Pattern 20: Timer workflow completed")
 
-        await trio.sleep(0.5)
+                elif activation.has_job_type("resolve_activity"):
+                    completion = (
+                        CompletionBuilder(run_id).complete_workflow("activity_done").build()
+                    )
+                    await bridge.complete_workflow_activation(
+                        completion, timeout=DEFAULT_TIMEOUT
+                    )
+                    wf["done"] = True
+                    print("Pattern 20: Activity workflow completed")
+
+                elif activation.has_job_type("signal_workflow"):
+                    completion = (
+                        CompletionBuilder(run_id)
+                        .cancel_timer(seq=1)
+                        .complete_workflow("signal_done")
+                        .build()
+                    )
+                    await bridge.complete_workflow_activation(
+                        completion, timeout=DEFAULT_TIMEOUT
+                    )
+                    wf["done"] = True
+                    print("Pattern 20: Signal workflow completed")
+
+            # All done — cancel activity poller if still running
+            task_nursery.cancel_scope.cancel()
+
+        async with trio.open_nursery() as task_nursery:
+            task_nursery.start_soon(handle_activity_tasks)
+            task_nursery.start_soon(handle_workflow_activations, task_nursery)
 
         # Verify completions
         for wf_id in [wf_timer, wf_signal]:

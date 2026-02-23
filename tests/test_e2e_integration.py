@@ -94,9 +94,6 @@ async def test_e2e_workflow_execution(trio_client):
         # Start the worker
         nursery.start_soon(worker.run)
 
-        # Give worker time to start and connect
-        await trio.sleep(3)
-
         try:
             # Execute workflow using temporal CLI
             print(f"Starting workflow {workflow_id} via CLI...")
@@ -120,7 +117,7 @@ async def test_e2e_workflow_execution(trio_client):
                 elif status in ["FAILED", "TERMINATED", "CANCELLED"]:
                     raise RuntimeError(f"Workflow ended with status: {status}")
 
-                await trio.sleep(0.5)
+                await trio.sleep(0.3)
             else:
                 raise TimeoutError(
                     f"Workflow did not complete within {max_wait} seconds"
@@ -136,12 +133,12 @@ async def test_e2e_workflow_execution(trio_client):
                 assert "Slept for" in cli_output
                 print(f"Workflow result from CLI: {cli_output}")
 
-            print("✅ E2E test passed - workflow executed successfully")
+            print("E2E test passed - workflow executed successfully")
 
         finally:
             # Shutdown worker
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
 
@@ -172,15 +169,15 @@ async def test_e2e_worker_connection(trio_client):
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
 
-        # Let worker run for a short period
-        await trio.sleep(3)
+        # Let worker initialize (needs time to connect to server)
+        await trio.sleep(0.5)
 
         # Shutdown
         worker.shutdown()
-        await trio.sleep(0.5)
+        await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
-    print("✅ Worker connection test passed")
+    print("Worker connection test passed")
 
 
 def _start_workflow_via_cli(
@@ -347,9 +344,6 @@ async def test_e2e_timer_summary_in_history(trio_client):
         # Start the worker
         nursery.start_soon(worker.run)
 
-        # Give worker time to start
-        await trio.sleep(3)
-
         try:
             # Execute workflow
             print(f"Starting workflow {workflow_id} via CLI...")
@@ -373,7 +367,7 @@ async def test_e2e_timer_summary_in_history(trio_client):
                 elif status in ["FAILED", "TERMINATED", "CANCELLED"]:
                     raise RuntimeError(f"Workflow ended with status: {status}")
 
-                await trio.sleep(0.5)
+                await trio.sleep(0.3)
             else:
                 raise TimeoutError(
                     f"Workflow did not complete within {max_wait} seconds"
@@ -417,12 +411,12 @@ async def test_e2e_timer_summary_in_history(trio_client):
                     f"Timer event missing summary in user_metadata: {timer_event}"
                 )
 
-            print("✅ E2E timer summary test passed - summary preserved in history")
+            print("E2E timer summary test passed - summary preserved in history")
 
         finally:
             # Shutdown worker
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
 
@@ -539,9 +533,6 @@ async def test_e2e_query_triggers_replay(trio_client):
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
 
-        # Give worker time to start
-        await trio.sleep(3)
-
         try:
             # Start workflow
             print(f"Starting workflow {workflow_id}...")
@@ -565,7 +556,7 @@ async def test_e2e_query_triggers_replay(trio_client):
                 elif status in ["FAILED", "TERMINATED", "CANCELLED"]:
                     raise RuntimeError(f"Workflow ended with status: {status}")
 
-                await trio.sleep(0.5)
+                await trio.sleep(0.3)
             else:
                 raise TimeoutError(
                     f"Workflow did not complete within {max_wait} seconds"
@@ -573,9 +564,8 @@ async def test_e2e_query_triggers_replay(trio_client):
 
             print(f"Workflow {workflow_id} completed, now sending query...")
 
-            # Wait a moment to ensure workflow is evicted from cache
-            # (completed workflows are typically removed immediately)
-            await trio.sleep(1)
+            # Brief pause for workflow eviction from cache
+            await trio.sleep(0.3)
 
             # Send query - this triggers replay since workflow is not in cache
             # Use async version to avoid blocking Trio event loop while worker polls
@@ -589,12 +579,12 @@ async def test_e2e_query_triggers_replay(trio_client):
             # After replay, counter should be at final value (20)
             assert query_result == 20, f"Expected counter=20, got {query_result}"
 
-            print(f"✅ Query returned correct value: {query_result}")
-            print("✅ E2E replay test passed - query triggered replay successfully")
+            print(f"Query returned correct value: {query_result}")
+            print("E2E replay test passed - query triggered replay successfully")
 
         finally:
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
 
@@ -722,9 +712,6 @@ async def test_e2e_multiple_workflows_cache_pressure(trio_client):
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
 
-        # Give worker time to start
-        await trio.sleep(3)
-
         try:
             # Start multiple workflows
             workflow_ids = []
@@ -765,18 +752,18 @@ async def test_e2e_multiple_workflows_cache_pressure(trio_client):
                             f"Workflow {wf_id} ended with status: {status}"
                         )
 
-                await trio.sleep(0.5)
+                await trio.sleep(0.3)
 
             assert len(completed) == workflow_count, (
                 f"Only {len(completed)}/{workflow_count} workflows completed"
             )
 
-            print(f"✅ All {workflow_count} workflows completed successfully")
-            print("✅ E2E cache pressure test passed")
+            print(f"All {workflow_count} workflows completed successfully")
+            print("E2E cache pressure test passed")
 
         finally:
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
 

@@ -198,9 +198,6 @@ async def test_e2e_continue_as_new_basic(trio_client):
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
 
-        # Give worker time to start
-        await trio.sleep(3)
-
         try:
             # Start workflow with iteration=1, target=3
             print(f"Starting IteratingWorkflow {workflow_id} via CLI...")
@@ -227,7 +224,7 @@ async def test_e2e_continue_as_new_basic(trio_client):
                 elif status in ["FAILED", "TERMINATED", "CANCELLED"]:
                     raise RuntimeError(f"Workflow ended with status: {status}")
 
-                await trio.sleep(1)
+                await trio.sleep(0.3)
             else:
                 raise TimeoutError(
                     f"Workflow did not complete within {max_wait} seconds"
@@ -244,11 +241,11 @@ async def test_e2e_continue_as_new_basic(trio_client):
                 assert "completed" in str(result).lower()
                 assert "3" in str(result)
 
-            print("✅ E2E continue_as_new basic test passed")
+            print("E2E continue_as_new basic test passed")
 
         finally:
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
 
@@ -277,9 +274,6 @@ async def test_e2e_continue_as_new_preserves_workflow_id(trio_client):
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
 
-        # Give worker time to start
-        await trio.sleep(3)
-
         try:
             # Start workflow with iteration=0
             print(f"Starting ContinueAsNewPreservesIdWorkflow {workflow_id}...")
@@ -305,7 +299,7 @@ async def test_e2e_continue_as_new_preserves_workflow_id(trio_client):
                 elif status in ["FAILED", "TERMINATED", "CANCELLED"]:
                     raise RuntimeError(f"Workflow ended with status: {status}")
 
-                await trio.sleep(1)
+                await trio.sleep(0.3)
             else:
                 raise TimeoutError(
                     f"Workflow did not complete within {max_wait} seconds"
@@ -338,9 +332,9 @@ async def test_e2e_continue_as_new_preserves_workflow_id(trio_client):
                     # across continue-as-new executions), which we verified by
                     # querying the original workflow_id and getting COMPLETED status
 
-            print("✅ E2E continue_as_new preserves workflow ID test passed")
+            print("E2E continue_as_new preserves workflow ID test passed")
 
         finally:
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()

@@ -88,8 +88,13 @@ def unique_task_queue() -> str:
     return f"bridge-pattern-test-{uuid4()}"
 
 
-async def safe_shutdown(bridge: TrioBridgeWrapper, timeout: float = 5.0) -> None:
+async def safe_shutdown(bridge: TrioBridgeWrapper, timeout: float = 0.5) -> None:
     """Safely shutdown a bridge with timeout.
+
+    In tests we only need initiate_shutdown to signal the core worker to stop.
+    finalize_shutdown blocks until all in-flight polls complete, which hangs
+    when polls are outstanding. Since test cleanup doesn't need graceful
+    drain, we skip finalize entirely and just let Python GC clean up.
 
     Args:
         bridge: The bridge wrapper to shutdown
@@ -97,8 +102,6 @@ async def safe_shutdown(bridge: TrioBridgeWrapper, timeout: float = 5.0) -> None
     """
     try:
         bridge.initiate_shutdown()
-        with trio.move_on_after(timeout):
-            await bridge.finalize_shutdown()
     except Exception:
         pass  # Ignore shutdown errors in cleanup
 

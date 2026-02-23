@@ -125,9 +125,6 @@ async def test_e2e_activity_error_type_preserved(trio_client):
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
 
-        # Give worker time to start
-        await trio.sleep(3)
-
         try:
             # Start workflow
             print(f"Starting workflow {workflow_id}...")
@@ -151,7 +148,7 @@ async def test_e2e_activity_error_type_preserved(trio_client):
                 elif status in ["FAILED", "TERMINATED", "CANCELLED"]:
                     raise RuntimeError(f"Workflow ended with status: {status}")
 
-                await trio.sleep(0.5)
+                await trio.sleep(0.3)
             else:
                 raise TimeoutError(
                     f"Workflow did not complete within {max_wait} seconds"
@@ -194,7 +191,7 @@ async def test_e2e_activity_error_type_preserved(trio_client):
 
         finally:
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
 
@@ -278,9 +275,6 @@ async def test_e2e_child_workflow_error_type_preserved(trio_client):
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
 
-        # Give worker time to start
-        await trio.sleep(3)
-
         try:
             # Start workflow
             print(f"Starting workflow {workflow_id}...")
@@ -304,7 +298,7 @@ async def test_e2e_child_workflow_error_type_preserved(trio_client):
                 elif status in ["FAILED", "TERMINATED", "CANCELLED"]:
                     raise RuntimeError(f"Workflow ended with status: {status}")
 
-                await trio.sleep(0.5)
+                await trio.sleep(0.3)
             else:
                 raise TimeoutError(
                     f"Workflow did not complete within {max_wait} seconds"
@@ -347,7 +341,7 @@ async def test_e2e_child_workflow_error_type_preserved(trio_client):
 
         finally:
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
 

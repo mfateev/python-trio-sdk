@@ -70,8 +70,9 @@ async def test_worker_with_prometheus_metrics(trio_client):
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
 
-        # Give worker time to start, connect, and generate some poll metrics
-        await trio.sleep(5)
+        # Give worker time to start and generate some poll metrics
+        # Telemetry needs a moment to bind the Prometheus port
+        await trio.sleep(2)
 
         try:
             # Fetch Prometheus metrics endpoint
@@ -104,7 +105,7 @@ async def test_worker_with_prometheus_metrics(trio_client):
 
         finally:
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
 
@@ -124,13 +125,13 @@ async def test_worker_without_telemetry(trio_client):
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
 
-        # Give worker time to start
-        await trio.sleep(3)
+        # Let worker initialize (needs time to connect to server)
+        await trio.sleep(0.5)
 
         try:
             # Verify worker is running (it started without error)
             assert worker.is_running
         finally:
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()

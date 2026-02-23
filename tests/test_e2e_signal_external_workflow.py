@@ -165,8 +165,8 @@ def get_workflow_status_and_result_via_cli(workflow_id: str, timeout: int = 30) 
                     "status": status_str,
                     "result": None,
                 }
-        time.sleep(0.5)
-    raise TimeoutError(f"Workflow {workflow_id} did not complete within {timeout}s")
+        time.sleep(0.3)
+    return {"status": "UNKNOWN", "result": None}
 
 
 def get_workflow_run_id_via_cli(workflow_id: str) -> str:
@@ -219,28 +219,40 @@ async def test_signal_external_workflow_success(trio_client: Client) -> None:
         input_data=json.dumps(target_workflow_id),
     )
 
-    # Run worker to process both workflows
-    async def run_worker():
-        async with Worker(
-            trio_client,
-            task_queue=unique_task_queue,
-            workflows=[TargetWorkflow, SignalerWorkflow],
-        ):
-            # Wait for both workflows to complete
-            await trio.sleep(10)
+    # Run worker with polling pattern
+    worker = Worker(
+        trio_client,
+        task_queue=unique_task_queue,
+        workflows=[TargetWorkflow, SignalerWorkflow],
+    )
 
-    # Run with timeout
-    with trio.move_on_after(30):
-        await run_worker()
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(worker.run)
+        try:
+            # Poll for both workflows to complete
+            for _ in range(60):
+                target_info = get_workflow_status_and_result_via_cli(
+                    target_workflow_id, timeout=1,
+                )
+                signaler_info = get_workflow_status_and_result_via_cli(
+                    signaler_workflow_id, timeout=1,
+                )
+                if (
+                    target_info["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED")
+                    and signaler_info["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED")
+                ):
+                    break
+                await trio.sleep(0.3)
 
-    # Verify results
-    target_status = get_workflow_status_and_result_via_cli(target_workflow_id)
-    signaler_status = get_workflow_status_and_result_via_cli(signaler_workflow_id)
-
-    assert target_status["status"] == "COMPLETED"
-    assert signaler_status["status"] == "COMPLETED"
-    assert target_status["result"] == "Received: hello from signaler"
-    assert signaler_status["result"] == "signal_sent"
+            # Verify results
+            assert target_info["status"] == "COMPLETED"
+            assert signaler_info["status"] == "COMPLETED"
+            assert target_info["result"] == "Received: hello from signaler"
+            assert signaler_info["result"] == "signal_sent"
+        finally:
+            worker.shutdown()
+            await trio.sleep(0.3)
+            nursery.cancel_scope.cancel()
 
 
 @pytest.mark.temporal_server
@@ -270,26 +282,40 @@ async def test_signal_external_workflow_with_method_ref(trio_client: Client) -> 
         input_data=json.dumps(target_workflow_id),
     )
 
-    # Run worker
-    async def run_worker():
-        async with Worker(
-            trio_client,
-            task_queue=unique_task_queue,
-            workflows=[TargetWorkflow, SignalerWithMethodRefWorkflow],
-        ):
-            await trio.sleep(10)
+    # Run worker with polling pattern
+    worker = Worker(
+        trio_client,
+        task_queue=unique_task_queue,
+        workflows=[TargetWorkflow, SignalerWithMethodRefWorkflow],
+    )
 
-    with trio.move_on_after(30):
-        await run_worker()
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(worker.run)
+        try:
+            # Poll for both workflows to complete
+            for _ in range(60):
+                target_info = get_workflow_status_and_result_via_cli(
+                    target_workflow_id, timeout=1,
+                )
+                signaler_info = get_workflow_status_and_result_via_cli(
+                    signaler_workflow_id, timeout=1,
+                )
+                if (
+                    target_info["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED")
+                    and signaler_info["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED")
+                ):
+                    break
+                await trio.sleep(0.3)
 
-    # Verify results
-    target_status = get_workflow_status_and_result_via_cli(target_workflow_id)
-    signaler_status = get_workflow_status_and_result_via_cli(signaler_workflow_id)
-
-    assert target_status["status"] == "COMPLETED"
-    assert signaler_status["status"] == "COMPLETED"
-    assert target_status["result"] == "Received: hello via method ref"
-    assert signaler_status["result"] == "signal_sent_via_method_ref"
+            # Verify results
+            assert target_info["status"] == "COMPLETED"
+            assert signaler_info["status"] == "COMPLETED"
+            assert target_info["result"] == "Received: hello via method ref"
+            assert signaler_info["result"] == "signal_sent_via_method_ref"
+        finally:
+            worker.shutdown()
+            await trio.sleep(0.3)
+            nursery.cancel_scope.cancel()
 
 
 @pytest.mark.temporal_server
