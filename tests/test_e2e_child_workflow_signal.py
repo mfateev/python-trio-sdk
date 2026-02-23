@@ -128,39 +128,47 @@ async def test_e2e_child_workflow_signal_string_name(trio_client):
         input_data=json.dumps(child_id),
     )
 
-    # Run worker to process parent and child workflows
-    async def run_worker():
-        async with Worker(
-            trio_client,
-            task_queue=task_queue,
-            workflows=[ParentWorkflowSignalsChild, SignalReceivingChildWorkflow],
-        ):
-            # Wait for workflows to complete
-            await trio.sleep(15)
-
-    # Run with timeout
-    with trio.move_on_after(30):
-        await run_worker()
-
-    # Verify parent workflow completed
-    parent_status = get_workflow_status_and_result_via_cli(workflow_id)
-    assert parent_status["status"] == "COMPLETED", f"Parent status: {parent_status['status']}"
-
-    result = parent_status["result"]
-    if isinstance(result, str):
-        result = json.loads(result)
-
-    # Verify parent succeeded
-    assert result["parent_success"] is True, "Parent workflow should succeed"
-
-    # Verify child received all signals
-    child_result = result["child_result"]
-    assert child_result["signal_count"] == 3, (
-        f"Expected 3 signals, got {child_result['signal_count']}"
+    # Run worker with polling pattern
+    worker = Worker(
+        trio_client,
+        task_queue=task_queue,
+        workflows=[ParentWorkflowSignalsChild, SignalReceivingChildWorkflow],
     )
-    assert child_result["signals_received"] == ["signal1", "signal2", "signal3"], (
-        f"Expected signals in order, got {child_result['signals_received']}"
-    )
+
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(worker.run)
+        try:
+            # Poll for workflow completion
+            for _ in range(60):
+                parent_status = get_workflow_status_and_result_via_cli(
+                    workflow_id, timeout=1,
+                )
+                if parent_status["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED"):
+                    break
+                await trio.sleep(0.3)
+
+            # Verify parent workflow completed
+            assert parent_status["status"] == "COMPLETED", f"Parent status: {parent_status['status']}"
+
+            result = parent_status["result"]
+            if isinstance(result, str):
+                result = json.loads(result)
+
+            # Verify parent succeeded
+            assert result["parent_success"] is True, "Parent workflow should succeed"
+
+            # Verify child received all signals
+            child_result = result["child_result"]
+            assert child_result["signal_count"] == 3, (
+                f"Expected 3 signals, got {child_result['signal_count']}"
+            )
+            assert child_result["signals_received"] == ["signal1", "signal2", "signal3"], (
+                f"Expected signals in order, got {child_result['signals_received']}"
+            )
+        finally:
+            worker.shutdown()
+            await trio.sleep(0.3)
+            nursery.cancel_scope.cancel()
 
 
 # =============================================================================
@@ -226,34 +234,44 @@ async def test_e2e_child_workflow_signal_with_method_ref(trio_client):
         input_data=json.dumps(child_id),
     )
 
-    # Run worker
-    async def run_worker():
-        async with Worker(
-            trio_client,
-            task_queue=task_queue,
-            workflows=[ParentWorkflowSignalsChildWithMethod, SignalReceivingChildWorkflow],
-        ):
-            await trio.sleep(15)
+    # Run worker with polling pattern
+    worker = Worker(
+        trio_client,
+        task_queue=task_queue,
+        workflows=[ParentWorkflowSignalsChildWithMethod, SignalReceivingChildWorkflow],
+    )
 
-    with trio.move_on_after(30):
-        await run_worker()
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(worker.run)
+        try:
+            # Poll for workflow completion
+            for _ in range(60):
+                parent_status = get_workflow_status_and_result_via_cli(
+                    workflow_id, timeout=1,
+                )
+                if parent_status["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED"):
+                    break
+                await trio.sleep(0.3)
 
-    # Verify results
-    parent_status = get_workflow_status_and_result_via_cli(workflow_id)
-    assert parent_status["status"] == "COMPLETED"
+            # Verify results
+            assert parent_status["status"] == "COMPLETED"
 
-    result = parent_status["result"]
-    if isinstance(result, str):
-        result = json.loads(result)
+            result = parent_status["result"]
+            if isinstance(result, str):
+                result = json.loads(result)
 
-    # Verify parent succeeded
-    assert result["parent_success"] is True
-    assert result["method"] == "callable"
+            # Verify parent succeeded
+            assert result["parent_success"] is True
+            assert result["method"] == "callable"
 
-    # Verify child received signals
-    child_result = result["child_result"]
-    assert child_result["signal_count"] == 2
-    assert child_result["signals_received"] == ["method_signal1", "method_signal2"]
+            # Verify child received signals
+            child_result = result["child_result"]
+            assert child_result["signal_count"] == 2
+            assert child_result["signals_received"] == ["method_signal1", "method_signal2"]
+        finally:
+            worker.shutdown()
+            await trio.sleep(0.3)
+            nursery.cancel_scope.cancel()
 
 
 # =============================================================================
@@ -328,32 +346,42 @@ async def test_e2e_child_workflow_signal_early(trio_client):
         input_data=json.dumps(child_id),
     )
 
-    # Run worker
-    async def run_worker():
-        async with Worker(
-            trio_client,
-            task_queue=task_queue,
-            workflows=[ParentWorkflowEarlySignal, QuickChildWorkflow],
-        ):
-            await trio.sleep(15)
+    # Run worker with polling pattern
+    worker = Worker(
+        trio_client,
+        task_queue=task_queue,
+        workflows=[ParentWorkflowEarlySignal, QuickChildWorkflow],
+    )
 
-    with trio.move_on_after(30):
-        await run_worker()
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(worker.run)
+        try:
+            # Poll for workflow completion
+            for _ in range(60):
+                parent_status = get_workflow_status_and_result_via_cli(
+                    workflow_id, timeout=1,
+                )
+                if parent_status["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED"):
+                    break
+                await trio.sleep(0.3)
 
-    # Verify results
-    parent_status = get_workflow_status_and_result_via_cli(workflow_id)
-    assert parent_status["status"] == "COMPLETED"
+            # Verify results
+            assert parent_status["status"] == "COMPLETED"
 
-    result = parent_status["result"]
-    if isinstance(result, str):
-        result = json.loads(result)
+            result = parent_status["result"]
+            if isinstance(result, str):
+                result = json.loads(result)
 
-    # Verify parent succeeded
-    assert result["parent_success"] is True
+            # Verify parent succeeded
+            assert result["parent_success"] is True
 
-    # Verify child received the early signal
-    child_result = result["child_result"]
-    assert child_result["value"] == "early_signal"
+            # Verify child received the early signal
+            child_result = result["child_result"]
+            assert child_result["value"] == "early_signal"
+        finally:
+            worker.shutdown()
+            await trio.sleep(0.3)
+            nursery.cancel_scope.cancel()
 
 
 # =============================================================================
@@ -420,5 +448,5 @@ def get_workflow_status_and_result_via_cli(workflow_id: str, timeout: int = 30) 
                     "status": status_str,
                     "result": None,
                 }
-        time.sleep(0.5)
-    raise TimeoutError(f"Workflow {workflow_id} did not complete within {timeout}s")
+        time.sleep(0.3)
+    return {"status": "UNKNOWN", "result": None}

@@ -142,7 +142,7 @@ async def _async_wait_for_workflow_status(
         status = cli_result.get("status", "UNKNOWN")
         if status in target_statuses:
             return cli_result
-        await trio.sleep(0.5)
+        await trio.sleep(0.3)
     raise TimeoutError(
         f"Workflow {workflow_id} did not reach {target_statuses} within {max_wait}s"
     )
@@ -175,7 +175,7 @@ async def cancel_catch_activity() -> str:
 
 @activity.defn
 async def cancel_throw_activity() -> str:
-    """Activity that does NOT catch cancellation — it propagates."""
+    """Activity that does NOT catch cancellation -- it propagates."""
     while True:
         activity.heartbeat("alive")
         await trio.sleep(0.5)
@@ -305,7 +305,6 @@ async def test_e2e_activity_heartbeat_succeeds(trio_client):
 
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
-        await trio.sleep(3)
 
         try:
             _start_workflow_via_cli(
@@ -325,7 +324,7 @@ async def test_e2e_activity_heartbeat_succeeds(trio_client):
 
         finally:
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
 
@@ -341,7 +340,7 @@ async def test_activity_cancel_catch(trio_client):
     - Activity catches trio.Cancelled and can inspect is_cancelled()
     - Activity completion is sent with correct cancelled status
 
-    Note: Full round-trip (workflow → cancel → activity → result → workflow)
+    Note: Full round-trip (workflow -> cancel -> activity -> result -> workflow)
     depends on workflow replay after eviction which is a separate feature.
     This test validates the activity worker completes the cancel correctly.
     """
@@ -366,7 +365,6 @@ async def test_activity_cancel_catch(trio_client):
 
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
-        await trio.sleep(3)
 
         try:
             _start_workflow_via_cli(
@@ -377,20 +375,23 @@ async def test_activity_cancel_catch(trio_client):
             )
 
             # Wait for activity to start heartbeating, then cancel workflow
-            await trio.sleep(3)
+            await trio.sleep(2)
             _cancel_workflow_via_cli(workflow_id, namespace)
 
-            # Wait for the activity cancel to be processed
-            await trio.sleep(5)
+            # Poll for the cancel to be processed (up to 5s)
+            for _ in range(25):
+                cancel_msgs = [m for m in cancel_log if "Cancelling activity" in str(m)]
+                if cancel_msgs:
+                    break
+                await trio.sleep(0.2)
 
             # Verify activity received cancellation
-            cancel_msgs = [m for m in cancel_log if "Cancelling activity" in str(m)]
             assert len(cancel_msgs) > 0, "Activity did not receive cancel request"
 
         finally:
             logging.getLogger("temporalio_trio.worker._activity").info = orig_info
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
 
@@ -426,7 +427,6 @@ async def test_activity_cancel_throw(trio_client):
 
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
-        await trio.sleep(3)
 
         try:
             _start_workflow_via_cli(
@@ -437,20 +437,23 @@ async def test_activity_cancel_throw(trio_client):
             )
 
             # Wait for activity to start, then cancel workflow
-            await trio.sleep(3)
+            await trio.sleep(2)
             _cancel_workflow_via_cli(workflow_id, namespace)
 
-            # Wait for the activity cancel to be processed
-            await trio.sleep(5)
+            # Poll for cancel to be processed (up to 5s)
+            for _ in range(25):
+                cancel_msgs = [m for m in cancel_log if "Cancelling activity" in str(m)]
+                if cancel_msgs:
+                    break
+                await trio.sleep(0.2)
 
             # Verify activity received cancellation
-            cancel_msgs = [m for m in cancel_log if "Cancelling activity" in str(m)]
             assert len(cancel_msgs) > 0, "Activity did not receive cancel request"
 
         finally:
             logging.getLogger("temporalio_trio.worker._activity").info = orig_info
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
 
@@ -486,7 +489,6 @@ async def test_workflow_uncaught_cancel(trio_client):
 
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
-        await trio.sleep(3)
 
         try:
             _start_workflow_via_cli(
@@ -497,14 +499,17 @@ async def test_workflow_uncaught_cancel(trio_client):
             )
 
             # Wait for activity to start heartbeating, then cancel
-            await trio.sleep(3)
+            await trio.sleep(2)
             _cancel_workflow_via_cli(workflow_id, namespace)
 
-            # Wait for cancel to be processed
-            await trio.sleep(5)
+            # Poll for cancel to be processed (up to 5s)
+            for _ in range(25):
+                cancel_msgs = [m for m in cancel_log if "Cancelling activity" in m]
+                if cancel_msgs:
+                    break
+                await trio.sleep(0.2)
 
             # Verify activity received cancellation
-            cancel_msgs = [m for m in cancel_log if "Cancelling activity" in m]
             assert len(cancel_msgs) > 0, (
                 f"Activity did not receive cancel request. Log: {cancel_log}"
             )
@@ -512,7 +517,7 @@ async def test_workflow_uncaught_cancel(trio_client):
         finally:
             logging.getLogger("temporalio_trio.worker._activity").info = orig_info
             worker.shutdown()
-            await trio.sleep(0.5)
+            await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
 
@@ -539,7 +544,6 @@ async def test_e2e_worker_shutdown_cancels_activities(trio_client):
 
     async with trio.open_nursery() as nursery:
         nursery.start_soon(worker.run)
-        await trio.sleep(3)
 
         try:
             _start_workflow_via_cli(
@@ -550,11 +554,11 @@ async def test_e2e_worker_shutdown_cancels_activities(trio_client):
             )
 
             # Wait for activity to start
-            await trio.sleep(3)
+            await trio.sleep(2)
 
             # Shutdown worker - should not hang
             worker.shutdown()
-            await trio.sleep(2)
+            await trio.sleep(1)
 
             # If we got here, worker shutdown didn't hang
 

@@ -80,7 +80,7 @@ async def test_e2e_upsert_search_attributes(trio_client) -> None:
         )
         nursery.start_soon(worker.run)
 
-        await trio.sleep(0.5)
+        await trio.sleep(0)
 
         handle = await trio_client.start_workflow(
             "SearchAttributeWorkflow",
@@ -93,6 +93,7 @@ async def test_e2e_upsert_search_attributes(trio_client) -> None:
         assert result == "processed-initial-status"
 
         worker.shutdown()
+        await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
 
@@ -110,7 +111,7 @@ async def test_e2e_multiple_search_attributes(trio_client) -> None:
         )
         nursery.start_soon(worker.run)
 
-        await trio.sleep(0.5)
+        await trio.sleep(0)
 
         handle = await trio_client.start_workflow(
             "MultipleSearchAttributesWorkflow",
@@ -123,6 +124,7 @@ async def test_e2e_multiple_search_attributes(trio_client) -> None:
         assert result == "done-42"
 
         worker.shutdown()
+        await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
 
@@ -154,7 +156,7 @@ async def test_e2e_search_attribute_during_replay(trio_client) -> None:
         )
         nursery.start_soon(worker.run)
 
-        await trio.sleep(0.5)
+        await trio.sleep(0)
 
         handle = await trio_client.start_workflow(
             "ReplaySearchAttrWorkflow",
@@ -166,4 +168,5 @@ async def test_e2e_search_attribute_during_replay(trio_client) -> None:
         assert result == "completed"
 
         worker.shutdown()
+        await trio.sleep(0.3)
         nursery.cancel_scope.cancel()

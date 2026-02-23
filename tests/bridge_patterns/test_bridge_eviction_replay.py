@@ -82,11 +82,11 @@ async def test_eviction_replay_timer_behavior(unique_task_queue: str) -> None:
         # 3. Start a timer (short so we can observe behavior)
         completion = (
             CompletionBuilder(run_id)
-            .start_timer(seq=1, duration=timedelta(seconds=60))
+            .start_timer(seq=1, duration=timedelta(seconds=1))
             .build()
         )
         await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
-        print("Step 2: Sent StartTimer(seq=1, 60s)")
+        print("Step 2: Sent StartTimer(seq=1, 1s)")
 
         # 4. Request eviction by completing with request_eviction
         # Note: SDK-Core can evict on its own under memory pressure,
@@ -148,10 +148,10 @@ async def test_eviction_replay_timer_behavior(unique_task_queue: str) -> None:
                     # Option B: SDK-Core already knows about the timer from history
 
                     # Let's try sending the same timer command
-                    print("Step 7: Re-sending StartTimer(seq=1, 60s) during replay...")
+                    print("Step 7: Re-sending StartTimer(seq=1, 1s) during replay...")
                     completion = (
                         CompletionBuilder(activation.run_id)
-                        .start_timer(seq=1, duration=timedelta(seconds=60))
+                        .start_timer(seq=1, duration=timedelta(seconds=1))
                         .build()
                     )
                     await bridge.complete_workflow_activation(
