@@ -12,6 +12,10 @@ This is an experimental implementation of the Temporal Python SDK using [Trio](h
 
 Do not create Sprite environment checkpoints. All code is saved when pushed to git. Git commits and pushes are the source of truth for code persistence.
 
+## Clean Working Tree Before New Work (CRITICAL)
+
+**NEVER start a new feature or task while there are uncommitted changes from previous work.** Before beginning any new work, run `git status` and ensure the working tree is clean. If there are uncommitted changes, commit them first. Leftover changes from a previous task must not bleed into the next one.
+
 ## Git Workflow (IMPORTANT)
 
 **The `main` branch is protected.** All changes must go through pull requests.
