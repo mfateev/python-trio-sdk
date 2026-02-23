@@ -25,6 +25,7 @@ class TestStartChildWorkflowBehavior:
     async def test_handle_first_execution_run_id_set_after_start(self) -> None:
         """Test that handle has first_execution_run_id set after child starts."""
         import random as random_module
+
         runtime = WorkflowRuntime(
             workflow_id="parent",
             workflow_type="Parent",
@@ -68,6 +69,7 @@ class TestStartChildWorkflowBehavior:
     async def test_replay_path_handle_has_run_id_immediately(self) -> None:
         """Test that during replay, handle has run_id set immediately."""
         import random as random_module
+
         runtime = WorkflowRuntime(
             workflow_id="parent",
             workflow_type="Parent",
@@ -101,6 +103,7 @@ class TestStartChildWorkflowBehavior:
     async def test_start_child_creates_start_event_not_completion_event(self) -> None:
         """Test that start_child_workflow waits for start event, not completion."""
         import random as random_module
+
         runtime = WorkflowRuntime(
             workflow_id="parent",
             workflow_type="Parent",

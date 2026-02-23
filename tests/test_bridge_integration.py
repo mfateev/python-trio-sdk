@@ -42,7 +42,6 @@ from temporalio_trio.worker._single_thread_worker import SingleThreadWorker
 from temporalio_trio.worker._workflow_state import WorkflowState
 from temporalio_trio.workflow import defn, run, sleep, time
 
-
 # =============================================================================
 # Test Workflows
 # =============================================================================
@@ -362,11 +361,13 @@ class TestRuntimeContextvarBridging:
             workflows=[TimeWorkflow],
         )
 
-        bridge.add_activation(WorkflowActivation(
-            jobs=[WorkflowStartedJob(workflow_type="TimeWorkflow", args=())],
-            timestamp_ns=5_000_000_000,
-            run_id="time-test",
-        ))
+        bridge.add_activation(
+            WorkflowActivation(
+                jobs=[WorkflowStartedJob(workflow_type="TimeWorkflow", args=())],
+                timestamp_ns=5_000_000_000,
+                run_id="time-test",
+            )
+        )
 
         async with trio.open_nursery() as nursery:
             nursery.start_soon(worker.run)
@@ -392,11 +393,13 @@ class TestRuntimeContextvarBridging:
             workflows=[SleepWorkflow],
         )
 
-        bridge.add_activation(WorkflowActivation(
-            jobs=[WorkflowStartedJob(workflow_type="SleepWorkflow", args=(1.0,))],
-            timestamp_ns=0,
-            run_id="sleep-test",
-        ))
+        bridge.add_activation(
+            WorkflowActivation(
+                jobs=[WorkflowStartedJob(workflow_type="SleepWorkflow", args=(1.0,))],
+                timestamp_ns=0,
+                run_id="sleep-test",
+            )
+        )
 
         async with trio.open_nursery() as nursery:
             nursery.start_soon(worker.run)
@@ -412,11 +415,13 @@ class TestRuntimeContextvarBridging:
             assert cmd.start_timer.start_to_fire_timeout.seconds == 1
 
             # Deliver timer fired
-            bridge.add_activation(WorkflowActivation(
-                jobs=[TimerFiredJob(timer_id=1)],
-                timestamp_ns=1_000_000_000,
-                run_id="sleep-test",
-            ))
+            bridge.add_activation(
+                WorkflowActivation(
+                    jobs=[TimerFiredJob(timer_id=1)],
+                    timestamp_ns=1_000_000_000,
+                    run_id="sleep-test",
+                )
+            )
             await trio.sleep(0.5)
 
             # Second completion should have CompleteWorkflowCommand
@@ -480,13 +485,17 @@ class TestTimerSummaryRoundTrip:
             workflows=[SleepWithSummaryWorkflow],
         )
 
-        bridge.add_activation(WorkflowActivation(
-            jobs=[WorkflowStartedJob(
-                workflow_type="SleepWithSummaryWorkflow", args=()
-            )],
-            timestamp_ns=0,
-            run_id="summary-test",
-        ))
+        bridge.add_activation(
+            WorkflowActivation(
+                jobs=[
+                    WorkflowStartedJob(
+                        workflow_type="SleepWithSummaryWorkflow", args=()
+                    )
+                ],
+                timestamp_ns=0,
+                run_id="summary-test",
+            )
+        )
 
         async with trio.open_nursery() as nursery:
             nursery.start_soon(worker.run)

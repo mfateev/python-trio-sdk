@@ -27,10 +27,12 @@ class SearchAttributeWorkflow:
 
     @workflow.run
     async def run(self) -> str:
-        workflow.upsert_search_attributes([
-            KW_KEY.value_set("test-value"),
-            INT_KEY.value_set(42),
-        ])
+        workflow.upsert_search_attributes(
+            [
+                KW_KEY.value_set("test-value"),
+                INT_KEY.value_set(42),
+            ]
+        )
         return "done"
 
 
@@ -41,15 +43,19 @@ class MultipleUpsertWorkflow:
     @workflow.run
     async def run(self) -> str:
         # First upsert
-        workflow.upsert_search_attributes([
-            KW_KEY.value_set("initial"),
-        ])
+        workflow.upsert_search_attributes(
+            [
+                KW_KEY.value_set("initial"),
+            ]
+        )
 
         # Second upsert (should update)
-        workflow.upsert_search_attributes([
-            KW_KEY.value_set("updated"),
-            INT_KEY.value_set(100),
-        ])
+        workflow.upsert_search_attributes(
+            [
+                KW_KEY.value_set("updated"),
+                INT_KEY.value_set(100),
+            ]
+        )
 
         return "done"
 
@@ -159,8 +165,7 @@ def test_upsert_search_attributes_empty():
     # Empty sequence should not create a command
     assert len(completion.commands) == 1  # Only Complete
     assert not any(
-        isinstance(cmd, UpsertSearchAttributesCommand)
-        for cmd in completion.commands
+        isinstance(cmd, UpsertSearchAttributesCommand) for cmd in completion.commands
     )
 
 
@@ -186,15 +191,17 @@ def test_upsert_search_attributes_various_types():
     class AllTypesWorkflow:
         @workflow.run
         async def run(self) -> str:
-            workflow.upsert_search_attributes([
-                text_key.value_set("some text"),
-                kw_key.value_set("keyword"),
-                int_key.value_set(123),
-                float_key.value_set(45.67),
-                bool_key.value_set(True),
-                dt_key.value_set(dt_val),
-                kwlist_key.value_set(["item1", "item2"]),
-            ])
+            workflow.upsert_search_attributes(
+                [
+                    text_key.value_set("some text"),
+                    kw_key.value_set("keyword"),
+                    int_key.value_set(123),
+                    float_key.value_set(45.67),
+                    bool_key.value_set(True),
+                    dt_key.value_set(dt_val),
+                    kwlist_key.value_set(["item1", "item2"]),
+                ]
+            )
             return "done"
 
     details = _create_details(AllTypesWorkflow)
@@ -269,9 +276,11 @@ def test_upsert_search_attributes_value_unset():
     class UnsetWorkflow:
         @workflow.run
         async def run(self) -> str:
-            workflow.upsert_search_attributes([
-                KW_KEY.value_unset(),
-            ])
+            workflow.upsert_search_attributes(
+                [
+                    KW_KEY.value_unset(),
+                ]
+            )
             return "done"
 
     details = _create_details(UnsetWorkflow)
@@ -302,10 +311,12 @@ def test_upsert_search_attributes_mixed_set_and_unset():
     class MixedWorkflow:
         @workflow.run
         async def run(self) -> str:
-            workflow.upsert_search_attributes([
-                KW_KEY.value_set("keep-this"),
-                INT_KEY.value_unset(),
-            ])
+            workflow.upsert_search_attributes(
+                [
+                    KW_KEY.value_set("keep-this"),
+                    INT_KEY.value_unset(),
+                ]
+            )
             return "done"
 
     details = _create_details(MixedWorkflow)

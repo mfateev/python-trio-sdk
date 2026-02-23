@@ -16,7 +16,6 @@ from typing import Any
 
 import pytest
 import trio
-
 from temporalio.common import RetryPolicy
 from temporalio.exceptions import (
     ActivityError,

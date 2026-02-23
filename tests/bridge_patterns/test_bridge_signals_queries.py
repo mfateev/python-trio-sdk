@@ -103,7 +103,9 @@ async def test_pattern_11_signal_workflow(unique_task_queue: str) -> None:
 
         # 5. Poll for workflow activation (signal_workflow)
         activation = await poll_and_handle_eviction(
-            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            bridge,
+            run_id,
+            timeout=DEFAULT_TIMEOUT,
             replay_commands=[build_start_timer],
         )
 
@@ -203,7 +205,9 @@ async def test_pattern_11_multiple_signals(unique_task_queue: str) -> None:
         received_signals = []
         for _ in range(3):  # At most 3 activations
             activation = await poll_and_handle_eviction(
-                bridge, run_id, timeout=5.0,
+                bridge,
+                run_id,
+                timeout=5.0,
                 replay_commands=[build_start_timer_multi],
             )
 
@@ -327,7 +331,9 @@ async def test_pattern_12_query_workflow(unique_task_queue: str) -> None:
 
             # 5. Poll for workflow activation (query_workflow)
             activation = await poll_and_handle_eviction(
-                bridge, run_id, timeout=DEFAULT_TIMEOUT,
+                bridge,
+                run_id,
+                timeout=DEFAULT_TIMEOUT,
                 replay_commands=[build_two_timers],
             )
 
@@ -379,7 +385,9 @@ async def test_pattern_12_query_workflow(unique_task_queue: str) -> None:
 
         # 7. Wait for short timer to fire
         activation = await poll_and_handle_eviction(
-            bridge, run_id, timeout=5.0,
+            bridge,
+            run_id,
+            timeout=5.0,
             replay_commands=[build_two_timers],
         )
         assert activation.has_job_type("fire_timer"), (
@@ -481,7 +489,9 @@ async def test_pattern_13_query_failure(unique_task_queue: str) -> None:
 
             # Poll for query
             activation = await poll_and_handle_eviction(
-                bridge, run_id, timeout=DEFAULT_TIMEOUT,
+                bridge,
+                run_id,
+                timeout=DEFAULT_TIMEOUT,
                 replay_commands=[build_long_timer_13],
             )
 
@@ -517,7 +527,9 @@ async def test_pattern_13_query_failure(unique_task_queue: str) -> None:
         try:
             with trio.move_on_after(2.0):
                 activation = await poll_and_handle_eviction(
-                    bridge, run_id, timeout=2.0,
+                    bridge,
+                    run_id,
+                    timeout=2.0,
                     replay_commands=[build_long_timer_13],
                 )
                 completion = (
@@ -596,7 +608,9 @@ async def test_pattern_12_query_with_arguments(unique_task_queue: str) -> None:
 
             # Poll for query
             activation = await poll_and_handle_eviction(
-                bridge, run_id, timeout=DEFAULT_TIMEOUT,
+                bridge,
+                run_id,
+                timeout=DEFAULT_TIMEOUT,
                 replay_commands=[build_long_timer_12args],
             )
 

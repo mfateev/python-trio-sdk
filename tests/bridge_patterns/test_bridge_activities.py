@@ -134,7 +134,9 @@ async def test_pattern_8_activity_execution_success(unique_task_queue: str) -> N
 
         # 6. Poll for workflow activation (resolve_activity)
         activation = await poll_and_handle_eviction(
-            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            bridge,
+            run_id,
+            timeout=DEFAULT_TIMEOUT,
             replay_commands=[build_schedule_activity],
         )
 
@@ -270,7 +272,9 @@ async def test_pattern_9_activity_failure(unique_task_queue: str) -> None:
 
         # 6. Poll for workflow activation (resolve_activity with failure)
         activation = await poll_and_handle_eviction(
-            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            bridge,
+            run_id,
+            timeout=DEFAULT_TIMEOUT,
             replay_commands=[build_schedule_failing_activity],
         )
 
@@ -402,7 +406,9 @@ async def test_pattern_10_activity_cancellation(unique_task_queue: str) -> None:
 
         # 5. Poll for timer to fire (wakes up workflow)
         activation = await poll_and_handle_eviction(
-            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            bridge,
+            run_id,
+            timeout=DEFAULT_TIMEOUT,
             replay_commands=[build_schedule_activity_and_timer],
         )
 
@@ -434,7 +440,9 @@ async def test_pattern_10_activity_cancellation(unique_task_queue: str) -> None:
 
         # 8. Poll for workflow activation (resolve_activity with cancelled)
         activation = await poll_and_handle_eviction(
-            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            bridge,
+            run_id,
+            timeout=DEFAULT_TIMEOUT,
             replay_commands=[
                 build_schedule_activity_and_timer,
                 build_request_cancel_activity,
@@ -591,7 +599,9 @@ async def test_pattern_8_activity_with_retry(unique_task_queue: str) -> None:
 
         # Poll for resolve_activity
         activation = await poll_and_handle_eviction(
-            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            bridge,
+            run_id,
+            timeout=DEFAULT_TIMEOUT,
             replay_commands=[build_schedule_retryable_activity],
         )
 
