@@ -1205,7 +1205,9 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
         # If not yet completed, wait for completion via the runtime
         if not self._completed:
             try:
-                result = await _Runtime.current().workflow_wait_child_workflow(self._seq)
+                result = await _Runtime.current().workflow_wait_child_workflow(
+                    self._seq
+                )
                 self._set_result(result)
             except BaseException as e:
                 self._set_failure(e)

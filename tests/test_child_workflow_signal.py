@@ -33,6 +33,7 @@ class TestChildWorkflowHandleSignal:
 
         # Mock _Runtime.current() to return our mock
         import contextvars
+
         from temporalio_trio import workflow
 
         runtime_var = workflow._current_runtime
@@ -57,6 +58,7 @@ class TestChildWorkflowHandleSignal:
     @pytest.mark.trio
     async def test_signal_with_callable(self) -> None:
         """Test signaling child workflow with signal method reference."""
+
         # Create mock signal method
         def my_signal_method(value: str) -> None:
             pass
@@ -80,6 +82,7 @@ class TestChildWorkflowHandleSignal:
 
         # Mock runtime context
         import contextvars
+
         from temporalio_trio import workflow
 
         runtime_var = workflow._current_runtime
@@ -117,6 +120,7 @@ class TestChildWorkflowHandleSignal:
         )
 
         import contextvars
+
         from temporalio_trio import workflow
 
         runtime_var = workflow._current_runtime
@@ -152,6 +156,7 @@ class TestChildWorkflowHandleSignal:
         )
 
         import contextvars
+
         from temporalio_trio import workflow
 
         runtime_var = workflow._current_runtime
@@ -182,6 +187,7 @@ class TestChildWorkflowHandleSignal:
         )
 
         import contextvars
+
         from temporalio_trio import workflow
 
         runtime_var = workflow._current_runtime
@@ -215,6 +221,7 @@ class TestChildWorkflowSignalIntegration:
         signal_args = ("arg1", "arg2")
 
         import contextvars
+
         from temporalio_trio import workflow
 
         runtime_var = workflow._current_runtime

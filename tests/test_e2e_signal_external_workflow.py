@@ -232,14 +232,23 @@ async def test_signal_external_workflow_success(trio_client: Client) -> None:
             # Poll for both workflows to complete
             for _ in range(60):
                 target_info = get_workflow_status_and_result_via_cli(
-                    target_workflow_id, timeout=1,
+                    target_workflow_id,
+                    timeout=1,
                 )
                 signaler_info = get_workflow_status_and_result_via_cli(
-                    signaler_workflow_id, timeout=1,
+                    signaler_workflow_id,
+                    timeout=1,
                 )
-                if (
-                    target_info["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED")
-                    and signaler_info["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED")
+                if target_info["status"] in (
+                    "COMPLETED",
+                    "FAILED",
+                    "TERMINATED",
+                    "CANCELLED",
+                ) and signaler_info["status"] in (
+                    "COMPLETED",
+                    "FAILED",
+                    "TERMINATED",
+                    "CANCELLED",
                 ):
                     break
                 await trio.sleep(0.3)
@@ -295,14 +304,23 @@ async def test_signal_external_workflow_with_method_ref(trio_client: Client) -> 
             # Poll for both workflows to complete
             for _ in range(60):
                 target_info = get_workflow_status_and_result_via_cli(
-                    target_workflow_id, timeout=1,
+                    target_workflow_id,
+                    timeout=1,
                 )
                 signaler_info = get_workflow_status_and_result_via_cli(
-                    signaler_workflow_id, timeout=1,
+                    signaler_workflow_id,
+                    timeout=1,
                 )
-                if (
-                    target_info["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED")
-                    and signaler_info["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED")
+                if target_info["status"] in (
+                    "COMPLETED",
+                    "FAILED",
+                    "TERMINATED",
+                    "CANCELLED",
+                ) and signaler_info["status"] in (
+                    "COMPLETED",
+                    "FAILED",
+                    "TERMINATED",
+                    "CANCELLED",
                 ):
                     break
                 await trio.sleep(0.3)

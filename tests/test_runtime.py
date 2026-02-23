@@ -1435,10 +1435,18 @@ class TestScheduleActivityCommand:
 
     def test_schedule_activity_command_equality(self) -> None:
         """Test ScheduleActivityCommand equality comparison."""
-        cmd1 = ScheduleActivityCommand(seq=1, activity_id="1", activity_type="test", args=("arg",))
-        cmd2 = ScheduleActivityCommand(seq=1, activity_id="1", activity_type="test", args=("arg",))
-        cmd3 = ScheduleActivityCommand(seq=2, activity_id="2", activity_type="test", args=("arg",))
-        cmd4 = ScheduleActivityCommand(seq=1, activity_id="1", activity_type="other", args=("arg",))
+        cmd1 = ScheduleActivityCommand(
+            seq=1, activity_id="1", activity_type="test", args=("arg",)
+        )
+        cmd2 = ScheduleActivityCommand(
+            seq=1, activity_id="1", activity_type="test", args=("arg",)
+        )
+        cmd3 = ScheduleActivityCommand(
+            seq=2, activity_id="2", activity_type="test", args=("arg",)
+        )
+        cmd4 = ScheduleActivityCommand(
+            seq=1, activity_id="1", activity_type="other", args=("arg",)
+        )
 
         assert cmd1 == cmd2
         assert cmd1 != cmd3

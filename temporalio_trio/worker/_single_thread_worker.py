@@ -241,8 +241,10 @@ class SingleThreadWorker:
         run_id = self._extract_run_id(activation)
 
         job_types = [type(j).__name__ for j in activation.jobs]
-        logger.debug(f"Dispatching activation for {run_id}: jobs={job_types}, "
-                     f"known={run_id in self._workflow_states}")
+        logger.debug(
+            f"Dispatching activation for {run_id}: jobs={job_types}, "
+            f"known={run_id in self._workflow_states}"
+        )
 
         # Check for eviction
         if self._is_eviction(activation):

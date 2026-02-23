@@ -141,14 +141,22 @@ async def test_e2e_child_workflow_signal_string_name(trio_client):
             # Poll for workflow completion
             for _ in range(60):
                 parent_status = get_workflow_status_and_result_via_cli(
-                    workflow_id, timeout=1,
+                    workflow_id,
+                    timeout=1,
                 )
-                if parent_status["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED"):
+                if parent_status["status"] in (
+                    "COMPLETED",
+                    "FAILED",
+                    "TERMINATED",
+                    "CANCELLED",
+                ):
                     break
                 await trio.sleep(0.3)
 
             # Verify parent workflow completed
-            assert parent_status["status"] == "COMPLETED", f"Parent status: {parent_status['status']}"
+            assert parent_status["status"] == "COMPLETED", (
+                f"Parent status: {parent_status['status']}"
+            )
 
             result = parent_status["result"]
             if isinstance(result, str):
@@ -162,9 +170,11 @@ async def test_e2e_child_workflow_signal_string_name(trio_client):
             assert child_result["signal_count"] == 3, (
                 f"Expected 3 signals, got {child_result['signal_count']}"
             )
-            assert child_result["signals_received"] == ["signal1", "signal2", "signal3"], (
-                f"Expected signals in order, got {child_result['signals_received']}"
-            )
+            assert child_result["signals_received"] == [
+                "signal1",
+                "signal2",
+                "signal3",
+            ], f"Expected signals in order, got {child_result['signals_received']}"
         finally:
             worker.shutdown()
             await trio.sleep(0.3)
@@ -193,10 +203,14 @@ class ParentWorkflowSignalsChildWithMethod:
         await workflow.sleep(1)
 
         # Send signals using method references (callable)
-        await child_handle.signal(SignalReceivingChildWorkflow.add_signal, "method_signal1")
+        await child_handle.signal(
+            SignalReceivingChildWorkflow.add_signal, "method_signal1"
+        )
         await workflow.sleep(0.5)
 
-        await child_handle.signal(SignalReceivingChildWorkflow.add_signal, "method_signal2")
+        await child_handle.signal(
+            SignalReceivingChildWorkflow.add_signal, "method_signal2"
+        )
         await workflow.sleep(0.5)
 
         # Complete using method reference
@@ -247,9 +261,15 @@ async def test_e2e_child_workflow_signal_with_method_ref(trio_client):
             # Poll for workflow completion
             for _ in range(60):
                 parent_status = get_workflow_status_and_result_via_cli(
-                    workflow_id, timeout=1,
+                    workflow_id,
+                    timeout=1,
                 )
-                if parent_status["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED"):
+                if parent_status["status"] in (
+                    "COMPLETED",
+                    "FAILED",
+                    "TERMINATED",
+                    "CANCELLED",
+                ):
                     break
                 await trio.sleep(0.3)
 
@@ -267,7 +287,10 @@ async def test_e2e_child_workflow_signal_with_method_ref(trio_client):
             # Verify child received signals
             child_result = result["child_result"]
             assert child_result["signal_count"] == 2
-            assert child_result["signals_received"] == ["method_signal1", "method_signal2"]
+            assert child_result["signals_received"] == [
+                "method_signal1",
+                "method_signal2",
+            ]
         finally:
             worker.shutdown()
             await trio.sleep(0.3)
@@ -359,9 +382,15 @@ async def test_e2e_child_workflow_signal_early(trio_client):
             # Poll for workflow completion
             for _ in range(60):
                 parent_status = get_workflow_status_and_result_via_cli(
-                    workflow_id, timeout=1,
+                    workflow_id,
+                    timeout=1,
                 )
-                if parent_status["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED"):
+                if parent_status["status"] in (
+                    "COMPLETED",
+                    "FAILED",
+                    "TERMINATED",
+                    "CANCELLED",
+                ):
                     break
                 await trio.sleep(0.3)
 

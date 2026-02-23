@@ -99,14 +99,22 @@ async def test_simple_child_workflow_signal(trio_client):
             # Poll for workflow completion
             for _ in range(60):
                 status_info = get_workflow_status_and_result_via_cli(
-                    workflow_id, timeout=1,
+                    workflow_id,
+                    timeout=1,
                 )
-                if status_info["status"] in ("COMPLETED", "FAILED", "TERMINATED", "CANCELLED"):
+                if status_info["status"] in (
+                    "COMPLETED",
+                    "FAILED",
+                    "TERMINATED",
+                    "CANCELLED",
+                ):
                     break
                 await trio.sleep(0.3)
 
             # Verify result
-            assert status_info["status"] == "COMPLETED", f"Status: {status_info['status']}"
+            assert status_info["status"] == "COMPLETED", (
+                f"Status: {status_info['status']}"
+            )
 
             result = status_info["result"]
             if isinstance(result, str):

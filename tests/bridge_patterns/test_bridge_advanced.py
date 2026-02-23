@@ -394,7 +394,9 @@ async def test_pattern_18_signal_external_workflow(unique_task_queue: str) -> No
 
         # 3. Poll for signaling workflow initialization
         activation = await poll_and_handle_eviction(
-            bridge, target_run_id, timeout=DEFAULT_TIMEOUT,
+            bridge,
+            target_run_id,
+            timeout=DEFAULT_TIMEOUT,
             replay_commands=[build_target_timer],
         )
         signaling_run_id = activation.run_id
@@ -451,7 +453,9 @@ async def test_pattern_18_signal_external_workflow(unique_task_queue: str) -> No
             if signal_resolved and target_received_signal:
                 break
 
-            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
+            activation = await poll_and_handle_eviction(
+                bridge, "", timeout=DEFAULT_TIMEOUT
+            )
 
             # Handle replay for either workflow
             if (
@@ -464,7 +468,9 @@ async def test_pattern_18_signal_external_workflow(unique_task_queue: str) -> No
                         await bridge.complete_workflow_activation(
                             build_fn(activation.run_id), timeout=DEFAULT_TIMEOUT
                         )
-                    print(f"Pattern 18: Replayed commands for run_id={activation.run_id[:8]}...")
+                    print(
+                        f"Pattern 18: Replayed commands for run_id={activation.run_id[:8]}..."
+                    )
                     continue
                 # Unknown workflow - complete with empty
                 completion = CompletionBuilder(activation.run_id).build()
@@ -624,7 +630,9 @@ async def test_pattern_19_search_attributes(unique_task_queue: str) -> None:
 
         # Wait for timer to fire (poll_and_handle_eviction handles cache eviction + replay)
         activation = await poll_and_handle_eviction(
-            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            bridge,
+            run_id,
+            timeout=DEFAULT_TIMEOUT,
             replay_commands=[build_upsert_and_timer],
         )
 

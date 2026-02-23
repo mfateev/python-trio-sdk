@@ -318,7 +318,9 @@ async def test_replay_after_continue_as_new(unique_task_queue: str) -> None:
         print("Sent: StartTimer(seq=1, 50ms)")
 
         # Wait for timer — handle eviction/replay
-        activation = await poll_and_handle_eviction(bridge, run_id_1, timeout=DEFAULT_TIMEOUT)
+        activation = await poll_and_handle_eviction(
+            bridge, run_id_1, timeout=DEFAULT_TIMEOUT
+        )
 
         # Handle replay: if we get initialize_workflow, re-send timer and poll for timer fire
         if activation.has_job_type("initialize_workflow"):
@@ -327,8 +329,12 @@ async def test_replay_after_continue_as_new(unique_task_queue: str) -> None:
                 .start_timer(seq=1, duration=timedelta(milliseconds=50))
                 .build()
             )
-            await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
-            activation = await poll_and_handle_eviction(bridge, run_id_1, timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                completion, timeout=DEFAULT_TIMEOUT
+            )
+            activation = await poll_and_handle_eviction(
+                bridge, run_id_1, timeout=DEFAULT_TIMEOUT
+            )
 
         print(f"\n=== RUN 1 - TIMER FIRED ===")
         print(f"is_replaying: {activation.activation.is_replaying}")
@@ -451,7 +457,9 @@ async def test_replay_sends_same_commands(unique_task_queue: str) -> None:
         print("Sent: StartTimer(seq=1, 100ms)")
 
         # Wait for timer
-        activation = await poll_and_handle_eviction(bridge, run_id, timeout=DEFAULT_TIMEOUT)
+        activation = await poll_and_handle_eviction(
+            bridge, run_id, timeout=DEFAULT_TIMEOUT
+        )
 
         # Handle replay: if we get initialize_workflow, re-send timer and poll again
         if activation.has_job_type("initialize_workflow"):
@@ -460,8 +468,12 @@ async def test_replay_sends_same_commands(unique_task_queue: str) -> None:
                 .start_timer(seq=1, duration=timedelta(milliseconds=100))
                 .build()
             )
-            await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
-            activation = await poll_and_handle_eviction(bridge, run_id, timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                completion, timeout=DEFAULT_TIMEOUT
+            )
+            activation = await poll_and_handle_eviction(
+                bridge, run_id, timeout=DEFAULT_TIMEOUT
+            )
 
         print(f"\n=== ACTIVATION 2 (timer) ===")
         print(f"is_replaying: {activation.activation.is_replaying}")
@@ -482,12 +494,15 @@ async def test_replay_sends_same_commands(unique_task_queue: str) -> None:
 
         # Signal the workflow to trigger a new activation so we can complete
         from .conftest import signal_workflow_via_cli
+
         signal_workflow_via_cli(workflow_id, "finish", args=[])
 
         # Poll for the activation (signal delivery triggers replay if evicted)
         replay_handled = False
         for _ in range(5):
-            activation = await poll_and_handle_eviction(bridge, run_id, timeout=DEFAULT_TIMEOUT)
+            activation = await poll_and_handle_eviction(
+                bridge, run_id, timeout=DEFAULT_TIMEOUT
+            )
 
             if activation.has_job_type("initialize_workflow"):
                 # Replay: re-send timer 1, poll for timer fire, re-send timer 2
@@ -497,14 +512,20 @@ async def test_replay_sends_same_commands(unique_task_queue: str) -> None:
                     .start_timer(seq=1, duration=timedelta(milliseconds=100))
                     .build()
                 )
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
-                activation = await poll_and_handle_eviction(bridge, activation.run_id, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
+                activation = await poll_and_handle_eviction(
+                    bridge, activation.run_id, timeout=DEFAULT_TIMEOUT
+                )
                 completion = (
                     CompletionBuilder(activation.run_id)
                     .start_timer(seq=2, duration=timedelta(seconds=300))
                     .build()
                 )
-                await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
+                await bridge.complete_workflow_activation(
+                    completion, timeout=DEFAULT_TIMEOUT
+                )
                 # After replay, poll for the signal delivery
                 continue
 
@@ -570,7 +591,9 @@ async def test_is_replaying_flag(unique_task_queue: str) -> None:
         )
         await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
 
-        activation = await poll_and_handle_eviction(bridge, run_id, timeout=DEFAULT_TIMEOUT)
+        activation = await poll_and_handle_eviction(
+            bridge, run_id, timeout=DEFAULT_TIMEOUT
+        )
 
         # Handle replay: if we get initialize_workflow, re-send timer and poll again
         if activation.has_job_type("initialize_workflow"):
@@ -579,8 +602,12 @@ async def test_is_replaying_flag(unique_task_queue: str) -> None:
                 .start_timer(seq=1, duration=timedelta(milliseconds=50))
                 .build()
             )
-            await bridge.complete_workflow_activation(completion, timeout=DEFAULT_TIMEOUT)
-            activation = await poll_and_handle_eviction(bridge, run_id, timeout=DEFAULT_TIMEOUT)
+            await bridge.complete_workflow_activation(
+                completion, timeout=DEFAULT_TIMEOUT
+            )
+            activation = await poll_and_handle_eviction(
+                bridge, run_id, timeout=DEFAULT_TIMEOUT
+            )
 
         print(f"\n=== TIMER FIRED ===")
         print(f"is_replaying: {activation.activation.is_replaying}")

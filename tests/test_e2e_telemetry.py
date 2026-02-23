@@ -78,9 +78,7 @@ async def test_worker_with_prometheus_metrics(trio_client):
             # Fetch Prometheus metrics endpoint
             metrics_url = f"http://127.0.0.1:{prom_port}/metrics"
             metrics_text = await trio.to_thread.run_sync(
-                lambda: urllib.request.urlopen(metrics_url, timeout=5)
-                .read()
-                .decode()
+                lambda: urllib.request.urlopen(metrics_url, timeout=5).read().decode()
             )
 
             # Verify temporal metrics are present (worker pollers generate

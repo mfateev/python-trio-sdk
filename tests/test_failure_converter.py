@@ -138,7 +138,9 @@ class TestChildWorkflowError:
         failure.child_workflow_execution_failure_info.workflow_execution.run_id = (
             "run-123"
         )
-        failure.child_workflow_execution_failure_info.workflow_type.name = "ChildWorkflow"
+        failure.child_workflow_execution_failure_info.workflow_type.name = (
+            "ChildWorkflow"
+        )
         failure.child_workflow_execution_failure_info.initiated_event_id = 20
         failure.child_workflow_execution_failure_info.started_event_id = 21
         failure.child_workflow_execution_failure_info.retry_state = (
@@ -163,7 +165,9 @@ class TestChildWorkflowError:
         failure.child_workflow_execution_failure_info.workflow_execution.workflow_id = (
             "child-1"
         )
-        failure.child_workflow_execution_failure_info.workflow_type.name = "ChildWorkflow"
+        failure.child_workflow_execution_failure_info.workflow_type.name = (
+            "ChildWorkflow"
+        )
 
         # Add cause as application error from child
         failure.cause.message = "Child threw error"
@@ -317,18 +321,14 @@ class TestBridgeTypeIntegration:
 
         # Set up the failure
         job.resolve_activity.result.failed.failure.message = "Activity threw error"
-        job.resolve_activity.result.failed.failure.activity_failure_info.activity_type.name = (
-            "my_activity"
-        )
+        job.resolve_activity.result.failed.failure.activity_failure_info.activity_type.name = "my_activity"
         job.resolve_activity.result.failed.failure.activity_failure_info.activity_id = (
             "act-1"
         )
 
         # Add application error as cause
         job.resolve_activity.result.failed.failure.cause.message = "Custom error"
-        job.resolve_activity.result.failed.failure.cause.application_failure_info.type = (
-            "CustomError"
-        )
+        job.resolve_activity.result.failed.failure.cause.application_failure_info.type = "CustomError"
 
         # Convert
         data_converter = temporalio.converter.DataConverter()
@@ -361,20 +361,14 @@ class TestBridgeTypeIntegration:
         job.resolve_child_workflow_execution.result.failed.failure.message = (
             "Child workflow threw error"
         )
-        job.resolve_child_workflow_execution.result.failed.failure.child_workflow_execution_failure_info.workflow_type.name = (
-            "ChildWorkflow"
-        )
-        job.resolve_child_workflow_execution.result.failed.failure.child_workflow_execution_failure_info.workflow_execution.workflow_id = (
-            "child-1"
-        )
+        job.resolve_child_workflow_execution.result.failed.failure.child_workflow_execution_failure_info.workflow_type.name = "ChildWorkflow"
+        job.resolve_child_workflow_execution.result.failed.failure.child_workflow_execution_failure_info.workflow_execution.workflow_id = "child-1"
 
         # Add application error as cause
         job.resolve_child_workflow_execution.result.failed.failure.cause.message = (
             "Child error"
         )
-        job.resolve_child_workflow_execution.result.failed.failure.cause.application_failure_info.type = (
-            "ChildException"
-        )
+        job.resolve_child_workflow_execution.result.failed.failure.cause.application_failure_info.type = "ChildException"
 
         # Convert
         data_converter = temporalio.converter.DataConverter()

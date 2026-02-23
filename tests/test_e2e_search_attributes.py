@@ -29,17 +29,21 @@ class SearchAttributeWorkflow:
     @workflow.run
     async def run(self, status: str) -> str:
         # Update search attribute to track workflow status
-        workflow.upsert_search_attributes([
-            KW_KEY.value_set(status),
-        ])
+        workflow.upsert_search_attributes(
+            [
+                KW_KEY.value_set(status),
+            ]
+        )
 
         # Simulate some work
         await workflow.sleep(0.1)
 
         # Update to completed
-        workflow.upsert_search_attributes([
-            KW_KEY.value_set("completed"),
-        ])
+        workflow.upsert_search_attributes(
+            [
+                KW_KEY.value_set("completed"),
+            ]
+        )
 
         return f"processed-{status}"
 
@@ -51,17 +55,21 @@ class MultipleSearchAttributesWorkflow:
     @workflow.run
     async def run(self, count: int) -> str:
         # Set multiple attributes at once
-        workflow.upsert_search_attributes([
-            KW_KEY.value_set("processing"),
-            INT_KEY.value_set(count),
-        ])
+        workflow.upsert_search_attributes(
+            [
+                KW_KEY.value_set("processing"),
+                INT_KEY.value_set(count),
+            ]
+        )
 
         await workflow.sleep(0.1)
 
         # Update one attribute
-        workflow.upsert_search_attributes([
-            INT_KEY.value_set(count * 2),
-        ])
+        workflow.upsert_search_attributes(
+            [
+                INT_KEY.value_set(count * 2),
+            ]
+        )
 
         return f"done-{count}"
 

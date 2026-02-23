@@ -6,8 +6,8 @@ Prometheus or OpenTelemetry, matching the official Temporal Python SDK patterns.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)

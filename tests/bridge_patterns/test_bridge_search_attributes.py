@@ -177,7 +177,9 @@ async def test_pattern_19_upsert_search_attributes(unique_task_queue: str) -> No
 
         # 4. Wait for timer to fire (handles eviction + replay)
         activation = await poll_and_handle_eviction(
-            bridge, run_id, timeout=DEFAULT_TIMEOUT,
+            bridge,
+            run_id,
+            timeout=DEFAULT_TIMEOUT,
             replay_commands=[build_upsert_and_timer],
         )
 

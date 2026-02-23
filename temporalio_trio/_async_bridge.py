@@ -690,8 +690,11 @@ class TrioBridgeWrapper:
         def deliver_result(result) -> None:
             """Callback for activity task result."""
             import logging
+
             logger = logging.getLogger(__name__)
-            logger.debug(f"poll_activity_task callback received: success={result.success}")
+            logger.debug(
+                f"poll_activity_task callback received: success={result.success}"
+            )
             try:
                 if result.success:
                     data_bytes = result.get_data()
@@ -717,7 +720,10 @@ class TrioBridgeWrapper:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
         import logging
-        logging.getLogger(__name__).debug("Sending poll_activity_task request to bridge")
+
+        logging.getLogger(__name__).debug(
+            "Sending poll_activity_task request to bridge"
+        )
         self._rust_bridge.send_request("poll_activity_task", b"", deliver_result)
 
         if timeout is not None:
@@ -1075,6 +1081,7 @@ class TrioBridgeWrapper:
             else:
                 # Unexpected error during shutdown initiation
                 import logging
+
                 logger = logging.getLogger(__name__)
                 logger.warning(
                     f"Unexpected error during initiate_shutdown: {e}. "
@@ -1138,6 +1145,7 @@ class TrioBridgeWrapper:
                 return
             # Unexpected error - re-raise
             import logging
+
             logger = logging.getLogger(__name__)
             logger.warning(f"Unexpected error during finalize_shutdown: {e}")
             raise

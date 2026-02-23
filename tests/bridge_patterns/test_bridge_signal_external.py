@@ -102,7 +102,9 @@ async def test_signal_external_workflow_success(unique_task_queue: str) -> None:
 
         # 3. Poll for signaling workflow initialization
         activation = await poll_and_handle_eviction(
-            bridge, target_run_id, timeout=DEFAULT_TIMEOUT,
+            bridge,
+            target_run_id,
+            timeout=DEFAULT_TIMEOUT,
             replay_commands=[build_target_timer],
         )
         signaling_run_id = activation.run_id
@@ -142,7 +144,9 @@ async def test_signal_external_workflow_success(unique_task_queue: str) -> None:
             if signal_resolved and target_received_signal:
                 break
 
-            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
+            activation = await poll_and_handle_eviction(
+                bridge, "", timeout=DEFAULT_TIMEOUT
+            )
 
             # Handle replay for either workflow
             if (
@@ -155,7 +159,8 @@ async def test_signal_external_workflow_success(unique_task_queue: str) -> None:
                     )
                 elif activation.run_id == signaling_run_id:
                     await bridge.complete_workflow_activation(
-                        build_signal_external(activation.run_id), timeout=DEFAULT_TIMEOUT
+                        build_signal_external(activation.run_id),
+                        timeout=DEFAULT_TIMEOUT,
                     )
                 else:
                     completion = CompletionBuilder(activation.run_id).build()
@@ -318,7 +323,9 @@ async def test_signal_external_workflow_with_run_id(unique_task_queue: str) -> N
         )
 
         activation = await poll_and_handle_eviction(
-            bridge, target_run_id, timeout=DEFAULT_TIMEOUT,
+            bridge,
+            target_run_id,
+            timeout=DEFAULT_TIMEOUT,
             replay_commands=[build_target_timer_runid],
         )
         signaling_run_id = activation.run_id
@@ -358,7 +365,9 @@ async def test_signal_external_workflow_with_run_id(unique_task_queue: str) -> N
             if signal_resolved and target_received_signal:
                 break
 
-            activation = await poll_and_handle_eviction(bridge, "", timeout=DEFAULT_TIMEOUT)
+            activation = await poll_and_handle_eviction(
+                bridge, "", timeout=DEFAULT_TIMEOUT
+            )
 
             # Handle replay
             if (
@@ -367,11 +376,13 @@ async def test_signal_external_workflow_with_run_id(unique_task_queue: str) -> N
             ):
                 if activation.run_id == target_run_id:
                     await bridge.complete_workflow_activation(
-                        build_target_timer_runid(activation.run_id), timeout=DEFAULT_TIMEOUT
+                        build_target_timer_runid(activation.run_id),
+                        timeout=DEFAULT_TIMEOUT,
                     )
                 elif activation.run_id == signaling_run_id:
                     await bridge.complete_workflow_activation(
-                        build_signal_with_runid(activation.run_id), timeout=DEFAULT_TIMEOUT
+                        build_signal_with_runid(activation.run_id),
+                        timeout=DEFAULT_TIMEOUT,
                     )
                 else:
                     completion = CompletionBuilder(activation.run_id).build()
@@ -493,7 +504,9 @@ async def test_signal_external_workflow_nonexistent_target(
 
         for _ in range(5):
             activation = await poll_and_handle_eviction(
-                bridge, signaling_run_id, timeout=DEFAULT_TIMEOUT,
+                bridge,
+                signaling_run_id,
+                timeout=DEFAULT_TIMEOUT,
                 replay_commands=[build_signal_nonexistent],
             )
 
@@ -511,7 +524,9 @@ async def test_signal_external_workflow_nonexistent_target(
                     import temporalio.bridge.proto.workflow_activation.workflow_activation_pb2 as act_pb
 
                     bridge_act = act_pb.WorkflowActivation()
-                    bridge_act.ParseFromString(activation.activation.SerializeToString())
+                    bridge_act.ParseFromString(
+                        activation.activation.SerializeToString()
+                    )
                     poc_activation = bridge_to_poc_activation(bridge_act, dc)
 
                     for job in poc_activation.jobs:

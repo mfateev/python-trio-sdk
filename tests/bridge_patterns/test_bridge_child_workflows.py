@@ -97,7 +97,9 @@ async def test_pattern_14_child_workflow_success(unique_task_queue: str) -> None
 
         # 4. Poll for child workflow start confirmation
         activation = await poll_and_handle_eviction(
-            bridge, parent_run_id, timeout=DEFAULT_TIMEOUT,
+            bridge,
+            parent_run_id,
+            timeout=DEFAULT_TIMEOUT,
             replay_commands=[build_start_child],
         )
 
@@ -132,7 +134,9 @@ async def test_pattern_14_child_workflow_success(unique_task_queue: str) -> None
         # Poll until we get the child's initialize_workflow
         child_activation = None
         for _ in range(5):
-            activation = await poll_and_handle_eviction(bridge, parent_run_id, timeout=DEFAULT_TIMEOUT)
+            activation = await poll_and_handle_eviction(
+                bridge, parent_run_id, timeout=DEFAULT_TIMEOUT
+            )
 
             # Handle replay for parent workflow
             if (
@@ -190,7 +194,9 @@ async def test_pattern_14_child_workflow_success(unique_task_queue: str) -> None
 
         # 6. Poll for child workflow completion in parent
         for _ in range(5):
-            activation = await poll_and_handle_eviction(bridge, parent_run_id, timeout=DEFAULT_TIMEOUT)
+            activation = await poll_and_handle_eviction(
+                bridge, parent_run_id, timeout=DEFAULT_TIMEOUT
+            )
 
             # Handle replay for parent workflow
             if (
@@ -318,7 +324,9 @@ async def test_pattern_14_child_workflow_start_failed(unique_task_queue: str) ->
         )
 
         # Get parent activation
-        activation = await poll_and_handle_eviction(bridge, blocking_run_id, timeout=DEFAULT_TIMEOUT)
+        activation = await poll_and_handle_eviction(
+            bridge, blocking_run_id, timeout=DEFAULT_TIMEOUT
+        )
 
         assert activation.has_job_type("initialize_workflow")
         parent_run_id = activation.run_id
@@ -346,7 +354,9 @@ async def test_pattern_14_child_workflow_start_failed(unique_task_queue: str) ->
         print("Pattern 14 (start fail): Sent StartChildWorkflow with REJECT_DUPLICATE")
 
         # Poll for child start failure
-        activation = await poll_and_handle_eviction(bridge, parent_run_id, timeout=DEFAULT_TIMEOUT)
+        activation = await poll_and_handle_eviction(
+            bridge, parent_run_id, timeout=DEFAULT_TIMEOUT
+        )
 
         if activation.has_job_type("resolve_child_workflow_execution_start"):
             start_job = activation.get_job("resolve_child_workflow_execution_start")
@@ -456,7 +466,9 @@ async def test_pattern_15_child_workflow_cancellation(unique_task_queue: str) ->
         cancel_sent = False
 
         for _ in range(15):
-            activation = await poll_and_handle_eviction(bridge, parent_run_id, timeout=DEFAULT_TIMEOUT)
+            activation = await poll_and_handle_eviction(
+                bridge, parent_run_id, timeout=DEFAULT_TIMEOUT
+            )
 
             # Handle replay for parent workflow
             if (
@@ -524,7 +536,9 @@ async def test_pattern_15_child_workflow_cancellation(unique_task_queue: str) ->
 
         for _ in range(15):
             try:
-                activation = await poll_and_handle_eviction(bridge, parent_run_id, timeout=DEFAULT_TIMEOUT)
+                activation = await poll_and_handle_eviction(
+                    bridge, parent_run_id, timeout=DEFAULT_TIMEOUT
+                )
 
                 # Handle replay for parent workflow
                 if (
@@ -535,7 +549,9 @@ async def test_pattern_15_child_workflow_cancellation(unique_task_queue: str) ->
                     await bridge.complete_workflow_activation(
                         build_start_child_15(parent_run_id), timeout=DEFAULT_TIMEOUT
                     )
-                    print("Pattern 15: Replayed StartChildWorkflow for parent (phase 2)")
+                    print(
+                        "Pattern 15: Replayed StartChildWorkflow for parent (phase 2)"
+                    )
                     continue
 
                 # Check for parent's resolve_child_workflow_execution
@@ -679,7 +695,9 @@ async def test_pattern_14_child_workflow_with_args(unique_task_queue: str) -> No
         child_args_received = None
 
         for _ in range(5):
-            activation = await poll_and_handle_eviction(bridge, parent_run_id, timeout=DEFAULT_TIMEOUT)
+            activation = await poll_and_handle_eviction(
+                bridge, parent_run_id, timeout=DEFAULT_TIMEOUT
+            )
 
             # Handle replay for parent workflow
             if (
@@ -735,7 +753,9 @@ async def test_pattern_14_child_workflow_with_args(unique_task_queue: str) -> No
 
         # Wait for child completion in parent and complete
         for _ in range(5):
-            activation = await poll_and_handle_eviction(bridge, parent_run_id, timeout=DEFAULT_TIMEOUT)
+            activation = await poll_and_handle_eviction(
+                bridge, parent_run_id, timeout=DEFAULT_TIMEOUT
+            )
 
             # Handle replay for parent workflow
             if (
