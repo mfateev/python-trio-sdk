@@ -31,10 +31,11 @@ Example:
 """
 
 from ._client import Client, ClientConfig
-from ._workflow_handle import WorkflowHandle
+from ._workflow_handle import WorkflowFailureError, WorkflowHandle
 
 __all__ = [
     "Client",
     "ClientConfig",
+    "WorkflowFailureError",
     "WorkflowHandle",
 ]
