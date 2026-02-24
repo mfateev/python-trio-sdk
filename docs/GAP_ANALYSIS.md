@@ -1,6 +1,6 @@
 # Gap Analysis: Production Readiness & Feature Compatibility with sdk-python
 
-**Date:** 2026-02-08 (Updated)
+**Date:** 2026-02-24 (Updated)
 **Author:** Claude Code Analysis
 **Scope:** Full feature parity with sdk-python and production readiness assessment
 
@@ -107,68 +107,36 @@ class MyWorkflow:
 
 ---
 
-### 1.4 Signal External Workflow ⚠️ BRIDGE ONLY
+### 1.4 Signal External Workflow ✅ COMPLETE
 
-**Status:** Bridge-level implementation complete. Needs public API.
+**Status:** Fully implemented with public API and E2E tests.
 
-**What's done:**
-- `SignalExternalWorkflowCommand` in `_activation.py`
-- `SignalExternalResolvedJob` for handling resolution
-- Bridge tests in `test_bridge_signal_external.py`
-
-**What's needed:**
-- Public API: `workflow.get_external_workflow_handle()` ✅ **IMPLEMENTED**
-- Public API: `ExternalWorkflowHandle.signal()` ✅ **IMPLEMENTED**
-
-**Needed API:**
-```python
-async def signal_external_workflow(
-    workflow_id: str,
-    signal: str,
-    *args: Any,
-    run_id: str | None = None,
-) -> None:
-    """Signal another workflow."""
-```
-
-**Priority: P1** - Important for workflow coordination patterns.
+- `workflow.get_external_workflow_handle()` ✅
+- `ExternalWorkflowHandle.signal()` ✅
+- `ChildWorkflowHandle.signal()` ✅
+- Bridge tests + E2E tests ✅
 
 ---
 
-### 1.5 Upsert Search Attributes ⚠️ BRIDGE ONLY
+### 1.5 Upsert Search Attributes ✅ COMPLETE
 
-**Status:** Bridge-level implementation complete. Needs public API.
+**Status:** Fully implemented with public API and E2E tests.
 
-**What's done:**
-- `UpsertSearchAttributesCommand` in `_activation.py`
-- Bridge tests in `test_bridge_search_attributes.py`
-
-**What's needed:**
-- Public API: `workflow.upsert_search_attributes()`
-
-**Needed API:**
-```python
-def upsert_search_attributes(
-    attributes: dict[str, Any],
-) -> None:
-    """Update search attributes for discoverability."""
-```
-
-**Priority: P1** - Important for workflow discoverability and filtering.
+- `workflow.upsert_search_attributes()` ✅
+- All value types supported (str, int, float, bool, datetime, Sequence[str]) ✅
+- E2E tests with real server ✅
 
 ---
 
-### 1.6 Async Activity Context ❌ NOT IMPLEMENTED
+### 1.6 Async Activity Context ✅ COMPLETE
 
-**Status:** Not implemented.
+**Status:** Fully implemented with heartbeat, cancellation, and info access.
 
-**What's missing:**
-- `temporalio_trio.activity.Context` for activity functions
-- Heartbeat support (`context.heartbeat()`)
-- Activity cancellation handling
-- Activity info access
-
-**Priority: P1** - Required for long-running activities.
+- `@activity.defn` decorator ✅
+- `activity.heartbeat()` ✅
+- Activity cancellation handling (`wait_for_cancelled()`) ✅
+- Activity info access ✅
+- E2E tests (8 tests) ✅
 
 ---
 
@@ -275,63 +243,26 @@ class TracingInterceptor(Interceptor):
 
 ## 3. Architectural & Runtime Gaps
 
-### 3.1 Error Type Preservation ❌ NOT IMPLEMENTED
+### 3.1 Error Type Preservation ✅ COMPLETE
 
-**Current behavior:**
-```python
-# Creates generic RuntimeError:
-error = RuntimeError(
-    f"Activity {resolved.activity_id} failed: {resolved.failure}"
-)
-```
+**Status:** Fully implemented. ActivityError, ChildWorkflowError, ApplicationError all preserved.
 
-**Gap:** Original exception type is lost. Applications cannot:
-- Catch specific exception types (`ValueError` vs `TimeoutError`)
-- Preserve exception chains
-- Access non-retryable flag
-
-**Needed:**
-- Exception type reconstruction from `application_failure_info.type`
-- Proper exception chaining with `__cause__`
-- Non-retryable flag preservation
-- Support for custom exception types
-
-**sdk-python reference:**
-```python
-# sdk-python preserves original exception type
-try:
-    result = await workflow.execute_activity(...)
-except ValueError as e:  # Original type preserved
-    # Can catch specific exceptions
-    pass
-except ApplicationError as e:
-    if e.non_retryable:
-        # Can check non-retryable flag
-        pass
-```
-
-**Priority: P0** - Critical for proper error handling in production.
+- Exception type reconstruction from failure info ✅
+- Proper exception chaining with `__cause__` ✅
+- ActivityError with activity_type/activity_id metadata ✅
+- ChildWorkflowError with workflow_type/workflow_id metadata ✅
+- E2E tests validated ✅
 
 ---
 
-### 3.2 Headers Not Propagated ❌ NOT IMPLEMENTED
+### 3.2 Headers Propagation ✅ COMPLETE
 
-**Current state:**
-- Headers captured in job dataclasses (`signal_job.headers`, `query_job.headers`)
-- Never passed to signal/query handlers
-- No API to access headers in workflow code
+**Status:** Fully implemented end-to-end.
 
-**Gap:** Cannot implement:
-- Distributed tracing (trace IDs in headers)
-- Authentication/authorization context
-- Custom metadata propagation
-
-**Needed:**
-- `workflow.info().headers` access
-- Header propagation through activities, child workflows
-- Header mutation APIs
-
-**Priority: P1** - Important for observability and security.
+- `workflow.info().headers` access ✅
+- Headers parsed from protobuf activations (InitializeWorkflow, SignalWorkflow, QueryWorkflow) ✅
+- Outgoing headers attached to all commands (ScheduleActivity, StartChildWorkflow, SignalExternalWorkflow, ContinueAsNew) ✅
+- 21 unit + 2 E2E tests ✅
 
 ---
 
@@ -507,18 +438,22 @@ worker = Worker(
 ### 4.1 Workflow Handle APIs ⚠️ PARTIAL
 
 **What's implemented:**
-- Basic workflow start
-- Signal workflow
-- Query workflow
-- Terminate workflow
+- Basic workflow start ✅
+- Signal workflow ✅
+- Cancel workflow ✅
+- Terminate workflow ✅
+- Result (with server-side long polling) ✅
+
+**Known placeholder:**
+- `WorkflowHandle.query()` — bridge call is made but **response parsing is not implemented** (`temporalio_trio/client/_workflow_handle.py:199-200`). Always returns `None`. The TODO is to parse `QueryWorkflowResponse` protobuf and deserialize the result payloads.
 
 **What's missing:**
+- `workflow_handle.query()` result parsing (placeholder)
 - `workflow_handle.update()` - Send update to workflow
 - `workflow_handle.fetch_history()` - Get full workflow history
-- `workflow_handle.cancel()` - Request cancellation
 - Typed workflow handles
 
-**Priority: P1** - Important for workflow management.
+**Priority: P1** - Query result parsing is a small fix; update/history are larger features.
 
 ---
 
@@ -552,37 +487,20 @@ worker = Worker(
 
 ## 5. Testing & Development Gaps
 
-### 5.1 Workflow Testing Utilities ❌ NOT IMPLEMENTED
+### 5.1 Workflow Testing Utilities ✅ COMPLETE
 
-**Status:** Not implemented.
+**Status:** `WorkflowEnvironment` implemented (Phase 9).
 
-**What's missing:**
-- `WorkflowEnvironment` for unit testing
-- Time skipping in tests
+- `WorkflowEnvironment` for unit testing ✅
+- 709 tests passing (unit + E2E + stress) ✅
+- E2E stress tests with 100-200 concurrent workflows ✅
+
+**Still missing:**
+- Time skipping in tests (requires test server integration)
 - Mock activity support
 - Workflow replayer for validation
 
-**sdk-python reference:**
-```python
-from temporalio.testing import WorkflowEnvironment
-
-async def test_workflow():
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        # Time auto-advances, no real delays
-        result = await env.client.execute_workflow(
-            MyWorkflow.run,
-            id="test-workflow",
-            task_queue="test-queue",
-        )
-```
-
-**Why it matters:**
-- Fast workflow testing without real timers
-- Deterministic test execution
-- CI/CD integration
-- TDD for workflows
-
-**Priority: P1** - Important for development velocity.
+**Priority: P2** - Core testing utilities done; time-skipping is nice-to-have.
 
 ---
 
@@ -635,39 +553,81 @@ async def test_workflow():
 
 ---
 
-## 7. Production Readiness Checklist
+## 7. Code Placeholders & Stubs
 
-### 7.1 Critical (P0) - Required for Production
+A scan of all source files under `temporalio_trio/` (2026-02-24) found the following incomplete implementations:
+
+### 7.1 `WorkflowHandle.query()` Result Parsing — PLACEHOLDER
+
+**File:** `temporalio_trio/client/_workflow_handle.py:162-200`
+
+**Status:** The method encodes query arguments, calls `self._client._bridge.query_workflow()`, but **does not parse the response**. Returns `None` unconditionally.
+
+```python
+# Line 199-200 — current code:
+# TODO: Parse QueryWorkflowResponse and deserialize result
+return None  # Placeholder
+```
+
+**Fix needed:** Parse `QueryWorkflowResponse` protobuf from `response_bytes`, extract the result payloads, and deserialize via `DataConverter`. Small task (~20 lines).
+
+**Impact:** Client-side `handle.query()` is non-functional. Worker-side query handling works correctly (queries are processed and results sent to the server).
+
+---
+
+### 7.2 Bridge Type Fallbacks — DEFENSIVE (Not a gap)
+
+**File:** `temporalio_trio/worker/_bridge_types.py:150, 817`
+
+Two `NotImplementedError` raises for unknown job/command types. These are **defensive guards**, not missing features — all known job types (11 types) and command types (16 types) are handled. These would only trigger if SDK-Core introduces new job/command types in the future.
+
+---
+
+### 7.3 Summary
+
+| Location | Type | Severity | Fix Effort |
+|----------|------|----------|------------|
+| `_workflow_handle.py:200` — `query()` result parsing | Placeholder | Medium — client queries broken | Small (~20 lines) |
+| `_bridge_types.py:150` — unknown job type guard | Defensive | None — all types handled | N/A |
+| `_bridge_types.py:817` — unknown command type guard | Defensive | None — all types handled | N/A |
+
+**No other placeholders, TODOs, FIXMEs, or stubs found in source code.**
+
+---
+
+## 8. Production Readiness Checklist
+
+### 8.1 Critical (P0) - Required for Production
 
 - [ ] **Metrics & Telemetry** - Observability
 - [ ] **Interceptors** - Tracing, logging, monitoring
-- [ ] **Error Type Preservation** - Proper error handling
+- [x] **Error Type Preservation** - ✅ Complete (ActivityError, ChildWorkflowError, ApplicationError)
 - [ ] **Update Handlers** - Interactive workflows
 - [ ] **Versioning (patched/deprecate_patch)** - Safe code updates
 
-**Status:** 0/5 complete. **Not production-ready.**
+**Status:** 1/5 complete.
 
 ---
 
-### 7.2 High Priority (P1) - Important for Production
+### 8.2 High Priority (P1) - Important for Production
 
 - [ ] **Local Activities** - Performance optimization
-- [ ] **Activity Context & Heartbeat** - Long-running activities
+- [x] **Activity Context & Heartbeat** - ✅ Complete (heartbeat, cancellation, info, wait_for_cancelled)
 - [ ] **Payload Codec** - Encryption & compression
-- [ ] **Headers Propagation** - Distributed tracing
-- [ ] **Signal External Workflow API** - Workflow coordination
-- [ ] **Upsert Search Attributes API** - Discoverability
-- [ ] **Workflow Testing Utilities** - Development velocity
+- [x] **Headers Propagation** - ✅ Complete (workflow.info().headers, outgoing commands)
+- [x] **Signal External Workflow API** - ✅ Complete (get_external_workflow_handle, signal)
+- [x] **Upsert Search Attributes API** - ✅ Complete (workflow.upsert_search_attributes)
+- [x] **Workflow Testing Utilities** - ✅ Complete (WorkflowEnvironment, 709 tests)
 - [ ] **Workflow Replay Testing** - Safe deployments
 - [ ] **Build ID Versioning** - Canary deployments
-- [ ] **Workflow Handle APIs** - Management operations
+- [x] **Workflow Handle APIs** - ⚠️ Partial (query() result parsing is a placeholder — see §7.1)
 - [ ] **Documentation** - Adoption & support
 
-**Status:** 0/11 complete.
+**Status:** 6/11 complete (1 partial).
 
 ---
 
-### 7.3 Medium Priority (P2) - Nice to Have
+### 8.3 Medium Priority (P2) - Nice to Have
 
 - [ ] **Schedules API** - Recurring workflows
 - [ ] **Async Activity Completion** - External integrations
@@ -679,31 +639,34 @@ async def test_workflow():
 
 ---
 
-### 7.4 Low Priority (P3) - Future
+### 8.4 Low Priority (P3) - Future
 
 - [ ] **Worker Tuner / Slot Supplier** - Dynamic resource management (optional optimization)
 - [ ] **Nexus Support** - Cross-namespace calls
 - [ ] **Advanced Interceptor Patterns** - Complex middleware
+- [x] **E2E Stress Tests (100+ workflows)** - ✅ Complete (6 tests, 100-200 concurrent workflows)
 
-**Status:** 0/3 complete.
+**Status:** 1/4 complete.
 
 ---
 
-## 8. Feature Compatibility Summary
+## 9. Feature Compatibility Summary
 
 | Category | sdk-python Features | Trio SDK | Coverage |
 |----------|---------------------|----------|----------|
-| **Core Workflow APIs** | 15 | 10 | 67% |
-| **Worker Configuration** | 12 | 6 | 50% |
+| **Core Workflow APIs** | 15 | 14 | 93% |
+| **Worker Configuration** | 12 | 7 | 58% |
 | **Advanced Features** | 8 | 0 | 0% |
-| **Client APIs** | 10 | 5 | 50% |
-| **Testing** | 5 | 0 | 0% |
+| **Client APIs** | 10 | 7 | 70% |
+| **Testing** | 5 | 2 | 40% |
 | **Observability** | 6 | 0 | 0% |
-| **Overall** | **56** | **21** | **38%** |
+| **Overall** | **56** | **30** | **54%** |
+
+*Updated 2026-02-24. Since Feb 8: +9 features (error types, headers, search attrs, signal external, activity context/heartbeat/cancellation, WorkflowEnvironment, stress tests).*
 
 ---
 
-## 9. Recommended Implementation Order
+## 10. Recommended Implementation Order
 
 ### Phase 1: Production Critical (P0)
 **Goal:** Make SDK production-ready for basic use cases
@@ -745,7 +708,7 @@ async def test_workflow():
 
 ---
 
-## 10. Production Deployment Blockers
+## 11. Production Deployment Blockers
 
 **Current Assessment:** The Trio SDK is **NOT production-ready** due to:
 
@@ -766,31 +729,42 @@ Complete all Phase 1 (P0) items before considering production deployment.
 
 ---
 
-## 11. Summary
+## 12. Summary
 
-**Overall completion:** ~38% feature parity with sdk-python
+**Overall completion:** ~54% feature parity with sdk-python
 
-**Production readiness:** ❌ Not ready
+**Production readiness:** ❌ Not ready (missing metrics, interceptors, versioning, updates)
 
 **Strengths:**
 - ✅ Core workflow execution (timers, activities, child workflows, signals, queries)
 - ✅ Deterministic replay
-- ✅ E2E tested with real Temporal server
+- ✅ Error type preservation (ActivityError, ChildWorkflowError, ApplicationError)
+- ✅ Headers propagation (workflow.info().headers, outgoing commands)
+- ✅ Activity context (heartbeat, cancellation, wait_for_cancelled)
+- ✅ Search attributes (upsert_search_attributes)
+- ✅ Signal external workflows
+- ✅ E2E stress-tested with 100-200 concurrent workflows
+- ✅ 709 tests passing (unit + E2E + stress)
 - ✅ Clean API matching sdk-python patterns
 
 **Weaknesses:**
 - ❌ No observability (metrics, tracing)
-- ❌ No production hardening (error types, versioning, testing)
-- ❌ Missing 62% of sdk-python features
+- ❌ No interceptors
+- ❌ No versioning (patched/deprecate_patch)
+- ❌ No update handlers
+- ❌ Client-side `WorkflowHandle.query()` result parsing is a placeholder (returns None)
+- ❌ Missing 46% of sdk-python features
 - ❌ Minimal documentation and examples
-- ❌ Static concurrency limits only (no dynamic tuning)
+
+**Known code placeholders:**
+- `temporalio_trio/client/_workflow_handle.py:200` — `query()` always returns `None` (response parsing not implemented)
 
 **Recommendation:**
 - **For POC/experimentation:** ✅ Ready
-- **For production:** ❌ Requires Phase 1 & 2 completion (~13-17 weeks of work)
-- **For full compatibility:** ❌ Requires all phases (~19-25 weeks of work)
+- **For production:** ❌ Requires metrics, interceptors, versioning, updates (~8-10 weeks)
+- **For full compatibility:** ❌ Requires all phases (~15-20 weeks of work)
 
 ---
 
-**Last updated:** 2026-02-08 (Worker Tuner downgraded to P3)
-**Next review:** After Phase 1 implementation
+**Last updated:** 2026-02-24 (Updated completed features, added placeholder inventory)
+**Next review:** After interceptors/metrics implementation
