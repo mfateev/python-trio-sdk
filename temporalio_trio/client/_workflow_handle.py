@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Optional
 
+import temporalio.common
 import temporalio.exceptions
 import trio
 from temporalio.api.common.v1 import Payloads
-from temporalio.api.enums.v1 import EventType
-from temporalio.api.workflowservice.v1 import GetWorkflowExecutionHistoryResponse
+from temporalio.api.enums.v1 import EventType, WorkflowExecutionStatus
+from temporalio.api.workflowservice.v1 import (
+    GetWorkflowExecutionHistoryResponse,
+    QueryWorkflowResponse,
+)
 from temporalio.converter import DataConverter
+
+from temporalio_trio.workflow import _QueryDefinition
 
 if TYPE_CHECKING:
     from ._client import Client
@@ -36,6 +43,20 @@ class WorkflowFailureError(temporalio.exceptions.TemporalError):
         """Cause of the workflow failure."""
         assert self.__cause__
         return self.__cause__
+
+
+class WorkflowQueryRejectedError(temporalio.exceptions.TemporalError):
+    """Error that occurs when a query was rejected."""
+
+    def __init__(self, status: Optional[WorkflowExecutionStatus]) -> None:
+        """Create workflow query rejected error."""
+        super().__init__(f"Query rejected, status: {status}")
+        self._status = status
+
+    @property
+    def status(self) -> Optional[WorkflowExecutionStatus]:
+        """Get workflow execution status causing rejection."""
+        return self._status
 
 
 class WorkflowHandle:
@@ -161,28 +182,59 @@ class WorkflowHandle:
 
     async def query(
         self,
-        query_type: str,
-        *args: Any,
-        timeout: Optional[float] = None,
+        query: str | Callable,
+        arg: Any = temporalio.common._arg_unset,
+        *,
+        args: Sequence[Any] = [],
+        result_type: type | None = None,
+        reject_condition: temporalio.common.QueryRejectCondition | None = None,
+        timeout: float | None = None,
     ) -> Any:
-        """Query workflow state.
+        """Query the workflow.
 
         Args:
-            query_type: Query name
-            *args: Query arguments
-            timeout: Optional timeout in seconds
+            query: Query function or name on the workflow.
+            arg: Single argument to the query.
+            args: Multiple arguments to the query. Cannot be set if arg is.
+            result_type: For string queries, this can set the specific result
+                type hint to deserialize into.
+            reject_condition: Condition for rejecting the query. If unset/None,
+                no rejection condition is applied.
+            timeout: Optional timeout in seconds.
 
         Returns:
-            Query result (deserialized)
+            Result of the query.
+
+        Raises:
+            WorkflowQueryRejectedError: A query reject condition was satisfied.
 
         Example:
             status = await handle.query("get_status")
-            count = await handle.query("get_count")
+            count = await handle.query(MyWorkflow.get_count)
         """
+        # Resolve query name from callable or string
+        query_name: str
+        ret_type = result_type
+        if callable(query):
+            defn = _QueryDefinition.from_fn(query)
+            if not defn:
+                raise RuntimeError(
+                    f"Query definition not found on {query.__qualname__}, "
+                    "is it decorated with @workflow.query?"
+                )
+            elif not defn.name:
+                raise RuntimeError("Cannot invoke dynamic query definition")
+            query_name = defn.name
+        else:
+            query_name = str(query)
+
+        # Normalize args
+        resolved_args = temporalio.common._arg_or_args(arg, args)
+
         # Encode query arguments
         args_bytes = b""
-        if args:
-            payloads_list = await self._client.data_converter.encode(args)
+        if resolved_args:
+            payloads_list = await self._client.data_converter.encode(resolved_args)
             payloads = Payloads(payloads=payloads_list)
             args_bytes = payloads.SerializeToString()
 
@@ -190,14 +242,33 @@ class WorkflowHandle:
         response_bytes = await self._client._bridge.query_workflow(
             workflow_id=self._workflow_id,
             run_id=self._run_id,
-            query_type=query_type,
+            query_type=query_name,
             args_bytes=args_bytes,
             timeout=timeout,
         )
 
-        # Parse response and extract result
-        # TODO: Parse QueryWorkflowResponse and deserialize result
-        return None  # Placeholder
+        # Parse response
+        resp = QueryWorkflowResponse()
+        resp.ParseFromString(response_bytes)
+
+        # Check for rejection
+        if resp.HasField("query_rejected"):
+            raise WorkflowQueryRejectedError(
+                WorkflowExecutionStatus(resp.query_rejected.status)
+                if resp.query_rejected.status
+                else None
+            )
+
+        # Decode result
+        if not resp.query_result.payloads:
+            return None
+        type_hints = [ret_type] if ret_type else None
+        results = await self._client.data_converter.decode(
+            resp.query_result.payloads, type_hints
+        )
+        if not results:
+            return None
+        return results[0]
 
     async def signal(
         self,
@@ -358,4 +429,4 @@ class _WorkflowResult:
         self.value = value
 
 
-__all__ = ["WorkflowFailureError", "WorkflowHandle"]
+__all__ = ["WorkflowFailureError", "WorkflowHandle", "WorkflowQueryRejectedError"]

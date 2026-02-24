@@ -273,6 +273,51 @@ async def test_e2e_stress_100_activities(trio_client) -> None:
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
+@pytest.mark.timeout(60)
+async def test_e2e_query_workflow(trio_client) -> None:
+    """Test query() with both callable and string-based queries."""
+    task_queue = f"trio-query-test-{int(time.time())}"
+
+    async with trio.open_nursery() as nursery:
+        worker = Worker(
+            trio_client,
+            task_queue=task_queue,
+            workflows=[SignalQueryStressWorkflow],
+        )
+        nursery.start_soon(worker.run)
+        await trio.sleep(0)
+
+        handle = await trio_client.start_workflow(
+            "SignalQueryStressWorkflow",
+            id=f"query-test-{int(time.time())}",
+            task_queue=task_queue,
+        )
+
+        # Give workflow time to start
+        await trio.sleep(1.0)
+
+        # Query using callable (decorated method)
+        value = await handle.query(SignalQueryStressWorkflow.get_value)
+        assert value == "initial", f"Expected 'initial', got {value!r}"
+
+        # Query using string name
+        value_str = await handle.query("get_value")
+        assert value_str == "initial", f"Expected 'initial', got {value_str!r}"
+
+        # Signal to update value
+        await handle.signal("set_value", "updated")
+
+        # Wait for result
+        result = await handle.result(timeout=30.0)
+        assert result == "updated", f"Expected 'updated', got {result!r}"
+
+        worker.shutdown()
+        await trio.sleep(0.3)
+        nursery.cancel_scope.cancel()
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
 @pytest.mark.timeout(120)
 async def test_e2e_stress_50_signals_queries(trio_client) -> None:
     """Test 50 workflows with signal + query under load."""
