@@ -76,5 +76,8 @@ dmypy.json
 # ruff
 .ruff_cache/
 
+# Rust
+target/
+
 # uv
 uv.lock
