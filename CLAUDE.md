@@ -246,14 +246,41 @@ Workflows run with deterministic task scheduling via a custom Trio fork:
 
 ## Key Design Principles
 
-### 1. Match SDK Patterns (CRITICAL)
+### 1. Exact API Parity with sdk-python (CRITICAL)
 
-Follow the official Temporal Python SDK for ALL design decisions. Only difference should be Trio vs asyncio.
+Every feature **MUST** match the official sdk-python API **exactly**. The only acceptable discrepancies are those directly caused by the trio-vs-asyncio difference (e.g., `trio.Event` instead of `asyncio.Event`, nurseries instead of `asyncio.Task`).
 
-**Reference SDK files when implementing features:**
+**What "exactly" means:**
+- Every public function/method name must be identical
+- Every argument name, order, type, and default value must be identical
+- Every return type must be identical
+- Every dataclass/TypedDict field name and type must be identical
+- Every enum name, member name, and member value must be identical
+- Every class name must be identical (including casing: `WorkflowIDReusePolicy` not `WorkflowIdReusePolicy`)
+
+**This also applies to implementation**, not just the public API surface:
+- Follow the same code paths and logic as sdk-python
+- Use the same protobuf field encoding patterns
+- Propagate all parameters through to the bridge/core (never silently drop)
+- Handle the same edge cases and error conditions
+- Use the same type conversion patterns (e.g., `timedelta` not `float` for durations)
+
+**Before implementing any feature:**
+1. Read the corresponding sdk-python code first (`/home/dev/sdk-python/`)
+2. Copy the exact signatures (function names, param names, types, defaults)
+3. Follow the same implementation logic
+4. Verify every parameter is propagated end-to-end (not silently dropped)
+
+**Reference SDK files:**
 - `temporalio/workflow.py` - Workflow API patterns
+- `temporalio/client.py` - Client API patterns
+- `temporalio/activity.py` - Activity API patterns
+- `temporalio/worker/_worker.py` - Worker configuration
 - `temporalio/worker/_workflow_instance.py` - WorkflowRunner pattern
-- `temporalio/worker/_replayer.py` - Replay patterns
+- `temporalio/worker/_interceptor.py` - Interceptor patterns
+- `temporalio/common.py` - Shared types (RetryPolicy, Priority, SearchAttributes, etc.)
+- `temporalio/testing/_workflow.py` - Testing patterns
+- `temporalio/runtime.py` - Runtime/telemetry patterns
 
 ### 2. No trio-asyncio Dependency
 
@@ -411,26 +438,26 @@ uv run pytest -x tests/
 1. **Follow sdk-python patterns** - Always check how the official SDK implements a feature first
 2. **Validate bridge behavior** - Write a bridge test to understand SDK-Core's protocol
 
-### Rule 1: Follow sdk-python Implementation
+### Rule 1: Match sdk-python Exactly
 
-**ALWAYS check sdk-python first** before implementing any feature. The trio SDK should mirror the official SDK as closely as possible - the only difference should be Trio vs asyncio.
+**ALWAYS read sdk-python first** before implementing any feature. The trio SDK must be a 1:1 match with the official SDK — same function names, same argument names, same types, same defaults, same implementation logic. The only differences allowed are trio-vs-asyncio adaptations.
 
-**Reference locations in sdk-python:**
-- `temporalio/workflow.py` - Public workflow API
-- `temporalio/worker/_workflow_instance.py` - Workflow execution, replay handling
-- `temporalio/worker/_replayer.py` - Replay logic
-- `temporalio/worker/_worker.py` - Worker implementation
+**Reference**: `/home/dev/sdk-python/temporalio/`
 
 **Process:**
-1. Find the equivalent feature in sdk-python
-2. Read and understand how it works
-3. Implement the same logic with Trio primitives
-4. Match the behavior exactly (edge cases, error handling, etc.)
+1. Read the sdk-python implementation of the feature
+2. Copy exact signatures (names, types, defaults, return types)
+3. Implement the same logic, substituting only trio primitives for asyncio
+4. Verify every parameter propagates end-to-end (never silently drop)
+5. Match edge cases, error handling, and error messages
 
-**Why this matters:**
-- sdk-python is battle-tested and handles edge cases we might miss
-- Consistent behavior across SDKs is important for users
-- Less chance of introducing bugs by "inventing" solutions
+**Common mistakes to avoid:**
+- Using `float` seconds when sdk-python uses `timedelta`
+- Renaming parameters (e.g., `signal_name` vs `signal`, `target_url` vs `target_host`)
+- Accepting parameters but not encoding them in protobuf (silent drops)
+- Using `*args` when sdk-python uses `arg`/`args` mutual exclusion pattern
+- Using different enum types or values than sdk-python
+- Making dataclass fields mutable when sdk-python uses `frozen=True`
 
 ### Rule 2: Validate Bridge Behavior First
 
