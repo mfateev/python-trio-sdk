@@ -49,6 +49,8 @@ from temporalio_trio.worker._activation import (
     StartChildWorkflowCommand,
     StartTimerCommand,
     TimerFiredJob,
+    UpdateResponseCommand,
+    UpdateWorkflowJob,
     UpsertSearchAttributesCommand,
     WorkflowActivation,
     WorkflowActivationCompletion,
@@ -147,6 +149,10 @@ def bridge_to_poc_activation(
                 _convert_resolve_cancel_external_workflow(
                     job.resolve_request_cancel_external_workflow, data_converter
                 )
+            )
+        elif job_type == "do_update":
+            poc_jobs.append(
+                _convert_do_update(job.do_update, data_converter)
             )
         elif job_type == "notify_has_patch":
             poc_jobs.append(_convert_notify_has_patch(job.notify_has_patch))
@@ -582,6 +588,32 @@ def _convert_notify_has_patch(notify: act_pb.NotifyHasPatch) -> NotifyHasPatchJo
         POC NotifyHasPatchJob
     """
     return NotifyHasPatchJob(patch_id=notify.patch_id)
+
+
+def _convert_do_update(
+    update: act_pb.DoUpdate,
+    data_converter: temporalio.converter.DataConverter,
+) -> UpdateWorkflowJob:
+    """Convert bridge DoUpdate to POC UpdateWorkflowJob.
+
+    Args:
+        update: Bridge DoUpdate job
+        data_converter: Data converter for deserializing arguments
+
+    Returns:
+        POC UpdateWorkflowJob
+    """
+    args = tuple(
+        data_converter.payload_converter.from_payload(p) for p in update.input
+    )
+    return UpdateWorkflowJob(
+        id=update.id,
+        protocol_instance_id=update.protocol_instance_id,
+        name=update.name,
+        args=args,
+        run_validator=update.run_validator,
+        headers=dict(update.headers),
+    )
 
 
 def _set_duration(
@@ -1035,6 +1067,28 @@ def poc_to_bridge_completion(
             # Convert SetPatchMarkerCommand to SetPatchMarker
             bridge_cmd.set_patch_marker.patch_id = cmd.patch_id
             bridge_cmd.set_patch_marker.deprecated = cmd.deprecated
+
+        elif isinstance(cmd, UpdateResponseCommand):
+            # Convert UpdateResponseCommand to UpdateResponse
+            bridge_cmd.update_response.protocol_instance_id = (
+                cmd.protocol_instance_id
+            )
+            if cmd.accepted:
+                bridge_cmd.update_response.accepted.SetInParent()
+            elif cmd.rejected_failure is not None:
+                failure_converter = temporalio.converter.DefaultFailureConverter()
+                failure = temporalio.api.failure.v1.Failure()
+                failure_converter.to_failure(
+                    cmd.rejected_failure,
+                    data_converter.payload_converter,
+                    failure,
+                )
+                bridge_cmd.update_response.rejected.CopyFrom(failure)
+            elif cmd._is_completed:
+                payload = data_converter.payload_converter.to_payload(
+                    cmd.completed_result
+                )
+                bridge_cmd.update_response.completed.CopyFrom(payload)
 
         else:
             raise NotImplementedError(

@@ -48,6 +48,8 @@ from temporalio_trio.worker._activation import (
     StartChildWorkflowCommand,
     StartTimerCommand,
     TimerFiredJob,
+    UpdateResponseCommand,
+    UpdateWorkflowJob,
     UpsertSearchAttributesCommand,
     WorkflowActivation,
     WorkflowActivationCompletion,
@@ -61,10 +63,13 @@ from temporalio_trio.workflow import (
     ExternalWorkflowHandle,
     Info,
     ParentClosePolicy,
+    UpdateInfo,
     _Definition,
     _QueryDefinition,
     _Runtime,
     _SignalDefinition,
+    _UpdateDefinition,
+    _set_current_update_info,
 )
 
 __all__ = [
@@ -380,6 +385,10 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         # Query handling
         self._queries: dict[str | None, _QueryDefinition] = dict(det.defn.queries)
         self._pending_queries: list[QueryWorkflowJob] = []
+        # Update handling
+        self._updates: dict[str | None, _UpdateDefinition] = dict(det.defn.updates)
+        self._pending_updates: list[UpdateWorkflowJob] = []
+        self._in_progress_updates: dict[str, str] = {}  # update_id -> update_name
         # Child workflow handling
         self._child_workflow_seq: int = 0
         # Track child workflows waiting for start confirmation: seq -> handle
@@ -524,6 +533,8 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                     event.set()
             elif isinstance(job, SignalWorkflowJob):
                 self._pending_signals.append(job)
+            elif isinstance(job, UpdateWorkflowJob):
+                self._pending_updates.append(job)
             elif isinstance(job, QueryWorkflowJob):
                 self._pending_queries.append(job)
             elif isinstance(job, ChildWorkflowStartedJob):
@@ -631,6 +642,11 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         for signal_job in self._pending_signals:
             await self._apply_signal(signal_job)
         self._pending_signals.clear()
+
+        # Process pending updates before running the main workflow
+        for update_job in self._pending_updates:
+            await self._apply_update(update_job)
+        self._pending_updates.clear()
 
         try:
             result = await self._defn.run_fn(self._workflow_obj, *self._start_args)
@@ -774,6 +790,87 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                     error=str(e),
                 )
             )
+
+    async def _apply_update(self, job: UpdateWorkflowJob) -> None:
+        """Apply an update to the workflow.
+
+        This handles the update protocol:
+        1. Look up handler by name (or dynamic)
+        2. Run validator if requested
+        3. Accept the update
+        4. Run the handler
+        5. Emit completed/rejected response
+
+        Args:
+            job: The update job containing update info and args.
+        """
+        # Set current update info
+        _set_current_update_info(UpdateInfo(id=job.id, name=job.name))
+
+        defn = self._updates.get(job.name) or self._updates.get(None)
+        if defn is None:
+            known = sorted([k for k in self._updates.keys() if k])
+            self._commands.append(
+                UpdateResponseCommand(
+                    protocol_instance_id=job.protocol_instance_id,
+                    rejected_failure=RuntimeError(
+                        f"Update handler for '{job.name}' expected but not found, "
+                        f"and there is no dynamic handler. "
+                        f"known updates: [{' '.join(known)}]"
+                    ),
+                )
+            )
+            return
+
+        handler = defn.fn
+        if defn.is_method:
+            handler = handler.__get__(self._workflow_obj, type(self._workflow_obj))
+
+        # Track in-progress
+        self._in_progress_updates[job.id] = job.name
+
+        try:
+            # Run validator if requested
+            if job.run_validator and defn.validator is not None:
+                validator = defn.validator
+                if defn.is_method:
+                    validator = validator.__get__(
+                        self._workflow_obj, type(self._workflow_obj)
+                    )
+                validator(*job.args)
+
+            # Accept the update
+            self._commands.append(
+                UpdateResponseCommand(
+                    protocol_instance_id=job.protocol_instance_id,
+                    accepted=True,
+                )
+            )
+
+            # Run the handler
+            result = handler(*job.args)
+            if inspect.iscoroutine(result):
+                result = await result
+
+            # Emit completed response
+            self._commands.append(
+                UpdateResponseCommand(
+                    protocol_instance_id=job.protocol_instance_id,
+                    completed_result=result,
+                    _is_completed=True,
+                )
+            )
+        except Exception as e:
+            # Check if we already accepted (past validation)
+            # If not accepted yet, this is a validator rejection
+            self._commands.append(
+                UpdateResponseCommand(
+                    protocol_instance_id=job.protocol_instance_id,
+                    rejected_failure=e,
+                )
+            )
+        finally:
+            self._in_progress_updates.pop(job.id, None)
 
     # _Runtime implementation
 
@@ -1581,6 +1678,14 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             False - not yet implemented.
         """
         return False
+
+    def workflow_all_handlers_finished(self) -> bool:
+        """Whether all update and signal handlers have finished executing.
+
+        Returns:
+            True if there are no in-progress update or signal handler executions.
+        """
+        return len(self._in_progress_updates) == 0
 
     @property
     def is_replaying(self) -> bool:

@@ -38,6 +38,8 @@ from temporalio_trio.worker._activation import (
     SignalExternalResolvedJob,
     SignalWorkflowJob,
     TimerFiredJob,
+    UpdateResponseCommand,
+    UpdateWorkflowJob,
     WorkflowActivation,
     WorkflowActivationCompletion,
     WorkflowStartedJob,
@@ -451,11 +453,19 @@ class SingleThreadWorker:
         legacy_token = set_current_runtime(runtime)
         try:
             # Apply initial activation jobs (now query handlers are registered)
-            self._apply_activation(runtime, initial_activation)
+            # Collect deferred updates (async handlers need nursery)
+            deferred_updates: list[UpdateWorkflowJob] = []
+            self._apply_activation(
+                runtime, initial_activation, deferred_updates=deferred_updates
+            )
 
             # Run the workflow
             async with trio.open_nursery() as nursery:
                 runtime.nursery = nursery
+
+                # Apply deferred updates now that nursery is available
+                for update_job in deferred_updates:
+                    await self._apply_update_async(runtime, update_job)
 
                 # Start the main workflow coroutine (workflow object already created)
                 nursery.start_soon(
@@ -483,8 +493,15 @@ class SingleThreadWorker:
                     runtime.time_ns = activation.timestamp_ns
                     runtime.is_replaying = getattr(activation, "is_replaying", False)
 
-                    # Apply activation jobs
-                    self._apply_activation(runtime, activation)
+                    # Apply activation jobs (updates are deferred)
+                    pending_updates: list[UpdateWorkflowJob] = []
+                    self._apply_activation(
+                        runtime, activation, deferred_updates=pending_updates
+                    )
+
+                    # Process deferred updates with proper awaiting
+                    for update_job in pending_updates:
+                        await self._apply_update_async(runtime, update_job)
 
                     # Yield to scheduler to let woken tasks run
                     # For activations with jobs that wake workflows (TimerFired, etc.),
@@ -496,7 +513,7 @@ class SingleThreadWorker:
                     # 1. Empty activations (heartbeat) - no jobs to wake workflow
                     # 2. Informational jobs like ChildWorkflowStartedJob - don't wake workflow
                     # 3. Jobs that wake workflow - workflow runs, produces commands, signals ready
-                    # After trio.sleep(0), any woken tasks have had a chance to run.
+                    # After yielding, any woken tasks have had a chance to run.
                     if not state.commands_ready.is_set() and not state.is_complete:
                         # No commands produced - signal with current (empty) commands
                         state.signal_commands_ready()
@@ -607,6 +624,20 @@ class SingleThreadWorker:
                 bound_handler = query_defn.fn.__get__(workflow_obj, type(workflow_obj))
                 runtime.register_query_handler(query_name, bound_handler)
 
+        # Register update handlers
+        for update_name, update_defn in defn.updates.items():
+            # Bind the handler method to the workflow instance
+            bound_handler = update_defn.fn.__get__(workflow_obj, type(workflow_obj))
+            # Bind the validator if present
+            bound_validator = None
+            if update_defn.validator is not None:
+                bound_validator = update_defn.validator.__get__(
+                    workflow_obj, type(workflow_obj)
+                )
+            runtime.register_update_handler(
+                update_name, bound_handler, bound_validator
+            )
+
     async def _execute_workflow_main(
         self,
         runtime: WorkflowRuntime,
@@ -656,7 +687,11 @@ class SingleThreadWorker:
             state.signal_commands_ready()
 
     def _apply_activation(
-        self, runtime: WorkflowRuntime, activation: WorkflowActivation
+        self,
+        runtime: WorkflowRuntime,
+        activation: WorkflowActivation,
+        *,
+        deferred_updates: list[UpdateWorkflowJob] | None = None,
     ) -> None:
         """Apply activation jobs to the runtime.
 
@@ -666,6 +701,8 @@ class SingleThreadWorker:
         Args:
             runtime: The workflow runtime.
             activation: The activation containing jobs.
+            deferred_updates: If provided, collect update jobs here instead of
+                processing them immediately. Used when nursery isn't set up yet.
         """
         for job in activation.jobs:
             if isinstance(job, TimerFiredJob):
@@ -703,6 +740,12 @@ class SingleThreadWorker:
                     seq=job.seq,
                     error=job.failure,
                 )
+            elif isinstance(job, UpdateWorkflowJob):
+                # Always defer updates - they need to be awaited (for async handlers)
+                if deferred_updates is not None:
+                    deferred_updates.append(job)
+                # If no deferred_updates list provided, silently skip
+                # (updates are handled by the caller)
             elif isinstance(job, CancelWorkflowJob):
                 runtime.apply_cancel_workflow()
             elif isinstance(job, NotifyHasPatchJob):
@@ -769,6 +812,245 @@ class SingleThreadWorker:
         except Exception as e:
             # Log but don't fail workflow
             logger.warning(f"Async signal handler error for {signal_name}: {e}")
+
+    async def _apply_update_async(
+        self, runtime: WorkflowRuntime, update_job: UpdateWorkflowJob
+    ) -> None:
+        """Apply an update, awaiting async handlers inline.
+
+        This ensures the completed command is available in the same activation.
+
+        Args:
+            runtime: The workflow runtime.
+            update_job: The update job.
+        """
+        from temporalio_trio.workflow import UpdateInfo, _set_current_update_info
+
+        _set_current_update_info(UpdateInfo(id=update_job.id, name=update_job.name))
+
+        # Look up handler
+        handler = runtime.update_handlers.get(update_job.name)
+        if handler is None:
+            handler = runtime.update_handlers.get(None)
+        if handler is None:
+            runtime.commands.append(
+                UpdateResponseCommand(
+                    protocol_instance_id=update_job.protocol_instance_id,
+                    rejected_failure=RuntimeError(
+                        f"Update handler for '{update_job.name}' expected but not found, "
+                        f"and there is no dynamic handler."
+                    ),
+                )
+            )
+            return
+
+        # Run validator if requested
+        if update_job.run_validator:
+            validator = runtime.update_validators.get(update_job.name)
+            if validator is None:
+                validator = runtime.update_validators.get(None)
+            if validator is not None:
+                try:
+                    validator(*update_job.args)
+                except Exception as e:
+                    runtime.commands.append(
+                        UpdateResponseCommand(
+                            protocol_instance_id=update_job.protocol_instance_id,
+                            rejected_failure=e,
+                        )
+                    )
+                    return
+
+        # Accept
+        runtime.commands.append(
+            UpdateResponseCommand(
+                protocol_instance_id=update_job.protocol_instance_id,
+                accepted=True,
+            )
+        )
+
+        # Track in-progress
+        runtime.in_progress_updates[update_job.id] = update_job.name
+
+        # Run handler - await inline for both sync and async
+        try:
+            result = handler(*update_job.args)
+            if inspect.iscoroutine(result):
+                result = await result
+            runtime.commands.append(
+                UpdateResponseCommand(
+                    protocol_instance_id=update_job.protocol_instance_id,
+                    completed_result=result,
+                    _is_completed=True,
+                )
+            )
+        except Exception as e:
+            runtime.commands.append(
+                UpdateResponseCommand(
+                    protocol_instance_id=update_job.protocol_instance_id,
+                    rejected_failure=e,
+                )
+            )
+        finally:
+            runtime.in_progress_updates.pop(update_job.id, None)
+            runtime.notify_condition_waiters()
+
+    def _apply_update(
+        self, runtime: WorkflowRuntime, update_job: UpdateWorkflowJob
+    ) -> None:
+        """Deliver an update to the workflow.
+
+        The update protocol has multiple phases:
+        1. Run validator (if requested) in read-only context
+        2. Accept the update (emit accepted response)
+        3. Run the handler (sync or async)
+        4. Emit completed/rejected response
+
+        Args:
+            runtime: The workflow runtime.
+            update_job: The update job containing update info and args.
+        """
+        from temporalio_trio.workflow import UpdateInfo, _set_current_update_info
+
+        # Set current update info
+        _set_current_update_info(UpdateInfo(id=update_job.id, name=update_job.name))
+
+        # Look up handler by name, fall back to dynamic (None key)
+        handler = runtime.update_handlers.get(update_job.name)
+        if handler is None:
+            handler = runtime.update_handlers.get(None)
+        if handler is None:
+            # No handler - reject
+            runtime.commands.append(
+                UpdateResponseCommand(
+                    protocol_instance_id=update_job.protocol_instance_id,
+                    rejected_failure=RuntimeError(
+                        f"Update handler for '{update_job.name}' expected but not found, "
+                        f"and there is no dynamic handler."
+                    ),
+                )
+            )
+            return
+
+        # Run validator if requested
+        if update_job.run_validator:
+            validator = runtime.update_validators.get(update_job.name)
+            if validator is None:
+                validator = runtime.update_validators.get(None)
+            if validator is not None:
+                try:
+                    validator(*update_job.args)
+                except Exception as e:
+                    # Validator rejected - emit rejected response
+                    runtime.commands.append(
+                        UpdateResponseCommand(
+                            protocol_instance_id=update_job.protocol_instance_id,
+                            rejected_failure=e,
+                        )
+                    )
+                    return
+
+        # Accept the update
+        runtime.commands.append(
+            UpdateResponseCommand(
+                protocol_instance_id=update_job.protocol_instance_id,
+                accepted=True,
+            )
+        )
+
+        # Track in-progress
+        runtime.in_progress_updates[update_job.id] = update_job.name
+
+        # Run the handler
+        try:
+            result = handler(*update_job.args)
+            if inspect.iscoroutine(result):
+                # Async handler - run as nursery task
+                if runtime.nursery is not None:
+                    runtime.nursery.start_soon(
+                        self._run_update_handler_wrapper,
+                        result,
+                        update_job,
+                        runtime,
+                    )
+                else:
+                    # No nursery available - close coroutine and complete with None
+                    result.close()
+                    runtime.commands.append(
+                        UpdateResponseCommand(
+                            protocol_instance_id=update_job.protocol_instance_id,
+                            completed_result=None,
+                            _is_completed=True,
+                        )
+                    )
+                    runtime.in_progress_updates.pop(update_job.id, None)
+            else:
+                # Sync handler - emit completed response immediately
+                runtime.commands.append(
+                    UpdateResponseCommand(
+                        protocol_instance_id=update_job.protocol_instance_id,
+                        completed_result=result,
+                        _is_completed=True,
+                    )
+                )
+                runtime.in_progress_updates.pop(update_job.id, None)
+        except Exception as e:
+            # Handler failed - emit rejected response
+            runtime.commands.append(
+                UpdateResponseCommand(
+                    protocol_instance_id=update_job.protocol_instance_id,
+                    rejected_failure=e,
+                )
+            )
+            runtime.in_progress_updates.pop(update_job.id, None)
+
+        # Notify any wait_condition waiters that state may have changed
+        runtime.notify_condition_waiters()
+
+    async def _run_update_handler_wrapper(
+        self,
+        coro: Any,
+        update_job: UpdateWorkflowJob,
+        runtime: WorkflowRuntime,
+    ) -> None:
+        """Run an async update handler coroutine as a nursery task.
+
+        This wrapper awaits the handler coroutine, emits the completion response,
+        and cleans up in-progress tracking.
+
+        Args:
+            coro: The coroutine to await.
+            update_job: The update job (for protocol_instance_id and id).
+            runtime: The workflow runtime.
+        """
+        from temporalio_trio.workflow import UpdateInfo, _set_current_update_info
+
+        # Set current update info for this task
+        _set_current_update_info(UpdateInfo(id=update_job.id, name=update_job.name))
+
+        try:
+            result = await coro
+            runtime.commands.append(
+                UpdateResponseCommand(
+                    protocol_instance_id=update_job.protocol_instance_id,
+                    completed_result=result,
+                    _is_completed=True,
+                )
+            )
+        except Exception as e:
+            logger.warning(f"Async update handler error for {update_job.name}: {e}")
+            runtime.commands.append(
+                UpdateResponseCommand(
+                    protocol_instance_id=update_job.protocol_instance_id,
+                    rejected_failure=e,
+                )
+            )
+        finally:
+            runtime.in_progress_updates.pop(update_job.id, None)
+            runtime.notify_condition_waiters()
+            # Signal commands ready so completion is sent
+            if runtime.on_suspend is not None:
+                runtime.on_suspend()
 
     def _apply_query(
         self, runtime: WorkflowRuntime, query_job: QueryWorkflowJob

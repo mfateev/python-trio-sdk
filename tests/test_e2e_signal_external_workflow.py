@@ -444,6 +444,9 @@ async def test_get_external_workflow_handle_properties() -> None:
         def workflow_is_continue_as_new_suggested(self):
             return False
 
+        def workflow_all_handlers_finished(self):
+            return True
+
     mock = MockRuntime()
     token = workflow._Runtime.set_current(mock)
     try:

@@ -84,10 +84,14 @@ __all__ = [
     "NondeterminismError",
     "ReadOnlyContextError",
     "all_handlers_finished",
+    "update",
+    "UpdateInfo",
+    "current_update_info",
     "_Runtime",
     "_Definition",
     "_SignalDefinition",
     "_QueryDefinition",
+    "_UpdateDefinition",
     "_NotInWorkflowContextError",
 ]
 
@@ -216,6 +220,40 @@ class ReadOnlyContextError(Exception):
     """Error raised when a mutating operation is attempted in a read-only context (query/validator)."""
 
     pass
+
+
+@dataclass(frozen=True)
+class UpdateInfo:
+    """Information about a workflow update."""
+
+    id: str
+    """Update ID."""
+
+    name: str
+    """Update type name."""
+
+
+_current_update_info: ContextVar[UpdateInfo | None] = ContextVar(
+    "__temporal_current_update_info", default=None
+)
+
+
+def _set_current_update_info(info: UpdateInfo) -> None:
+    """Set the current update info (internal use)."""
+    _current_update_info.set(info)
+
+
+def current_update_info() -> UpdateInfo | None:
+    """Info for the current update if any.
+
+    This is powered by :py:mod:`contextvars` so it is only valid within the
+    update handler and coroutines/tasks it has started.
+
+    Returns:
+        Info for the current update handler the code calling this is executing
+        within if any.
+    """
+    return _current_update_info.get(None)
 
 
 class _Runtime(ABC):
@@ -663,6 +701,15 @@ class _Runtime(ABC):
         """
         ...
 
+    @abstractmethod
+    def workflow_all_handlers_finished(self) -> bool:
+        """Whether all update and signal handlers have finished executing.
+
+        Returns:
+            True if there are no in-progress update or signal handler executions.
+        """
+        ...
+
     @property
     def is_replaying(self) -> bool:
         """Whether the current activation is replaying from history.
@@ -718,6 +765,38 @@ class _QueryDefinition:
 
 
 @dataclass
+class _UpdateDefinition:
+    """Update handler definition metadata."""
+
+    name: str | None  # None for dynamic handlers
+    fn: Callable[..., Any]
+    is_method: bool
+    unfinished_policy: HandlerUnfinishedPolicy = HandlerUnfinishedPolicy.WARN_AND_ABANDON
+    description: str | None = None
+    arg_types: list[type] | None = None
+    ret_type: type | None = None
+    validator: Callable[..., None] | None = None
+    dynamic_vararg: bool = False
+
+    @staticmethod
+    def from_fn(fn: Callable) -> "_UpdateDefinition | None":
+        """Get update definition from a function if it has one."""
+        return getattr(fn, "__temporal_update_definition", None)
+
+    def set_validator(self, validator: Callable[..., None]) -> None:
+        """Set the validator function for this update handler."""
+        if self.validator is not None:
+            raise RuntimeError(f"Validator already set for update {self.name}")
+        self.validator = validator
+
+    def __post_init__(self) -> None:
+        if self.arg_types is None:
+            arg_types, ret_type = temporalio.common._type_hints_from_func(self.fn)
+            self.arg_types = arg_types
+            self.ret_type = ret_type
+
+
+@dataclass
 class _Definition:
     """Workflow definition metadata.
 
@@ -740,6 +819,9 @@ class _Definition:
 
     queries: dict[str | None, _QueryDefinition] = field(default_factory=dict)
     """Query handlers for this workflow, keyed by query name (None for dynamic)."""
+
+    updates: dict[str | None, _UpdateDefinition] = field(default_factory=dict)
+    """Update handlers for this workflow, keyed by update name (None for dynamic)."""
 
     sandboxed: bool = True
     """Whether the workflow should run in a sandbox. Accepted but ignored
@@ -998,6 +1080,87 @@ def query(
     return decorator
 
 
+def _update_validator(
+    update_def: _UpdateDefinition, fn: Callable[..., None] | None = None
+) -> Callable[..., None] | None:
+    """Decorator for a workflow update validator method."""
+    if fn is not None:
+        update_def.set_validator(fn)
+    return fn
+
+
+def update(
+    fn: Callable | None = None,
+    *,
+    name: str | None = None,
+    dynamic: bool = False,
+    unfinished_policy: HandlerUnfinishedPolicy = HandlerUnfinishedPolicy.WARN_AND_ABANDON,
+    description: str | None = None,
+) -> Any:
+    """Decorator for workflow update handler methods.
+
+    Update handlers can be sync or async and return a value to the caller.
+    They also support an optional validator that runs before the handler.
+
+    Example:
+        @workflow.defn
+        class MyWorkflow:
+            @workflow.update
+            async def my_update(self, value: int) -> str:
+                self.value = value
+                return f"updated to {value}"
+
+            @workflow.update(name="custom-name")
+            async def another_update(self) -> None:
+                pass
+
+    Validators:
+        @workflow.defn
+        class MyWorkflow:
+            @workflow.update
+            async def my_update(self, value: int) -> str:
+                self.value = value
+                return f"updated to {value}"
+
+            @my_update.validator
+            def validate_my_update(self, value: int) -> None:
+                if value < 0:
+                    raise ValueError("Value must be non-negative")
+
+    Args:
+        fn: The function to decorate (when used without parentheses)
+        name: Custom update name. Defaults to function name.
+        dynamic: If True, this is a dynamic handler for any update name.
+        unfinished_policy: Policy for handling unfinished update handlers
+            when the workflow completes. Defaults to WARN_AND_ABANDON.
+        description: Optional description for the update.
+    """
+    from functools import partial
+
+    def decorator(fn: Callable) -> Callable:
+        if dynamic:
+            update_name = None
+        elif name:
+            update_name = name
+        else:
+            update_name = fn.__name__
+
+        defn = _UpdateDefinition(
+            name=update_name,
+            fn=fn,
+            is_method=True,
+            unfinished_policy=unfinished_policy,
+            description=description,
+        )
+        setattr(fn, "__temporal_update_definition", defn)
+        setattr(fn, "validator", partial(_update_validator, defn))
+        return fn
+
+    if fn is not None:
+        return decorator(fn)
+    return decorator
+
+
 def defn(
     cls: type | None = None,
     *,
@@ -1051,6 +1214,7 @@ def defn(
         run_fn: Callable[..., Awaitable[Any]] | None = None
         signals: dict[str | None, _SignalDefinition] = {}
         queries: dict[str | None, _QueryDefinition] = {}
+        updates: dict[str | None, _UpdateDefinition] = {}
 
         for attr_name in dir(cls):
             method = getattr(cls, attr_name, None)
@@ -1089,6 +1253,15 @@ def defn(
                     raise ValueError(f"Duplicate query handler for '{query_defn.name}'")
                 queries[query_defn.name] = query_defn
 
+            # Collect update handlers
+            update_defn = _UpdateDefinition.from_fn(method)
+            if update_defn is not None:
+                if update_defn.name in updates:
+                    raise ValueError(
+                        f"Duplicate update handler for '{update_defn.name}'"
+                    )
+                updates[update_defn.name] = update_defn
+
         if run_fn is None:
             raise ValueError(
                 f"Workflow class {cls.__name__} must have a @workflow.run method"
@@ -1106,6 +1279,7 @@ def defn(
             run_fn=run_fn,
             signals=signals,
             queries=queries,
+            updates=updates,
             sandboxed=sandboxed,
             dynamic=dynamic,
             failure_exception_types=list(failure_exception_types),
@@ -2328,8 +2502,16 @@ def upsert_search_attributes(
 
 
 def all_handlers_finished() -> bool:
-    """Whether all update and signal handlers have finished."""
-    return True  # Stub - no update support yet
+    """Whether update and signal handlers have finished executing.
+
+    Consider waiting on this condition before workflow return or continue-as-new,
+    to prevent interruption of in-progress handlers by workflow exit:
+    ``await workflow.wait_condition(lambda: workflow.all_handlers_finished())``
+
+    Returns:
+        True if there are no in-progress update or signal handler executions.
+    """
+    return _Runtime.current().workflow_all_handlers_finished()
 
 
 def get_current_build_id() -> str | None:

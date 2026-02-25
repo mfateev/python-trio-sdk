@@ -333,6 +333,9 @@ class TestRuntimeClass:
             def workflow_is_continue_as_new_suggested(self):
                 return False
 
+            def workflow_all_handlers_finished(self):
+                return True
+
         mock = MockRuntime()
 
         # Initially None
@@ -509,6 +512,9 @@ class TestRuntimeClass:
 
             def workflow_is_continue_as_new_suggested(self):
                 return False
+
+            def workflow_all_handlers_finished(self):
+                return True
 
         mock1 = MockRuntime("mock1")
         mock2 = MockRuntime("mock2")
@@ -701,6 +707,9 @@ class TestPublicAPI:
             def workflow_is_continue_as_new_suggested(self):
                 return False
 
+            def workflow_all_handlers_finished(self):
+                return True
+
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
         try:
@@ -879,6 +888,9 @@ class TestPublicAPI:
 
             def workflow_is_continue_as_new_suggested(self):
                 return False
+
+            def workflow_all_handlers_finished(self):
+                return True
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
