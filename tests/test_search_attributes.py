@@ -1,6 +1,6 @@
 """Tests for upsert_search_attributes functionality."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from temporalio.common import SearchAttributeKey
@@ -79,6 +79,9 @@ def _create_details(workflow_cls: type) -> WorkflowInstanceDetails:
         workflow_type=defn.name,
         run_id="run-1",
         task_queue="test-queue",
+        namespace="default",
+        attempt=1,
+        start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
     return WorkflowInstanceDetails(
         defn=defn,

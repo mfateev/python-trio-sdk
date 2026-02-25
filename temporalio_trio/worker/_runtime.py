@@ -27,7 +27,9 @@ import trio
 from temporalio_trio.worker._activation import (
     CancelWorkflowCommand,
     ContinueAsNewCommand,
+    RequestCancelExternalWorkflowCommand,
     ScheduleActivityCommand,
+    ScheduleLocalActivityCommand,
     SignalExternalWorkflowCommand,
     StartChildWorkflowCommand,
     StartTimerCommand,
@@ -147,6 +149,58 @@ class WorkflowRuntime:
     )
     """Headers from the workflow start (e.g. for tracing/auth interceptors)."""
 
+    namespace: str = "default"
+    """Namespace the workflow is running in."""
+
+    attempt: int = 1
+    """Starting at 1, the number of attempts for this workflow."""
+
+    start_time_ns: int = 0
+    """When the workflow started, in nanoseconds since epoch."""
+
+    execution_timeout_ms: int | None = None
+    """Total workflow execution timeout in milliseconds."""
+
+    run_timeout_ms: int | None = None
+    """Timeout of a single workflow run in milliseconds."""
+
+    task_timeout_ms: int | None = None
+    """Timeout of a single workflow task in milliseconds."""
+
+    retry_policy_obj: temporalio.common.RetryPolicy | None = None
+    """Retry policy for this workflow."""
+
+    continued_run_id: str | None = None
+    """Run ID of the previous workflow which continued-as-new into this one."""
+
+    cron_schedule: str | None = None
+    """Cron schedule if this workflow runs on a cron."""
+
+    parent_namespace: str | None = None
+    """Namespace of the parent workflow, if this is a child."""
+
+    parent_workflow_id: str | None = None
+    """Workflow ID of the parent workflow, if this is a child."""
+
+    parent_run_id: str | None = None
+    """Run ID of the parent workflow, if this is a child."""
+
+    root_workflow_id: str | None = None
+    """Workflow ID of the root workflow."""
+
+    root_run_id: str | None = None
+    """Run ID of the root workflow."""
+
+    raw_memo: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Raw memo payloads from the workflow start."""
+
+    priority: temporalio.common.Priority = field(
+        default_factory=lambda: temporalio.common.Priority.default
+    )
+    """Priority for this workflow."""
+
     # Sequence counters
     timer_seq: int = 0
     """Sequence counter for timer IDs."""
@@ -162,6 +216,9 @@ class WorkflowRuntime:
 
     signal_external_seq: int = 0
     """Sequence counter for external signal IDs."""
+
+    cancel_external_seq: int = 0
+    """Sequence counter for external cancel IDs."""
 
     # Fired events (for replay) - populated from history
     fired_timers: dict[int, int] = field(default_factory=dict)
@@ -181,6 +238,11 @@ class WorkflowRuntime:
     )
     """External signals that have resolved: seq -> error (None = success)."""
 
+    completed_external_cancels: dict[int, BaseException | None] = field(
+        default_factory=dict
+    )
+    """External cancels that have resolved: seq -> error (None = success)."""
+
     # Pending events (for suspension) - trio.Event instances
     pending_timers: dict[int, trio.Event] = field(default_factory=dict)
     """Timers waiting to fire: seq -> trio.Event."""
@@ -196,6 +258,9 @@ class WorkflowRuntime:
 
     pending_external_signals: dict[int, trio.Event] = field(default_factory=dict)
     """External signals waiting for resolution: seq -> trio.Event."""
+
+    pending_external_cancels: dict[int, trio.Event] = field(default_factory=dict)
+    """External cancels waiting for resolution: seq -> trio.Event."""
 
     # Commands to emit
     commands: list[Any] = field(default_factory=list)
@@ -258,14 +323,52 @@ class WorkflowRuntime:
         Returns:
             Info about the current workflow execution.
         """
-        from temporalio_trio.workflow import Info
+        from datetime import datetime, timedelta, timezone
+
+        from temporalio_trio.workflow import Info, ParentInfo, RootInfo
+
+        parent = None
+        if self.parent_workflow_id is not None:
+            parent = ParentInfo(
+                namespace=self.parent_namespace or "",
+                run_id=self.parent_run_id or "",
+                workflow_id=self.parent_workflow_id,
+            )
+
+        root = None
+        if self.root_workflow_id is not None:
+            root = RootInfo(
+                run_id=self.root_run_id or "",
+                workflow_id=self.root_workflow_id,
+            )
 
         return Info(
             workflow_id=self.workflow_id,
             workflow_type=self.workflow_type,
             run_id=self.run_id,
             task_queue=self.task_queue,
+            namespace=self.namespace,
+            attempt=self.attempt,
+            start_time=datetime.fromtimestamp(
+                self.start_time_ns / 1e9, tz=timezone.utc
+            ),
             headers=self.headers,
+            execution_timeout=timedelta(milliseconds=self.execution_timeout_ms)
+            if self.execution_timeout_ms is not None
+            else None,
+            run_timeout=timedelta(milliseconds=self.run_timeout_ms)
+            if self.run_timeout_ms is not None
+            else None,
+            task_timeout=timedelta(milliseconds=self.task_timeout_ms)
+            if self.task_timeout_ms is not None
+            else None,
+            retry_policy=self.retry_policy_obj,
+            continued_run_id=self.continued_run_id,
+            cron_schedule=self.cron_schedule,
+            parent=parent,
+            root=root,
+            raw_memo=self.raw_memo,
+            priority=self.priority,
         )
 
     async def workflow_execute_activity(
@@ -317,6 +420,49 @@ class WorkflowRuntime:
             retry_policy=retry_policy,
         )
 
+    async def workflow_execute_local_activity(
+        self,
+        activity: str | Callable[..., Any],
+        *args: Any,
+        schedule_to_close_timeout: timedelta | None = None,
+        schedule_to_start_timeout: timedelta | None = None,
+        start_to_close_timeout: timedelta | None = None,
+        retry_policy: Any = None,
+        local_retry_threshold: timedelta | None = None,
+        activity_id: str | None = None,
+        cancellation_type: int = 0,
+    ) -> Any:
+        """Execute a local activity and wait for its result.
+
+        This is a wrapper around execute_local_activity that matches the _Runtime interface.
+
+        Args:
+            activity: Activity name (string) or function reference.
+            *args: Arguments to pass to the activity.
+            schedule_to_close_timeout: Max time for activity from schedule to completion.
+            schedule_to_start_timeout: Max time waiting for worker to pick up activity.
+            start_to_close_timeout: Max time for activity execution.
+            retry_policy: Retry policy for the activity.
+            local_retry_threshold: Duration after which retries use the server.
+            activity_id: Optional unique identifier for the activity.
+
+        Returns:
+            The activity result.
+        """
+        # Extract activity name if a callable was passed
+        activity_name = activity if isinstance(activity, str) else activity.__name__
+
+        return await self.execute_local_activity(
+            activity_name,
+            args,
+            activity_id=activity_id,
+            schedule_to_close_timeout=schedule_to_close_timeout,
+            schedule_to_start_timeout=schedule_to_start_timeout,
+            start_to_close_timeout=start_to_close_timeout,
+            retry_policy=retry_policy,
+            local_retry_threshold=local_retry_threshold,
+        )
+
     async def workflow_start_child_workflow(
         self,
         workflow: str | type,
@@ -330,6 +476,9 @@ class WorkflowRuntime:
         task_timeout: timedelta | None = None,
         id_reuse_policy: Any = None,
         retry_policy: Any = None,
+        cron_schedule: str = "",
+        memo: Mapping[str, Any] | None = None,
+        search_attributes: temporalio.common.SearchAttributes | None = None,
     ) -> "ChildWorkflowHandle":
         """Start a child workflow and return a handle.
 
@@ -347,6 +496,9 @@ class WorkflowRuntime:
             task_timeout: Timeout for a single workflow task.
             id_reuse_policy: How existing IDs are treated.
             retry_policy: Retry policy for the workflow.
+            cron_schedule: Optional cron schedule string.
+            memo: Optional memo key-value pairs.
+            search_attributes: Optional search attributes.
 
         Returns:
             A handle to the started child workflow.
@@ -417,6 +569,9 @@ class WorkflowRuntime:
                 execution_timeout=execution_timeout,
                 run_timeout=run_timeout,
                 task_timeout=task_timeout,
+                cron_schedule=cron_schedule,
+                memo=memo,
+                search_attributes=search_attributes,
             )
         )
 
@@ -538,6 +693,8 @@ class WorkflowRuntime:
         run_timeout: timedelta | None,
         task_timeout: timedelta | None,
         retry_policy: temporalio.common.RetryPolicy | None,
+        memo: Mapping[str, Any] | None = None,
+        search_attributes: temporalio.common.SearchAttributes | None = None,
     ) -> NoReturn:
         """Continue the workflow as a new execution.
 
@@ -551,6 +708,8 @@ class WorkflowRuntime:
             run_timeout: Timeout for a single run of the new workflow.
             task_timeout: Timeout for a single workflow task.
             retry_policy: Retry policy for the new workflow.
+            memo: Optional memo key-value pairs for the new execution.
+            search_attributes: Optional search attributes for the new execution.
 
         Raises:
             ContinueAsNewError: Always raised to stop the workflow.
@@ -583,6 +742,8 @@ class WorkflowRuntime:
                 inner_self._run_timeout = run_timeout
                 inner_self._task_timeout = task_timeout
                 inner_self._retry_policy = retry_policy
+                inner_self._memo = memo
+                inner_self._search_attributes = search_attributes
 
             def _apply_command(inner_self, commands: list) -> None:
                 """Add ContinueAsNewCommand to commands list."""
@@ -594,6 +755,8 @@ class WorkflowRuntime:
                         run_timeout=inner_self._run_timeout,
                         task_timeout=inner_self._task_timeout,
                         retry_policy=inner_self._retry_policy,
+                        memo=inner_self._memo,
+                        search_attributes=inner_self._search_attributes,
                     )
                 )
 
@@ -687,6 +850,61 @@ class WorkflowRuntime:
         """
         self.signal_external_seq += 1
         return self.signal_external_seq
+
+    async def workflow_cancel_external_workflow(
+        self,
+        workflow_id: str,
+        *,
+        run_id: str | None,
+    ) -> None:
+        """Cancel an external workflow.
+
+        This method sends a cancellation request to an external workflow and
+        waits for confirmation that it was processed.
+
+        Args:
+            workflow_id: ID of the external workflow to cancel.
+            run_id: Optional run ID to target a specific run.
+
+        Raises:
+            RuntimeError: If the cancellation request fails.
+        """
+        # Increment sequence number
+        self.cancel_external_seq += 1
+        seq = self.cancel_external_seq
+
+        # Check if already completed (replay path)
+        if seq in self.completed_external_cancels:
+            error = self.completed_external_cancels[seq]
+            if error is not None:
+                raise error
+            return
+
+        # Create suspension event
+        event = trio.Event()
+        self.pending_external_cancels[seq] = event
+
+        # Emit command
+        self.commands.append(
+            RequestCancelExternalWorkflowCommand(
+                seq=seq,
+                workflow_id=workflow_id,
+                run_id=run_id,
+            )
+        )
+
+        # Notify suspension callback if set
+        if self.on_suspend is not None:
+            self.on_suspend()
+
+        # Wait for resolution
+        await event.wait()
+
+        # Check if there was an error
+        if seq in self.completed_external_cancels:
+            error = self.completed_external_cancels[seq]
+            if error is not None:
+                raise error
 
     def register_signal_handler(self, name: str, handler: Callable[..., Any]) -> None:
         """Register a signal handler.
@@ -888,6 +1106,93 @@ class WorkflowRuntime:
         del self.pending_activities[seq]
 
         # Check for cancellation after waking (Phase 7)
+        if self.cancel_requested:
+            raise trio.Cancelled._create()
+
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    async def execute_local_activity(
+        self,
+        activity: str,
+        args: tuple[Any, ...] = (),
+        *,
+        activity_id: str | None = None,
+        schedule_to_close_timeout: timedelta | None = None,
+        schedule_to_start_timeout: timedelta | None = None,
+        start_to_close_timeout: timedelta | None = None,
+        retry_policy: temporalio.common.RetryPolicy | None = None,
+        local_retry_threshold: timedelta | None = None,
+    ) -> Any:
+        """Execute a local activity using event-based suspension.
+
+        This implements the event-based local activity execution pattern,
+        identical to execute_activity but emitting a ScheduleLocalActivityCommand
+        instead. Local activities run on the same task queue and don't support
+        heartbeats.
+
+        Args:
+            activity: Name of the activity type to execute.
+            args: Arguments to pass to the activity.
+            activity_id: Optional user-provided activity ID.
+            schedule_to_close_timeout: Max total time for activity.
+            schedule_to_start_timeout: Max time to wait for worker to pick up.
+            start_to_close_timeout: Max time for activity execution.
+            retry_policy: Retry policy for the activity.
+            local_retry_threshold: Duration after which retries use the server.
+
+        Returns:
+            The activity result.
+
+        Raises:
+            Exception: If the activity failed.
+        """
+        import trio
+
+        seq = self.next_activity_seq()
+
+        # Check if already completed (replay path)
+        if seq in self.completed_activities:
+            result = self.completed_activities[seq]
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+        # Create suspension event
+        event = trio.Event()
+        self.pending_activities[seq] = event
+
+        # Generate activity_id if not provided
+        actual_activity_id = activity_id if activity_id else str(seq)
+
+        # Emit command using _activation.ScheduleLocalActivityCommand
+        self.commands.append(
+            ScheduleLocalActivityCommand(
+                seq=seq,
+                activity_id=actual_activity_id,
+                activity_type=activity,
+                args=args,
+                schedule_to_close_timeout=schedule_to_close_timeout,
+                schedule_to_start_timeout=schedule_to_start_timeout,
+                start_to_close_timeout=start_to_close_timeout,
+                retry_policy=retry_policy,
+                local_retry_threshold=local_retry_threshold,
+            )
+        )
+
+        # Call suspension callback if set (for single-thread worker)
+        if self.on_suspend is not None:
+            self.on_suspend()
+
+        # Suspend until activity completes
+        await event.wait()
+
+        # Get result and clean up
+        result = self.completed_activities[seq]
+        del self.pending_activities[seq]
+
+        # Check for cancellation after waking
         if self.cancel_requested:
             raise trio.Cancelled._create()
 
@@ -1200,6 +1505,27 @@ class WorkflowRuntime:
         # Wake up the suspended workflow if waiting
         if seq in self.pending_external_signals:
             self.pending_external_signals[seq].set()
+
+    # External cancel methods
+
+    def apply_cancel_external_resolved(
+        self, seq: int, error: BaseException | None
+    ) -> None:
+        """Handle a cancel external workflow resolution.
+
+        This is called when the activation contains a CancelExternalResolvedJob.
+        It stores the result and wakes up any suspended workflow.
+
+        Args:
+            seq: The sequence number of the cancel external command.
+            error: The error if the cancel failed, or None if successful.
+        """
+        # Store result for replay
+        self.completed_external_cancels[seq] = error
+
+        # Wake up the suspended workflow if waiting
+        if seq in self.pending_external_cancels:
+            self.pending_external_cancels[seq].set()
 
 
 # Module-level ContextVar for current runtime

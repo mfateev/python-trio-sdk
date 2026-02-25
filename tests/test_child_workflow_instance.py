@@ -6,7 +6,7 @@ commands and jobs (start, started, start failed, resolved).
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import temporalio.common
 
@@ -40,6 +40,9 @@ def make_instance(workflow_cls: type) -> TrioWorkflowInstance:
         workflow_type=defn.name,
         run_id="test-run-id",
         task_queue="test-queue",
+        namespace="default",
+        attempt=1,
+        start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
     det = WorkflowInstanceDetails(
         defn=defn,

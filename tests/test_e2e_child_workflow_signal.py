@@ -176,7 +176,7 @@ async def test_e2e_child_workflow_signal_string_name(trio_client):
                 "signal3",
             ], f"Expected signals in order, got {child_result['signals_received']}"
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
@@ -292,7 +292,7 @@ async def test_e2e_child_workflow_signal_with_method_ref(trio_client):
                 "method_signal2",
             ]
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
@@ -408,7 +408,7 @@ async def test_e2e_child_workflow_signal_early(trio_client):
             child_result = result["child_result"]
             assert child_result["value"] == "early_signal"
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 

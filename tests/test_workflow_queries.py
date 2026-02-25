@@ -1,5 +1,7 @@
 """Tests for workflow query handlers."""
 
+from datetime import datetime, timezone
+
 import pytest
 import trio
 
@@ -138,6 +140,9 @@ class TestQueryHandler:
             run_id="test-run-id",
             workflow_type=defn.name,
             task_queue="test-queue",
+            namespace="default",
+            attempt=1,
+            start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
         details = WorkflowInstanceDetails(
             defn=defn,

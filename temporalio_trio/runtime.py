@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import ClassVar, Optional
 
 
 @dataclass(frozen=True)
@@ -105,8 +106,68 @@ class TelemetryConfig:
         return d
 
 
+class Runtime:
+    """Runtime for Temporal.
+
+    A runtime provides shared configuration such as telemetry that can be
+    reused across multiple clients and workers. A default runtime is lazily
+    created on first access via :py:meth:`default`.
+    """
+
+    _default: ClassVar[Optional["Runtime"]] = None
+
+    def __init__(
+        self, *, telemetry: TelemetryConfig = TelemetryConfig()
+    ) -> None:
+        """Create a new runtime.
+
+        Args:
+            telemetry: Telemetry configuration for this runtime.
+        """
+        self._telemetry = telemetry
+
+    @staticmethod
+    def default() -> "Runtime":
+        """Get or create the default runtime.
+
+        If no default has been set, a new one is created with default
+        configuration. The same instance is returned on subsequent calls.
+
+        Returns:
+            The default :py:class:`Runtime` instance.
+        """
+        if Runtime._default is None:
+            Runtime._default = Runtime()
+        return Runtime._default
+
+    @staticmethod
+    def set_default(
+        runtime: "Runtime", *, error_if_already_set: bool = True
+    ) -> None:
+        """Set the default runtime.
+
+        Args:
+            runtime: The runtime to set as default.
+            error_if_already_set: If True (default), raise
+                :py:class:`RuntimeError` when a default has already been set.
+
+        Raises:
+            RuntimeError: If a default runtime already exists and
+                *error_if_already_set* is True.
+        """
+        if Runtime._default is not None and error_if_already_set:
+            raise RuntimeError("Runtime default already set")
+        Runtime._default = runtime
+
+    @property
+    def telemetry(self) -> TelemetryConfig:
+        """Get the telemetry configuration for this runtime."""
+        return self._telemetry
+
+
 __all__ = [
     "PrometheusConfig",
     "OpenTelemetryConfig",
+    "Runtime",
     "TelemetryConfig",
 ]

@@ -244,7 +244,7 @@ async def test_e2e_continue_as_new_basic(trio_client):
             print("E2E continue_as_new basic test passed")
 
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
@@ -335,6 +335,6 @@ async def test_e2e_continue_as_new_preserves_workflow_id(trio_client):
             print("E2E continue_as_new preserves workflow ID test passed")
 
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()

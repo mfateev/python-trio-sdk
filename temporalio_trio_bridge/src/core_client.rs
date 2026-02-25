@@ -147,6 +147,43 @@ impl CoreClientHandle {
         Ok(bytes)
     }
 
+    /// Get full workflow execution history (all events, no filtering)
+    pub async fn get_workflow_execution_history(
+        &self,
+        workflow_id: String,
+        run_id: Option<String>,
+        next_page_token: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let mut guard = self.client.lock().await;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("Client not initialized"))?;
+
+        use temporalio_common::protos::temporal::api::workflowservice::v1::GetWorkflowExecutionHistoryRequest;
+        use temporalio_common::protos::temporal::api::common::v1::WorkflowExecution;
+
+        let request = GetWorkflowExecutionHistoryRequest {
+            namespace: self.namespace.clone(),
+            execution: Some(WorkflowExecution {
+                workflow_id,
+                run_id: run_id.unwrap_or_default(),
+            }),
+            wait_new_event: false,
+            history_event_filter_type: 0, // HISTORY_EVENT_FILTER_TYPE_ALL_EVENT
+            skip_archival: true,
+            next_page_token,
+            ..Default::default()
+        };
+
+        let response = client
+            .get_workflow_execution_history(tonic::Request::new(request))
+            .await
+            .map_err(|e| anyhow!("Failed to get workflow execution history: {}", e))?;
+
+        let bytes = response.into_inner().encode_to_vec();
+        Ok(bytes)
+    }
+
     /// Cancel a workflow execution
     pub async fn cancel_workflow_execution(
         &self,
@@ -218,6 +255,7 @@ impl CoreClientHandle {
         run_id: Option<String>,
         query_type: String,
         args_bytes: Vec<u8>,
+        reject_condition: Option<i32>,
     ) -> Result<Vec<u8>> {
         let mut guard = self.client.lock().await;
         let client = guard
@@ -247,6 +285,7 @@ impl CoreClientHandle {
                 query_args: payloads,
                 ..Default::default()
             }),
+            query_reject_condition: reject_condition.unwrap_or(0),
             ..Default::default()
         };
 
@@ -254,6 +293,38 @@ impl CoreClientHandle {
             .query_workflow(tonic::Request::new(request))
             .await
             .map_err(|e| anyhow!("Failed to query workflow: {}", e))?;
+
+        // Encode response to protobuf bytes
+        let bytes = response.into_inner().encode_to_vec();
+        Ok(bytes)
+    }
+
+    /// Describe a workflow execution
+    pub async fn describe_workflow_execution(
+        &self,
+        workflow_id: String,
+        run_id: Option<String>,
+    ) -> Result<Vec<u8>> {
+        let mut guard = self.client.lock().await;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("Client not initialized"))?;
+
+        use temporalio_common::protos::temporal::api::workflowservice::v1::DescribeWorkflowExecutionRequest;
+        use temporalio_common::protos::temporal::api::common::v1::WorkflowExecution;
+
+        let request = DescribeWorkflowExecutionRequest {
+            namespace: self.namespace.clone(),
+            execution: Some(WorkflowExecution {
+                workflow_id,
+                run_id: run_id.unwrap_or_default(),
+            }),
+        };
+
+        let response = client
+            .describe_workflow_execution(tonic::Request::new(request))
+            .await
+            .map_err(|e| anyhow!("Failed to describe workflow: {}", e))?;
 
         // Encode response to protobuf bytes
         let bytes = response.into_inner().encode_to_vec();
@@ -301,6 +372,46 @@ impl CoreClientHandle {
             .map_err(|e| anyhow!("Failed to signal workflow: {}", e))?;
 
         Ok(())
+    }
+
+    /// List workflow executions
+    pub async fn list_workflow_executions(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let mut guard = self.client.lock().await;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("Client not initialized"))?;
+
+        use temporalio_common::protos::temporal::api::workflowservice::v1::ListWorkflowExecutionsRequest;
+        let request = ListWorkflowExecutionsRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode list workflow executions request: {}", e))?;
+
+        let response = client
+            .list_workflow_executions(tonic::Request::new(request))
+            .await
+            .map_err(|e| anyhow!("Failed to list workflow executions: {}", e))?;
+
+        let bytes = response.into_inner().encode_to_vec();
+        Ok(bytes)
+    }
+
+    /// Count workflow executions
+    pub async fn count_workflow_executions(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let mut guard = self.client.lock().await;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("Client not initialized"))?;
+
+        use temporalio_common::protos::temporal::api::workflowservice::v1::CountWorkflowExecutionsRequest;
+        let request = CountWorkflowExecutionsRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode count workflow executions request: {}", e))?;
+
+        let response = client
+            .count_workflow_executions(tonic::Request::new(request))
+            .await
+            .map_err(|e| anyhow!("Failed to count workflow executions: {}", e))?;
+
+        let bytes = response.into_inner().encode_to_vec();
+        Ok(bytes)
     }
 
     /// Validate that the client is initialized and ready

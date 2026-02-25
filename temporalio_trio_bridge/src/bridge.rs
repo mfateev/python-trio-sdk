@@ -448,6 +448,38 @@ impl TrioAsyncBridge {
                 }
             }
 
+            "get_workflow_execution_history" => {
+                #[derive(serde::Deserialize)]
+                struct GetHistoryRequest {
+                    workflow_id: String,
+                    run_id: Option<String>,
+                    #[serde(default)]
+                    next_page_token: Vec<u8>,
+                }
+
+                let req: GetHistoryRequest = match serde_json::from_slice(&request.data) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to parse get history request: {}", e),
+                        );
+                    }
+                };
+
+                let client = core_client.lock().await;
+                match client
+                    .get_workflow_execution_history(req.workflow_id, req.run_id, req.next_page_token)
+                    .await
+                {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Get workflow execution history failed: {}", e),
+                    ),
+                }
+            }
+
             "cancel_workflow" => {
                 #[derive(serde::Deserialize)]
                 struct CancelRequest {
@@ -513,6 +545,8 @@ impl TrioAsyncBridge {
                     run_id: Option<String>,
                     query_type: String,
                     args_bytes: Vec<u8>,
+                    #[serde(default)]
+                    reject_condition: Option<i32>,
                 }
 
                 let req: QueryRequest = match serde_json::from_slice(&request.data) {
@@ -527,13 +561,71 @@ impl TrioAsyncBridge {
 
                 let client = core_client.lock().await;
                 match client
-                    .query_workflow(req.workflow_id, req.run_id, req.query_type, req.args_bytes)
+                    .query_workflow(req.workflow_id, req.run_id, req.query_type, req.args_bytes, req.reject_condition)
                     .await
                 {
                     Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
                     Err(e) => RequestResult::error(
                         request.request_id.clone(),
                         format!("Query workflow failed: {}", e),
+                    ),
+                }
+            }
+
+            "describe_workflow" => {
+                #[derive(serde::Deserialize)]
+                struct DescribeRequest {
+                    workflow_id: String,
+                    run_id: Option<String>,
+                }
+
+                let req: DescribeRequest = match serde_json::from_slice(&request.data) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to parse describe request: {}", e),
+                        );
+                    }
+                };
+
+                let client = core_client.lock().await;
+                match client
+                    .describe_workflow_execution(req.workflow_id, req.run_id)
+                    .await
+                {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Describe workflow failed: {}", e),
+                    ),
+                }
+            }
+
+            "list_workflows" => {
+                let client = core_client.lock().await;
+                match client
+                    .list_workflow_executions(request.data.clone())
+                    .await
+                {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("List workflows failed: {}", e),
+                    ),
+                }
+            }
+
+            "count_workflows" => {
+                let client = core_client.lock().await;
+                match client
+                    .count_workflow_executions(request.data.clone())
+                    .await
+                {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Count workflows failed: {}", e),
                     ),
                 }
             }

@@ -116,7 +116,19 @@ class TrioBridgeWrapper:
         identity: Optional[str] = None,
         max_cached_workflows: int = 1000,
         max_concurrent_workflow_task_polls: int = 5,
+        nonsticky_to_sticky_poll_ratio: float = 0.2,
+        max_concurrent_activity_task_polls: int = 5,
+        no_remote_activities: bool = False,
         sticky_queue_schedule_to_start_timeout_millis: int = 10_000,
+        max_heartbeat_throttle_interval_millis: int = 60_000,
+        default_heartbeat_throttle_interval_millis: int = 30_000,
+        max_activities_per_second: Optional[float] = None,
+        max_task_queue_activities_per_second: Optional[float] = None,
+        graceful_shutdown_period_millis: Optional[int] = None,
+        max_concurrent_workflow_tasks: Optional[int] = None,
+        max_concurrent_activities: Optional[int] = None,
+        max_concurrent_local_activities: Optional[int] = None,
+        build_id: Optional[str] = None,
         timeout: Optional[float] = None,
         telemetry: Optional[dict] = None,
     ) -> None:
@@ -131,39 +143,60 @@ class TrioBridgeWrapper:
             task_queue: Task queue name
             identity: Worker identity (optional, defaults to "trio-worker")
             max_cached_workflows: Maximum cached workflows (default: 1000)
-            max_concurrent_workflow_task_polls: Max concurrent polls (default: 5)
-            sticky_queue_schedule_to_start_timeout_millis: How long a workflow task is
-                allowed to sit on the sticky queue before it is timed out and moved
-                to the non-sticky queue. In milliseconds. (default: 10000 = 10s)
+            max_concurrent_workflow_task_polls: Max concurrent workflow task polls (default: 5)
+            nonsticky_to_sticky_poll_ratio: Ratio for nonsticky to sticky polls (default: 0.2)
+            max_concurrent_activity_task_polls: Max concurrent activity task polls (default: 5)
+            no_remote_activities: If True, disable remote activity polling (default: False)
+            sticky_queue_schedule_to_start_timeout_millis: Sticky queue timeout in ms (default: 10000)
+            max_heartbeat_throttle_interval_millis: Max heartbeat throttle in ms (default: 60000)
+            default_heartbeat_throttle_interval_millis: Default heartbeat throttle in ms (default: 30000)
+            max_activities_per_second: Max activities per second for this worker
+            max_task_queue_activities_per_second: Max activities per second for the task queue
+            graceful_shutdown_period_millis: Graceful shutdown period in ms
+            max_concurrent_workflow_tasks: Max concurrent workflow tasks
+            max_concurrent_activities: Max concurrent activities
+            max_concurrent_local_activities: Max concurrent local activities
+            build_id: Build identifier for worker versioning
             timeout: Optional timeout in seconds
             telemetry: Optional telemetry configuration dict for metrics export
 
         Raises:
             RuntimeError: If bridge is not running or initialization fails
             trio.TooSlowError: If timeout is exceeded
-
-        Example:
-            bridge = TrioBridgeWrapper()
-            await bridge.start()
-            await bridge.initialize_with_config(
-                target_url="localhost:7233",
-                namespace="default",
-                task_queue="my-task-queue"
-            )
         """
         self._check_running()
 
         import json
 
-        config = {
+        config: dict = {
             "target_url": target_url,
             "namespace": namespace,
             "task_queue": task_queue,
             "identity": identity or "",
             "max_cached_workflows": max_cached_workflows,
             "max_concurrent_workflow_task_polls": max_concurrent_workflow_task_polls,
+            "nonsticky_to_sticky_poll_ratio": nonsticky_to_sticky_poll_ratio,
+            "max_concurrent_activity_task_polls": max_concurrent_activity_task_polls,
+            "no_remote_activities": no_remote_activities,
             "sticky_queue_schedule_to_start_timeout_millis": sticky_queue_schedule_to_start_timeout_millis,
+            "max_heartbeat_throttle_interval_millis": max_heartbeat_throttle_interval_millis,
+            "default_heartbeat_throttle_interval_millis": default_heartbeat_throttle_interval_millis,
         }
+
+        if max_activities_per_second is not None:
+            config["max_activities_per_second"] = max_activities_per_second
+        if max_task_queue_activities_per_second is not None:
+            config["max_task_queue_activities_per_second"] = max_task_queue_activities_per_second
+        if graceful_shutdown_period_millis is not None:
+            config["graceful_shutdown_period_millis"] = graceful_shutdown_period_millis
+        if max_concurrent_workflow_tasks is not None:
+            config["max_concurrent_workflow_tasks"] = max_concurrent_workflow_tasks
+        if max_concurrent_activities is not None:
+            config["max_concurrent_activities"] = max_concurrent_activities
+        if max_concurrent_local_activities is not None:
+            config["max_concurrent_local_activities"] = max_concurrent_local_activities
+        if build_id is not None:
+            config["build_id"] = build_id
 
         if telemetry is not None:
             config["telemetry"] = telemetry
@@ -405,6 +438,88 @@ class TrioBridgeWrapper:
 
         return result_container[0]
 
+    async def get_workflow_execution_history(
+        self,
+        workflow_id: str,
+        run_id: Optional[str] = None,
+        next_page_token: bytes = b"",
+        timeout: Optional[float] = None,
+    ) -> bytes:
+        """Get workflow execution history (all events).
+
+        Unlike get_workflow_result which uses long-polling and only returns
+        close events, this method returns the full history with all event types.
+
+        Args:
+            workflow_id: Workflow ID
+            run_id: Optional run ID
+            next_page_token: Token for pagination (empty for first page)
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Serialized GetWorkflowExecutionHistoryResponse (protobuf)
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        import json
+
+        request_data = {
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "next_page_token": list(next_page_token) if next_page_token else [],
+        }
+
+        event = trio.Event()
+        result_container: list = []
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for get history."""
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError(
+                                f"get_workflow_execution_history returned success without data. "
+                                f"This indicates a bridge bug (request_id: {result.request_id})"
+                            )
+                        )
+                    else:
+                        result_container.append(bytes(data_bytes))
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "get_workflow_execution_history",
+            json.dumps(request_data).encode("utf-8"),
+            deliver_result,
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("get_workflow_execution_history timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        return result_container[0]
+
     async def cancel_workflow_execution(
         self,
         workflow_id: str,
@@ -527,6 +642,7 @@ class TrioBridgeWrapper:
         run_id: Optional[str],
         query_type: str,
         args_bytes: bytes,
+        reject_condition: Optional[int] = None,
         timeout: Optional[float] = None,
     ) -> bytes:
         """Query a workflow execution.
@@ -536,6 +652,7 @@ class TrioBridgeWrapper:
             run_id: Optional run ID
             query_type: Query type name
             args_bytes: Serialized query arguments (Payloads protobuf)
+            reject_condition: Optional query reject condition (protobuf enum value)
             timeout: Optional timeout in seconds
 
         Returns:
@@ -550,12 +667,15 @@ class TrioBridgeWrapper:
 
         import json
 
-        request_data = {
+        request_data: dict = {
             "workflow_id": workflow_id,
             "run_id": run_id,
             "query_type": query_type,
             "args_bytes": list(args_bytes),  # Convert bytes to list for JSON
         }
+
+        if reject_condition is not None:
+            request_data["reject_condition"] = reject_condition
 
         event = trio.Event()
         result_container: list = []
@@ -663,6 +783,207 @@ class TrioBridgeWrapper:
 
         if error_container:
             raise error_container[0]
+
+    async def describe_workflow(
+        self,
+        workflow_id: str,
+        run_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> bytes:
+        """Describe a workflow execution.
+
+        Args:
+            workflow_id: Workflow ID
+            run_id: Optional run ID
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Serialized DescribeWorkflowExecutionResponse bytes (protobuf)
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        import json
+
+        request_data = {"workflow_id": workflow_id, "run_id": run_id}
+
+        event = trio.Event()
+        result_container: list = []
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for describe result."""
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError("describe_workflow returned success without data")
+                        )
+                    else:
+                        result_container.append(bytes(data_bytes))
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "describe_workflow", json.dumps(request_data).encode("utf-8"), deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("describe_workflow timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        if not result_container:
+            raise RuntimeError("describe_workflow returned no result")
+
+        return result_container[0]
+
+    async def list_workflows(
+        self,
+        request_bytes: bytes,
+        timeout: Optional[float] = None,
+    ) -> bytes:
+        """List workflow executions.
+
+        Args:
+            request_bytes: Serialized ListWorkflowExecutionsRequest bytes (protobuf)
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Serialized ListWorkflowExecutionsResponse bytes (protobuf)
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        event = trio.Event()
+        result_container: list = []
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for list workflows result."""
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError("list_workflows returned success without data")
+                        )
+                    else:
+                        result_container.append(bytes(data_bytes))
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "list_workflows", request_bytes, deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("list_workflows timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        if not result_container:
+            raise RuntimeError("list_workflows returned no result")
+
+        return result_container[0]
+
+    async def count_workflows(
+        self,
+        request_bytes: bytes,
+        timeout: Optional[float] = None,
+    ) -> bytes:
+        """Count workflow executions.
+
+        Args:
+            request_bytes: Serialized CountWorkflowExecutionsRequest bytes (protobuf)
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Serialized CountWorkflowExecutionsResponse bytes (protobuf)
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        event = trio.Event()
+        result_container: list = []
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for count workflows result."""
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError("count_workflows returned success without data")
+                        )
+                    else:
+                        result_container.append(bytes(data_bytes))
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "count_workflows", request_bytes, deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("count_workflows timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        if not result_container:
+            raise RuntimeError("count_workflows returned no result")
+
+        return result_container[0]
 
     async def poll_activity_task(self, timeout: Optional[float] = None) -> bytes:
         """Poll for an activity task.

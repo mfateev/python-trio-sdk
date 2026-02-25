@@ -54,7 +54,7 @@ async def run_worker(client, task_queue, workflows, activities):
         try:
             yield worker
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
@@ -472,7 +472,7 @@ async def test_e2e_worker_shutdown_cancels_activities(trio_client):
             await trio.sleep(2)
 
             # Shutdown worker - should not hang
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(1)
 
             # If we got here, worker shutdown didn't hang

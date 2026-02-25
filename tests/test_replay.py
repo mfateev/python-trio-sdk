@@ -4,6 +4,8 @@ These tests verify that replaying workflow history produces identical results,
 which is the core requirement for Temporal workflow determinism.
 """
 
+from datetime import datetime, timezone
+
 import pytest
 
 from temporalio_trio import workflow
@@ -81,6 +83,9 @@ def _create_details(
         workflow_type=defn.name,
         run_id="run-1",
         task_queue="test-queue",
+        namespace="default",
+        attempt=1,
+        start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
     return WorkflowInstanceDetails(
         defn=defn,

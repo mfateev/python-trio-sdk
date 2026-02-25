@@ -21,7 +21,7 @@ import logging
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, overload
+from typing import Any, NoReturn, overload
 
 import temporalio.common
 import temporalio.converter
@@ -39,9 +39,12 @@ __all__ = [
     "is_worker_shutdown",
     "wait_for_worker_shutdown",
     "in_activity",
+    "raise_complete_async",
     "payload_converter",
+    "metric_meter",
     "logger",
     "LoggerAdapter",
+    "_CompleteAsyncError",
     "_Definition",
     "_Context",
     "_TrioEvent",
@@ -53,13 +56,22 @@ def defn(fn: CallableType) -> CallableType: ...
 
 
 @overload
-def defn(*, name: str | None = None) -> Callable[[CallableType], CallableType]: ...
+def defn(
+    *, name: str | None = None
+) -> Callable[[CallableType], CallableType]: ...
+
+
+@overload
+def defn(
+    *, dynamic: bool = False
+) -> Callable[[CallableType], CallableType]: ...
 
 
 def defn(
     fn: CallableType | None = None,
     *,
     name: str | None = None,
+    dynamic: bool = False,
 ):
     """Decorator for activity functions.
 
@@ -69,6 +81,10 @@ def defn(
     Args:
         fn: The function to decorate.
         name: Name to use for the activity. Defaults to function ``__name__``.
+            This cannot be set if dynamic is set.
+        dynamic: If true, this activity will be dynamic. Dynamic activities have
+            to accept a single 'Sequence[RawValue]' parameter. This cannot be
+            set to true if name is present.
 
     Returns:
         The decorated function.
@@ -94,7 +110,10 @@ def defn(
                 f"This Trio-based SDK only supports async activities."
             )
         # Apply the definition
-        _Definition._apply_to_callable(fn, activity_name=name or fn.__name__)
+        _Definition._apply_to_callable(
+            fn,
+            activity_name=name or fn.__name__ if not dynamic else None,
+        )
         return fn
 
     if fn is not None:
@@ -389,6 +408,45 @@ def payload_converter() -> temporalio.converter.PayloadConverter:
     return _Context.current().payload_converter
 
 
+def raise_complete_async() -> NoReturn:
+    """Raise an error that says the activity will be completed asynchronously.
+
+    This is used when an activity wants to be completed by an external process
+    rather than returning a value directly. The activity must be completed
+    using the async completion client with the activity's task token.
+
+    Raises:
+        _CompleteAsyncError: Always raised to signal async completion.
+    """
+    raise _CompleteAsyncError()
+
+
+class _CompleteAsyncError(BaseException):
+    """Error that is raised to signal that an activity will be completed
+    asynchronously.
+    """
+
+    pass
+
+
+def metric_meter() -> temporalio.common.MetricMeter:
+    """Get the metric meter for the current activity.
+
+    Returns a no-op metric meter since full metrics support is not yet
+    implemented. This allows activity code that calls metric_meter() to
+    work without breaking.
+
+    Returns:
+        A no-op metric meter.
+
+    Raises:
+        RuntimeError: When not in an activity.
+    """
+    # Verify we're in an activity context
+    _Context.current()
+    return temporalio.common.MetricMeter.noop
+
+
 class LoggerAdapter(logging.LoggerAdapter):
     """Adapter that adds details to the log about the running activity.
 
@@ -457,8 +515,8 @@ class _Definition:
     retrieved using from_callable() or must_from_callable().
     """
 
-    name: str
-    """Name of the activity (used for registration and lookup)."""
+    name: str | None
+    """Name of the activity (used for registration and lookup). None for dynamic activities."""
 
     fn: Callable
     """The activity function."""
@@ -509,12 +567,12 @@ class _Definition:
         )
 
     @staticmethod
-    def _apply_to_callable(fn: Callable, *, activity_name: str) -> None:
+    def _apply_to_callable(fn: Callable, *, activity_name: str | None) -> None:
         """Apply activity definition to a callable.
 
         Args:
             fn: The function to apply definition to.
-            activity_name: Name for the activity.
+            activity_name: Name for the activity. None for dynamic activities.
 
         Raises:
             ValueError: If function already has activity definition.
@@ -550,6 +608,16 @@ class _Definition:
     def __post_init__(self) -> None:
         """Post-init to load type hints."""
         if self.arg_types is None and self.ret_type is None:
+            dynamic = self.name is None
             arg_types, ret_type = temporalio.common._type_hints_from_func(self.fn)
+            # If dynamic, must be a sequence of raw values
+            if dynamic and (
+                not arg_types
+                or len(arg_types) != 1
+                or arg_types[0] != Sequence[temporalio.common.RawValue]
+            ):
+                raise TypeError(
+                    "Dynamic activity must accept a single Sequence[temporalio.common.RawValue]"
+                )
             object.__setattr__(self, "arg_types", arg_types)
             object.__setattr__(self, "ret_type", ret_type)

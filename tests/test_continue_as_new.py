@@ -10,7 +10,7 @@ These tests verify:
 - continue_as_new with timeouts
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import temporalio.common
@@ -123,6 +123,9 @@ def _create_instance(
         workflow_type=defn.name,
         run_id=run_id,
         task_queue=task_queue,
+        namespace="default",
+        attempt=1,
+        start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
     details = WorkflowInstanceDetails(
         defn=defn,

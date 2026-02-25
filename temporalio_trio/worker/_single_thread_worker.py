@@ -96,6 +96,7 @@ class SingleThreadWorker:
         task_queue: str,
         workflows: Sequence[type],
         activities: Sequence[Callable[..., Any]] | None = None,
+        workflow_failure_exception_types: Sequence[type[BaseException]] = [],
     ) -> None:
         """Initialize the single-thread worker.
 
@@ -104,14 +105,20 @@ class SingleThreadWorker:
             task_queue: Task queue name.
             workflows: List of workflow classes to register.
             activities: List of activity functions (not implemented yet).
+            workflow_failure_exception_types: Exception types that cause
+                workflow failure instead of task failure. Stored for
+                future enforcement.
         """
         self._bridge = bridge
         self._task_queue = task_queue
         self._activities = list(activities) if activities else []
+        self._workflow_failure_exception_types = list(
+            workflow_failure_exception_types
+        )
         self._shutdown_event = trio.Event()
 
         # Register workflow definitions
-        self._workflows: dict[str, _Definition] = {}
+        self._workflows: dict[str | None, _Definition] = {}
         for workflow_cls in workflows:
             defn = _Definition.must_from_class(workflow_cls)
             if defn.name in self._workflows:
@@ -388,8 +395,10 @@ class SingleThreadWorker:
         if started_job is None:
             raise RuntimeError("Initial activation missing WorkflowStartedJob")
 
-        # Get workflow definition
+        # Get workflow definition (fall back to dynamic workflow if no named match)
         defn = self._workflows.get(started_job.workflow_type)
+        if defn is None:
+            defn = self._workflows.get(None)
         if defn is None:
             raise RuntimeError(f"Unknown workflow type: {started_job.workflow_type}")
 
@@ -401,14 +410,30 @@ class SingleThreadWorker:
         # Create runtime with suspension callback
         runtime = WorkflowRuntime(
             run_id=state.run_id,
-            workflow_id=state.run_id,  # Use run_id as workflow_id for now
+            workflow_id=started_job.workflow_id or state.run_id,
             workflow_type=started_job.workflow_type,
             task_queue=self._task_queue,
             random=random.Random(randomness_seed),
             time_ns=initial_activation.timestamp_ns,
             is_replaying=getattr(initial_activation, "is_replaying", False),
             headers=started_job.headers,
-            on_suspend=state.signal_commands_ready,  # Signal when workflow suspends
+            namespace=started_job.namespace,
+            attempt=started_job.attempt,
+            start_time_ns=started_job.start_time_ns,
+            execution_timeout_ms=started_job.execution_timeout_ms,
+            run_timeout_ms=started_job.run_timeout_ms,
+            task_timeout_ms=started_job.task_timeout_ms,
+            retry_policy_obj=started_job.retry_policy,
+            continued_run_id=started_job.continued_run_id,
+            cron_schedule=started_job.cron_schedule,
+            parent_namespace=started_job.parent_namespace,
+            parent_workflow_id=started_job.parent_workflow_id,
+            parent_run_id=started_job.parent_run_id,
+            root_workflow_id=started_job.root_workflow_id,
+            root_run_id=started_job.root_run_id,
+            raw_memo=started_job.raw_memo,
+            priority=started_job.priority,
+            on_suspend=state.signal_commands_ready,
         )
         state.runtime = runtime
 

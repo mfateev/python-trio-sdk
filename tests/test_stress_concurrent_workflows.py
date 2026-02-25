@@ -7,7 +7,7 @@ workflow executions without issues.
 from __future__ import annotations
 
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import pytest
@@ -36,6 +36,9 @@ def make_instance(workflow_cls: type, workflow_id: str) -> TrioWorkflowInstance:
         workflow_type=defn.name,
         run_id=f"run-{workflow_id}",
         task_queue="stress-test-queue",
+        namespace="default",
+        attempt=1,
+        start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
     det = WorkflowInstanceDetails(
         defn=defn,

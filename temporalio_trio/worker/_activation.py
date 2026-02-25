@@ -40,6 +40,7 @@ __all__ = [
     "ActivityCancelledJob",
     # Activity commands (for workflow-activity integration)
     "ScheduleActivityCommand",
+    "ScheduleLocalActivityCommand",
     "RequestCancelActivityCommand",
     # Child workflow jobs
     "ChildWorkflowStartedJob",
@@ -53,6 +54,9 @@ __all__ = [
     # Signal external workflow
     "SignalExternalWorkflowCommand",
     "SignalExternalResolvedJob",
+    # Cancel external workflow
+    "RequestCancelExternalWorkflowCommand",
+    "CancelExternalResolvedJob",
     # Search attribute commands
     "UpsertSearchAttributesCommand",
 ]
@@ -81,10 +85,65 @@ class WorkflowStartedJob:
     args: tuple[Any, ...]
     """Arguments to pass to the workflow's run method."""
 
+    workflow_id: str = ""
+    """Workflow ID from the server."""
+
     headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
         default_factory=dict
     )
     """Headers from the workflow start (e.g. for tracing/auth interceptors)."""
+
+    namespace: str = "default"
+    """Namespace the workflow is running in."""
+
+    attempt: int = 1
+    """Starting at 1, the number of attempts for this workflow."""
+
+    start_time_ns: int = 0
+    """When the workflow started, in nanoseconds since epoch."""
+
+    execution_timeout_ms: int | None = None
+    """Total workflow execution timeout in milliseconds."""
+
+    run_timeout_ms: int | None = None
+    """Timeout of a single workflow run in milliseconds."""
+
+    task_timeout_ms: int | None = None
+    """Timeout of a single workflow task in milliseconds."""
+
+    retry_policy: temporalio.common.RetryPolicy | None = None
+    """Retry policy for this workflow."""
+
+    continued_run_id: str | None = None
+    """Run ID of the previous workflow which continued-as-new into this one."""
+
+    cron_schedule: str | None = None
+    """Cron schedule if this workflow runs on a cron."""
+
+    parent_namespace: str | None = None
+    """Namespace of the parent workflow, if this is a child."""
+
+    parent_workflow_id: str | None = None
+    """Workflow ID of the parent workflow, if this is a child."""
+
+    parent_run_id: str | None = None
+    """Run ID of the parent workflow, if this is a child."""
+
+    root_workflow_id: str | None = None
+    """Workflow ID of the root workflow."""
+
+    root_run_id: str | None = None
+    """Run ID of the root workflow."""
+
+    raw_memo: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Raw memo payloads from the workflow start."""
+
+    priority: temporalio.common.Priority = field(
+        default_factory=lambda: temporalio.common.Priority.default
+    )
+    """Priority for this workflow."""
 
 
 @dataclass
@@ -435,6 +494,69 @@ class ScheduleActivityCommand:
 
 
 @dataclass
+class ScheduleLocalActivityCommand:
+    """Command to schedule a local activity for execution.
+
+    Local activities run on the same task queue as the workflow and are
+    optimized for short-lived activities that don't need to be recorded
+    in the workflow history until they complete.
+
+    This command requests the Temporal server to schedule a local activity.
+    When the activity completes, the server will send an ActivityResolvedJob
+    (same as regular activities).
+
+    Attributes:
+        seq: Unique sequence number for this command.
+        activity_id: User-provided activity ID (or auto-generated).
+        activity_type: Name of the activity to execute.
+        args: Arguments to pass to the activity.
+        schedule_to_close_timeout: Max total time for activity.
+        schedule_to_start_timeout: Max time to wait for worker to pick up.
+        start_to_close_timeout: Max time for activity execution.
+        retry_policy: Retry policy for the activity.
+        local_retry_threshold: Duration after which retries happen on the server
+            instead of locally. If unset, retries always happen locally.
+        cancellation_type: Activity cancellation type.
+        headers: Headers to attach to the activity.
+    """
+
+    seq: int
+    """Unique sequence number for this command."""
+
+    activity_id: str
+    """User-provided activity ID."""
+
+    activity_type: str
+    """Name of the activity to execute."""
+
+    args: tuple[Any, ...] = field(default_factory=tuple)
+    """Arguments to pass to the activity."""
+
+    schedule_to_close_timeout: timedelta | None = None
+    """Max total time for activity (schedule to completion)."""
+
+    schedule_to_start_timeout: timedelta | None = None
+    """Max time to wait for a worker to pick up the activity."""
+
+    start_to_close_timeout: timedelta | None = None
+    """Max time for activity execution (from start to completion)."""
+
+    retry_policy: temporalio.common.RetryPolicy | None = None
+    """Retry policy for the activity."""
+
+    local_retry_threshold: timedelta | None = None
+    """Duration after which retries happen on the server instead of locally."""
+
+    cancellation_type: int = 0
+    """Activity cancellation type. Default: TRY_CANCEL (0)."""
+
+    headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Headers to attach to the activity (e.g. for tracing/auth interceptors)."""
+
+
+@dataclass
 class RequestCancelActivityCommand:
     """Command to request cancellation of a scheduled activity.
 
@@ -632,6 +754,15 @@ class StartChildWorkflowCommand:
     id_reuse_policy: int = 1
     """How existing workflow IDs are treated. Default: ALLOW_DUPLICATE (1)."""
 
+    cron_schedule: str = ""
+    """Cron schedule string for the child workflow."""
+
+    memo: Mapping[str, Any] | None = None
+    """Memo key-value pairs to attach to the child workflow."""
+
+    search_attributes: temporalio.common.SearchAttributes | None = None
+    """Search attributes to attach to the child workflow."""
+
     headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
         default_factory=dict
     )
@@ -716,6 +847,55 @@ class SignalExternalResolvedJob:
 
 
 # =============================================================================
+# Cancel External Workflow (for cancelling other workflows)
+# =============================================================================
+
+
+@dataclass
+class RequestCancelExternalWorkflowCommand:
+    """Command to request cancellation of an external workflow.
+
+    This command requests the Temporal server to send a cancellation request
+    to another workflow. When the request is processed, the server will send
+    a CancelExternalResolvedJob.
+
+    Attributes:
+        seq: Unique sequence number for this command.
+        workflow_id: Target workflow ID to cancel.
+        run_id: Optional specific run ID (empty string = current run).
+    """
+
+    seq: int
+    """Unique sequence number for this command."""
+
+    workflow_id: str
+    """Target workflow ID to cancel."""
+
+    run_id: str | None = None
+    """Optional specific run ID (None/empty = current run)."""
+
+
+@dataclass
+class CancelExternalResolvedJob:
+    """Job indicating a cancel request to external workflow was resolved.
+
+    This job is sent when a previously requested cancellation of an external
+    workflow has been processed (success) or failed. Success is indicated
+    by the absence of the failure field.
+
+    Attributes:
+        seq: Sequence number matching RequestCancelExternalWorkflowCommand.
+        failure: Exception if cancel request failed (None = success).
+    """
+
+    seq: int
+    """Sequence number matching the RequestCancelExternalWorkflowCommand."""
+
+    failure: BaseException | None = None
+    """Exception if cancel request failed. None indicates success."""
+
+
+# =============================================================================
 # Search Attribute Commands (for workflow visibility)
 # =============================================================================
 
@@ -784,6 +964,12 @@ class ContinueAsNewCommand:
     retry_policy: temporalio.common.RetryPolicy | None = None
     """Retry policy for the new workflow."""
 
+    memo: Mapping[str, Any] | None = None
+    """Memo key-value pairs to attach to the new execution."""
+
+    search_attributes: temporalio.common.SearchAttributes | None = None
+    """Search attributes to attach to the new execution."""
+
     headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
         default_factory=dict
     )
@@ -806,6 +992,7 @@ WorkflowJob = (
     | ChildWorkflowStartFailedJob
     | ChildWorkflowResolvedJob
     | SignalExternalResolvedJob
+    | CancelExternalResolvedJob
 )
 """Union type for all possible activation jobs."""
 
@@ -816,12 +1003,14 @@ WorkflowCommand = (
     | FailWorkflowCommand
     | CancelWorkflowCommand
     | ScheduleActivityCommand
+    | ScheduleLocalActivityCommand
     | RequestCancelActivityCommand
     | QueryResultCommand
     | SetPatchMarkerCommand
     | StartChildWorkflowCommand
     | CancelChildWorkflowCommand
     | SignalExternalWorkflowCommand
+    | RequestCancelExternalWorkflowCommand
     | UpsertSearchAttributesCommand
     | ContinueAsNewCommand
 )
