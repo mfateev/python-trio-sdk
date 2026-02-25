@@ -79,7 +79,7 @@ async def worker_with_workflows(client):
         yield task_queue
 
         # Shutdown worker gracefully
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
@@ -113,7 +113,8 @@ async def test_start_workflow(client, worker_with_workflows):
 
     assert handle is not None
     assert handle.workflow_id == workflow_id
-    assert handle.run_id is not None
+    # run_id is intentionally None on handles from start_workflow (tracks latest run)
+    assert handle.run_id is None
 
     # Wait for result
     result = await handle.result()

@@ -11,10 +11,14 @@ import shutil
 import signal
 import socket
 import subprocess
+import warnings
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, AsyncIterator, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Optional, Sequence
 
 import trio
+
+import temporalio.common
+import temporalio.converter
 
 if TYPE_CHECKING:
     from temporalio_trio.client import Client
@@ -99,11 +103,16 @@ class WorkflowEnvironment:
         cls,
         *,
         namespace: str = "default",
+        data_converter: temporalio.converter.DataConverter = temporalio.converter.DataConverter.default,
         ip: str = "127.0.0.1",
         port: Optional[int] = None,
-        log_level: str = "warn",
-        temporal_cli_path: Optional[str] = None,
-        extra_args: list[str] | None = None,
+        ui: bool = False,
+        search_attributes: Sequence[temporalio.common.SearchAttributeKey] = (),
+        dev_server_existing_path: Optional[str] = None,
+        dev_server_database_filename: Optional[str] = None,
+        dev_server_log_level: Optional[str] = "warn",
+        dev_server_extra_args: Sequence[str] = [],
+        **kwargs: object,
     ) -> "WorkflowEnvironment":
         """Start a local Temporal dev server for testing.
 
@@ -113,12 +122,22 @@ class WorkflowEnvironment:
 
         Args:
             namespace: Namespace to use (default: "default").
+            data_converter: Data converter for payload serialization. Passed
+                to the client connection.
             ip: IP address to bind to (default: "127.0.0.1").
             port: Port to use. If not specified, a free port is selected.
-            log_level: Log level for the dev server (default: "warn").
-            temporal_cli_path: Path to temporal CLI binary. If not specified,
-                searches PATH for "temporal".
-            extra_args: Extra arguments to pass to the dev server.
+            ui: If True, start the Temporal UI with the dev server.
+            search_attributes: Search attributes to register with the dev
+                server.
+            dev_server_existing_path: Path to temporal CLI binary. If not
+                specified, searches PATH for "temporal".
+            dev_server_database_filename: Path to the Sqlite database to use
+                for the dev server. Unset default means only in-memory Sqlite
+                will be used.
+            dev_server_log_level: Log level to use for the dev server. Default
+                is ``warn``, but if set to ``None`` this will translate the
+                Python logger's level to a dev server log level.
+            dev_server_extra_args: Extra arguments for the CLI binary.
 
         Returns:
             A workflow environment with a running local server.
@@ -130,22 +149,91 @@ class WorkflowEnvironment:
             async with await WorkflowEnvironment.start_local() as env:
                 # env.client is connected to the local dev server
                 ...
+
+        .. note::
+            The following legacy parameter names are still accepted for
+            backward compatibility but are deprecated:
+
+            - ``temporal_cli_path`` -- use ``dev_server_existing_path``
+            - ``log_level`` -- use ``dev_server_log_level``
+            - ``extra_args`` -- use ``dev_server_extra_args``
         """
+        # Handle backward-compatible renamed parameters
+        if "temporal_cli_path" in kwargs:
+            warnings.warn(
+                "temporal_cli_path is deprecated, use dev_server_existing_path",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if dev_server_existing_path is None:
+                dev_server_existing_path = kwargs.pop("temporal_cli_path")  # type: ignore[assignment]
+            else:
+                kwargs.pop("temporal_cli_path")
+
+        if "log_level" in kwargs:
+            warnings.warn(
+                "log_level is deprecated, use dev_server_log_level",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if dev_server_log_level == "warn":
+                dev_server_log_level = kwargs.pop("log_level")  # type: ignore[assignment]
+            else:
+                kwargs.pop("log_level")
+
+        if "extra_args" in kwargs:
+            warnings.warn(
+                "extra_args is deprecated, use dev_server_extra_args",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if not dev_server_extra_args:
+                dev_server_extra_args = kwargs.pop("extra_args")  # type: ignore[assignment]
+            else:
+                kwargs.pop("extra_args")
+
+        if kwargs:
+            raise TypeError(
+                f"start_local() got unexpected keyword arguments: "
+                f"{', '.join(kwargs.keys())}"
+            )
+
+        # Use the logger's configured level if none given
+        if not dev_server_log_level:
+            if logger.isEnabledFor(logging.DEBUG):
+                dev_server_log_level = "debug"
+            elif logger.isEnabledFor(logging.INFO):
+                dev_server_log_level = "info"
+            elif logger.isEnabledFor(logging.WARNING):
+                dev_server_log_level = "warn"
+            elif logger.isEnabledFor(logging.ERROR):
+                dev_server_log_level = "error"
+            else:
+                dev_server_log_level = "fatal"
+
         # Find temporal CLI
-        if temporal_cli_path:
-            cli_path = temporal_cli_path
+        if dev_server_existing_path:
+            cli_path = dev_server_existing_path
         else:
             cli_path = shutil.which("temporal")
             if cli_path is None:
                 raise RuntimeError(
                     "Temporal CLI not found in PATH. "
                     "Install it from https://docs.temporal.io/cli or "
-                    "specify temporal_cli_path parameter."
+                    "specify dev_server_existing_path parameter."
                 )
 
         # Select port
         if port is None:
             port = _find_free_port()
+
+        # Build extra args from search attributes
+        extra_args_list: list[str] = []
+        if search_attributes:
+            for attr in search_attributes:
+                extra_args_list.append("--search-attribute")
+                extra_args_list.append(f"{attr.name}={attr._metadata_type}")
+        extra_args_list.extend(dev_server_extra_args)
 
         # Build command
         cmd = [
@@ -159,11 +247,14 @@ class WorkflowEnvironment:
             "--port",
             str(port),
             "--log-level",
-            log_level,
-            "--headless",
+            dev_server_log_level,
         ]
-        if extra_args:
-            cmd.extend(extra_args)
+        if not ui:
+            cmd.append("--headless")
+        if dev_server_database_filename:
+            cmd.extend(["--db-filename", dev_server_database_filename])
+        if extra_args_list:
+            cmd.extend(extra_args_list)
 
         logger.debug(f"Starting Temporal dev server: {' '.join(cmd)}")
 
@@ -199,7 +290,13 @@ class WorkflowEnvironment:
                 # Import here to avoid circular imports
                 from temporalio_trio.client import Client
 
-                client = await Client.connect(target_url, namespace=namespace)
+                client = await Client.connect(
+                    target_url,
+                    namespace=namespace,
+                    data_converter=data_converter
+                    if data_converter is not temporalio.converter.DataConverter.default
+                    else None,
+                )
                 connected = True
                 break
             except Exception:

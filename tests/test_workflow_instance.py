@@ -1,6 +1,7 @@
 """Tests for workflow instance classes (Phase 2)."""
 
 from dataclasses import FrozenInstanceError
+from datetime import datetime, timezone
 
 import pytest
 
@@ -45,6 +46,9 @@ def _create_simple_details(
         workflow_type=defn.name,
         run_id=run_id,
         task_queue=task_queue,
+        namespace="default",
+        attempt=1,
+        start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
     return WorkflowInstanceDetails(
         defn=defn,
@@ -85,6 +89,9 @@ class TestWorkflowInstanceDetails:
             workflow_type="OtherWorkflow",
             run_id="other-run",
             task_queue="other-queue",
+            namespace="default",
+            attempt=1,
+            start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
         with pytest.raises(FrozenInstanceError):
             details.info = new_info  # type: ignore[misc]
@@ -281,6 +288,9 @@ class TestTrioWorkflowInstance:
             workflow_type=defn.name,
             run_id="run-1",
             task_queue="test-queue",
+            namespace="default",
+            attempt=1,
+            start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
         details = WorkflowInstanceDetails(
             defn=defn,

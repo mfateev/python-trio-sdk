@@ -137,7 +137,7 @@ async def test_e2e_workflow_execution(trio_client):
 
         finally:
             # Shutdown worker
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
@@ -173,7 +173,7 @@ async def test_e2e_worker_connection(trio_client):
         await trio.sleep(0.5)
 
         # Shutdown
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
@@ -415,7 +415,7 @@ async def test_e2e_timer_summary_in_history(trio_client):
 
         finally:
             # Shutdown worker
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
@@ -583,7 +583,7 @@ async def test_e2e_query_triggers_replay(trio_client):
             print("E2E replay test passed - query triggered replay successfully")
 
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
@@ -762,7 +762,7 @@ async def test_e2e_multiple_workflows_cache_pressure(trio_client):
             print("E2E cache pressure test passed")
 
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 

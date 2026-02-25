@@ -1,7 +1,7 @@
 """Tests for workflow definition and decorators (Phase 1)."""
 
 import random
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, NoReturn, Sequence
 
 import pytest
@@ -191,6 +191,9 @@ class TestRuntimeClass:
                     workflow_type="MockWorkflow",
                     run_id="mock-run",
                     task_queue="mock-queue",
+                    namespace="default",
+                    attempt=1,
+                    start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 )
 
             async def workflow_execute_activity(
@@ -203,6 +206,19 @@ class TestRuntimeClass:
                 start_to_close_timeout: timedelta | None = None,
                 heartbeat_timeout: timedelta | None = None,
                 retry_policy: temporalio.common.RetryPolicy | None = None,
+                activity_id: str | None = None,
+            ) -> Any:
+                pass
+
+            async def workflow_execute_local_activity(
+                self,
+                activity: str | Callable[..., Any],
+                *args: Any,
+                schedule_to_close_timeout: timedelta | None = None,
+                schedule_to_start_timeout: timedelta | None = None,
+                start_to_close_timeout: timedelta | None = None,
+                retry_policy: temporalio.common.RetryPolicy | None = None,
+                local_retry_threshold: timedelta | None = None,
                 activity_id: str | None = None,
             ) -> Any:
                 pass
@@ -267,6 +283,14 @@ class TestRuntimeClass:
             ) -> None:
                 raise NotImplementedError()
 
+            async def workflow_cancel_external_workflow(
+                self,
+                workflow_id: str,
+                *,
+                run_id: str | None,
+            ) -> None:
+                raise NotImplementedError()
+
             def workflow_random(self) -> random.Random:
                 return random.Random(12345)
 
@@ -280,6 +304,34 @@ class TestRuntimeClass:
                 attributes: Sequence[temporalio.common.SearchAttributeUpdate],
             ) -> None:
                 pass
+
+            def workflow_memo(self):
+                return {}
+
+            def workflow_payload_converter(self):
+                import temporalio.converter
+                return temporalio.converter.DataConverter.default.payload_converter
+
+            def workflow_instance(self):
+                return None
+
+            def workflow_get_current_details(self):
+                return ""
+
+            def workflow_set_current_details(self, details):
+                pass
+
+            def workflow_get_current_build_id(self):
+                return None
+
+            def workflow_get_current_history_length(self):
+                return 0
+
+            def workflow_get_current_history_size(self):
+                return 0
+
+            def workflow_is_continue_as_new_suggested(self):
+                return False
 
         mock = MockRuntime()
 
@@ -316,6 +368,9 @@ class TestRuntimeClass:
                     workflow_type="MockWorkflow",
                     run_id="mock-run",
                     task_queue="mock-queue",
+                    namespace="default",
+                    attempt=1,
+                    start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 )
 
             async def workflow_execute_activity(
@@ -328,6 +383,19 @@ class TestRuntimeClass:
                 start_to_close_timeout: timedelta | None = None,
                 heartbeat_timeout: timedelta | None = None,
                 retry_policy: temporalio.common.RetryPolicy | None = None,
+                activity_id: str | None = None,
+            ) -> Any:
+                pass
+
+            async def workflow_execute_local_activity(
+                self,
+                activity: str | Callable[..., Any],
+                *args: Any,
+                schedule_to_close_timeout: timedelta | None = None,
+                schedule_to_start_timeout: timedelta | None = None,
+                start_to_close_timeout: timedelta | None = None,
+                retry_policy: temporalio.common.RetryPolicy | None = None,
+                local_retry_threshold: timedelta | None = None,
                 activity_id: str | None = None,
             ) -> Any:
                 pass
@@ -392,6 +460,14 @@ class TestRuntimeClass:
             ) -> None:
                 raise NotImplementedError()
 
+            async def workflow_cancel_external_workflow(
+                self,
+                workflow_id: str,
+                *,
+                run_id: str | None,
+            ) -> None:
+                raise NotImplementedError()
+
             def workflow_random(self) -> random.Random:
                 return random.Random(12345)
 
@@ -405,6 +481,34 @@ class TestRuntimeClass:
                 attributes: Sequence[temporalio.common.SearchAttributeUpdate],
             ) -> None:
                 pass
+
+            def workflow_memo(self):
+                return {}
+
+            def workflow_payload_converter(self):
+                import temporalio.converter
+                return temporalio.converter.DataConverter.default.payload_converter
+
+            def workflow_instance(self):
+                return None
+
+            def workflow_get_current_details(self):
+                return ""
+
+            def workflow_set_current_details(self, details):
+                pass
+
+            def workflow_get_current_build_id(self):
+                return None
+
+            def workflow_get_current_history_length(self):
+                return 0
+
+            def workflow_get_current_history_size(self):
+                return 0
+
+            def workflow_is_continue_as_new_suggested(self):
+                return False
 
         mock1 = MockRuntime("mock1")
         mock2 = MockRuntime("mock2")
@@ -455,6 +559,9 @@ class TestPublicAPI:
                     workflow_type="MockWorkflow",
                     run_id="mock-run",
                     task_queue="mock-queue",
+                    namespace="default",
+                    attempt=1,
+                    start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 )
 
             async def workflow_execute_activity(
@@ -467,6 +574,19 @@ class TestPublicAPI:
                 start_to_close_timeout: timedelta | None = None,
                 heartbeat_timeout: timedelta | None = None,
                 retry_policy: temporalio.common.RetryPolicy | None = None,
+                activity_id: str | None = None,
+            ) -> Any:
+                pass
+
+            async def workflow_execute_local_activity(
+                self,
+                activity: str | Callable[..., Any],
+                *args: Any,
+                schedule_to_close_timeout: timedelta | None = None,
+                schedule_to_start_timeout: timedelta | None = None,
+                start_to_close_timeout: timedelta | None = None,
+                retry_policy: temporalio.common.RetryPolicy | None = None,
+                local_retry_threshold: timedelta | None = None,
                 activity_id: str | None = None,
             ) -> Any:
                 pass
@@ -531,6 +651,14 @@ class TestPublicAPI:
             ) -> None:
                 raise NotImplementedError()
 
+            async def workflow_cancel_external_workflow(
+                self,
+                workflow_id: str,
+                *,
+                run_id: str | None,
+            ) -> None:
+                raise NotImplementedError()
+
             def workflow_random(self) -> random.Random:
                 return random.Random(12345)
 
@@ -544,6 +672,34 @@ class TestPublicAPI:
                 attributes: Sequence[temporalio.common.SearchAttributeUpdate],
             ) -> None:
                 pass
+
+            def workflow_memo(self):
+                return {}
+
+            def workflow_payload_converter(self):
+                import temporalio.converter
+                return temporalio.converter.DataConverter.default.payload_converter
+
+            def workflow_instance(self):
+                return None
+
+            def workflow_get_current_details(self):
+                return ""
+
+            def workflow_set_current_details(self, details):
+                pass
+
+            def workflow_get_current_build_id(self):
+                return None
+
+            def workflow_get_current_history_length(self):
+                return 0
+
+            def workflow_get_current_history_size(self):
+                return 0
+
+            def workflow_is_continue_as_new_suggested(self):
+                return False
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
@@ -582,6 +738,9 @@ class TestPublicAPI:
                     workflow_type="MockWorkflow",
                     run_id="mock-run",
                     task_queue="mock-queue",
+                    namespace="default",
+                    attempt=1,
+                    start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 )
 
             async def workflow_execute_activity(
@@ -594,6 +753,19 @@ class TestPublicAPI:
                 start_to_close_timeout: timedelta | None = None,
                 heartbeat_timeout: timedelta | None = None,
                 retry_policy: temporalio.common.RetryPolicy | None = None,
+                activity_id: str | None = None,
+            ) -> Any:
+                pass
+
+            async def workflow_execute_local_activity(
+                self,
+                activity: str | Callable[..., Any],
+                *args: Any,
+                schedule_to_close_timeout: timedelta | None = None,
+                schedule_to_start_timeout: timedelta | None = None,
+                start_to_close_timeout: timedelta | None = None,
+                retry_policy: temporalio.common.RetryPolicy | None = None,
+                local_retry_threshold: timedelta | None = None,
                 activity_id: str | None = None,
             ) -> Any:
                 pass
@@ -658,6 +830,14 @@ class TestPublicAPI:
             ) -> None:
                 raise NotImplementedError()
 
+            async def workflow_cancel_external_workflow(
+                self,
+                workflow_id: str,
+                *,
+                run_id: str | None,
+            ) -> None:
+                raise NotImplementedError()
+
             def workflow_random(self) -> random.Random:
                 return random.Random(12345)
 
@@ -671,6 +851,34 @@ class TestPublicAPI:
                 attributes: Sequence[temporalio.common.SearchAttributeUpdate],
             ) -> None:
                 pass
+
+            def workflow_memo(self):
+                return {}
+
+            def workflow_payload_converter(self):
+                import temporalio.converter
+                return temporalio.converter.DataConverter.default.payload_converter
+
+            def workflow_instance(self):
+                return None
+
+            def workflow_get_current_details(self):
+                return ""
+
+            def workflow_set_current_details(self, details):
+                pass
+
+            def workflow_get_current_build_id(self):
+                return None
+
+            def workflow_get_current_history_length(self):
+                return 0
+
+            def workflow_get_current_history_size(self):
+                return 0
+
+            def workflow_is_continue_as_new_suggested(self):
+                return False
 
         mock = MockRuntime()
         token = workflow._Runtime.set_current(mock)
@@ -691,6 +899,9 @@ class TestInfoDataclass:
             workflow_type="MyWorkflow",
             run_id="run-456",
             task_queue="my-queue",
+            namespace="default",
+            attempt=1,
+            start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
         assert info.workflow_id == "wf-123"
         assert info.workflow_type == "MyWorkflow"
@@ -704,11 +915,17 @@ class TestInfoDataclass:
             workflow_type="MyWorkflow",
             run_id="run-456",
             task_queue="my-queue",
+            namespace="default",
+            attempt=1,
+            start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
         info2 = workflow.Info(
             workflow_id="wf-123",
             workflow_type="MyWorkflow",
             run_id="run-456",
             task_queue="my-queue",
+            namespace="default",
+            attempt=1,
+            start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
         assert info1 == info2

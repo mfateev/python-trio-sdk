@@ -75,7 +75,7 @@ async def test_e2e_headers_accessible_via_info(trio_client) -> None:
         # By default (no interceptors), headers should be empty
         assert result == "headers-count:0"
 
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
@@ -105,6 +105,6 @@ async def test_e2e_headers_dont_break_execution(trio_client) -> None:
         result = await handle.result()
         assert result == "pre:0,post:0"
 
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()

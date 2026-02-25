@@ -189,7 +189,7 @@ async def test_e2e_activity_error_type_preserved(trio_client):
             print("E2E activity error type preservation test passed")
 
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
@@ -339,7 +339,7 @@ async def test_e2e_child_workflow_error_type_preserved(trio_client):
             print("E2E child workflow error type preservation test passed")
 
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 

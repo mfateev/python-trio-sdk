@@ -1,5 +1,7 @@
 """Tests for workflow runner classes (Phase 4)."""
 
+from datetime import datetime, timezone
+
 import pytest
 
 from temporalio_trio import workflow
@@ -69,6 +71,9 @@ def _create_details(
         workflow_type=defn.name,
         run_id=run_id,
         task_queue=task_queue,
+        namespace="default",
+        attempt=1,
+        start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
     return WorkflowInstanceDetails(
         defn=defn,

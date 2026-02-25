@@ -30,17 +30,26 @@ Example:
     trio.run(main)
 """
 
-from ._client import Client, ClientConfig
+from ._client import Client, ClientConfig, WorkflowExecutionInfo
 from ._workflow_handle import (
+    WorkflowContinuedAsNewError,
+    WorkflowExecutionDescription,
+    WorkflowExecutionStatus,
     WorkflowFailureError,
     WorkflowHandle,
+    WorkflowHistory,
     WorkflowQueryRejectedError,
 )
 
 __all__ = [
     "Client",
     "ClientConfig",
+    "WorkflowContinuedAsNewError",
+    "WorkflowExecutionDescription",
+    "WorkflowExecutionInfo",
+    "WorkflowExecutionStatus",
     "WorkflowFailureError",
     "WorkflowHandle",
+    "WorkflowHistory",
     "WorkflowQueryRejectedError",
 ]

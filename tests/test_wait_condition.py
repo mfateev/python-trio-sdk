@@ -4,6 +4,8 @@ These tests verify the behavior of wait_condition, which blocks workflow
 execution until a condition becomes true or a timeout expires.
 """
 
+from datetime import datetime, timezone
+
 from temporalio_trio import workflow
 from temporalio_trio.worker._activation import (
     CancelTimerCommand,
@@ -29,6 +31,9 @@ def _create_instance(workflow_cls) -> TrioWorkflowInstance:
         run_id="test-run-id",
         workflow_type=defn.name,
         task_queue="test-queue",
+        namespace="default",
+        attempt=1,
+        start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
     details = WorkflowInstanceDetails(
         defn=defn,

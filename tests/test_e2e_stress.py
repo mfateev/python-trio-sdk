@@ -167,7 +167,7 @@ async def test_e2e_stress_100_simple(trio_client) -> None:
         for i in range(num_workflows):
             assert results[i] == f"simple-{i}", f"Workflow {i}: expected 'simple-{i}', got '{results[i]}'"
 
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
@@ -216,7 +216,7 @@ async def test_e2e_stress_100_timers(trio_client) -> None:
         for i in range(num_workflows):
             assert results[i] == f"timer-{i}", f"Workflow {i}: expected 'timer-{i}', got '{results[i]}'"
 
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
@@ -266,7 +266,7 @@ async def test_e2e_stress_100_activities(trio_client) -> None:
         for i in range(num_workflows):
             assert results[i] == f"activity-{i}", f"Workflow {i}: expected 'activity-{i}', got '{results[i]}'"
 
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
@@ -311,7 +311,7 @@ async def test_e2e_query_workflow(trio_client) -> None:
         result = await handle.result(timeout=30.0)
         assert result == "updated", f"Expected 'updated', got {result!r}"
 
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
@@ -368,7 +368,7 @@ async def test_e2e_stress_50_signals_queries(trio_client) -> None:
                 f"Workflow {i}: expected 'signaled-{i}', got '{results[i]}'"
             )
 
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
@@ -433,7 +433,7 @@ async def test_e2e_stress_100_mixed(trio_client) -> None:
                 f"Workflow {i} ({wf_type}): expected '{expected}', got '{results[i]}'"
             )
 
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
@@ -482,6 +482,6 @@ async def test_e2e_stress_200_workflows(trio_client) -> None:
         for i in range(num_workflows):
             assert results[i] == f"timer-{i}", f"Workflow {i}: expected 'timer-{i}', got '{results[i]}'"
 
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()

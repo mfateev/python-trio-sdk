@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -259,7 +260,7 @@ async def test_signal_external_workflow_success(trio_client: Client) -> None:
             assert target_info["result"] == "Received: hello from signaler"
             assert signaler_info["result"] == "signal_sent"
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
@@ -331,7 +332,7 @@ async def test_signal_external_workflow_with_method_ref(trio_client: Client) -> 
             assert target_info["result"] == "Received: hello via method ref"
             assert signaler_info["result"] == "signal_sent_via_method_ref"
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
@@ -355,9 +356,15 @@ async def test_get_external_workflow_handle_properties() -> None:
                 workflow_type="MockWorkflow",
                 run_id="mock-run",
                 task_queue="mock-queue",
+                namespace="default",
+                attempt=1,
+                start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
             )
 
         async def workflow_execute_activity(self, *args, **kwargs):
+            pass
+
+        async def workflow_execute_local_activity(self, *args, **kwargs):
             pass
 
         async def workflow_start_child_workflow(self, *args, **kwargs):
@@ -390,6 +397,14 @@ async def test_get_external_workflow_handle_properties() -> None:
         ) -> None:
             pass
 
+        async def workflow_cancel_external_workflow(
+            self,
+            workflow_id: str,
+            *,
+            run_id: str | None,
+        ) -> None:
+            pass
+
         def workflow_random(self):
             import random
 
@@ -400,6 +415,34 @@ async def test_get_external_workflow_handle_properties() -> None:
 
         def workflow_upsert_search_attributes(self, attributes):
             pass
+
+        def workflow_memo(self):
+            return {}
+
+        def workflow_payload_converter(self):
+            import temporalio.converter
+            return temporalio.converter.DataConverter.default.payload_converter
+
+        def workflow_instance(self):
+            return None
+
+        def workflow_get_current_details(self):
+            return ""
+
+        def workflow_set_current_details(self, details):
+            pass
+
+        def workflow_get_current_build_id(self):
+            return None
+
+        def workflow_get_current_history_length(self):
+            return 0
+
+        def workflow_get_current_history_size(self):
+            return 0
+
+        def workflow_is_continue_as_new_suggested(self):
+            return False
 
     mock = MockRuntime()
     token = workflow._Runtime.set_current(mock)

@@ -85,6 +85,7 @@ class Worker:
         max_concurrent_activities: Optional[int] = None,
         max_concurrent_local_activities: Optional[int] = None,
         telemetry: Optional[TelemetryConfig] = None,
+        workflow_failure_exception_types: Sequence[type[BaseException]] = [],
     ) -> None:
         """Create a worker to process Trio-based workflows and activities.
 
@@ -144,6 +145,11 @@ class Worker:
             telemetry: Optional telemetry configuration for metrics export.
                 When provided, enables Prometheus or OpenTelemetry metrics
                 for all built-in SDK-Core worker metrics.
+            workflow_failure_exception_types: Exception types that cause
+                workflow failure instead of task failure. When a workflow
+                raises one of these exception types, it results in a
+                workflow execution failure rather than a workflow task
+                failure. Stored for future enforcement.
 
         Raises:
             ValueError: If no workflows or activities are provided, or if
@@ -184,12 +190,16 @@ class Worker:
         self._max_concurrent_activities = max_concurrent_activities or 100
         self._max_concurrent_local_activities = max_concurrent_local_activities or 100
         self._telemetry = telemetry
+        self._workflow_failure_exception_types = list(
+            workflow_failure_exception_types
+        )
 
         # Internal state
         self._single_thread_worker: Optional[SingleThreadWorker] = None
         self._activity_worker = None  # TrioActivityWorker when activities are provided
         self._started = False
         self._shutdown_event = trio.Event()
+        self._shutdown_complete = False
 
     @property
     def task_queue(self) -> str:
@@ -203,8 +213,60 @@ class Worker:
 
     @property
     def is_running(self) -> bool:
-        """Whether the worker is running."""
-        return self._started and not self._shutdown_event.is_set()
+        """Whether the worker is running.
+
+        This is only ``True`` if the worker has been started and not yet
+        shut down.
+        """
+        return self._started and not self.is_shutdown
+
+    @property
+    def is_shutdown(self) -> bool:
+        """Whether the worker has run and shut down.
+
+        This is only ``True`` if the worker was once started and then shutdown
+        completed. This is not necessarily ``True`` after :py:meth:`shutdown`
+        is first called because the shutdown process can take a bit.
+        """
+        return self._shutdown_complete
+
+    def config(self) -> dict:
+        """Config, as a dictionary, used to create this worker.
+
+        Returns a shallow copy of the configuration matching the
+        ``WorkerConfig`` pattern from sdk-python.
+
+        Returns:
+            Configuration dictionary, shallow-copied.
+        """
+        return {
+            "client": self._client,
+            "task_queue": self._task_queue,
+            "workflows": list(self._workflows),
+            "activities": list(self._activities),
+            "data_converter": self._data_converter,
+            "namespace": self._namespace,
+            "build_id": self._build_id,
+            "identity": self._identity,
+            "max_cached_workflows": self._max_cached_workflows,
+            "max_concurrent_workflow_task_polls": self._max_concurrent_workflow_task_polls,
+            "nonsticky_to_sticky_poll_ratio": self._nonsticky_to_sticky_poll_ratio,
+            "max_concurrent_activity_task_polls": self._max_concurrent_activity_task_polls,
+            "no_remote_activities": self._no_remote_activities,
+            "sticky_queue_schedule_to_start_timeout": self._sticky_queue_schedule_to_start_timeout,
+            "max_heartbeat_throttle_interval": self._max_heartbeat_throttle_interval,
+            "default_heartbeat_throttle_interval": self._default_heartbeat_throttle_interval,
+            "max_activities_per_second": self._max_activities_per_second,
+            "max_task_queue_activities_per_second": self._max_task_queue_activities_per_second,
+            "graceful_shutdown_timeout": self._graceful_shutdown_timeout,
+            "max_concurrent_workflow_tasks": self._max_concurrent_workflow_tasks,
+            "max_concurrent_activities": self._max_concurrent_activities,
+            "max_concurrent_local_activities": self._max_concurrent_local_activities,
+            "telemetry": self._telemetry,
+            "workflow_failure_exception_types": list(
+                self._workflow_failure_exception_types
+            ),
+        }
 
     def _get_target_url(self) -> str:
         """Extract target URL from client, supporting both Trio and official SDK clients.
@@ -278,9 +340,27 @@ class Worker:
                 identity=self._identity,
                 max_cached_workflows=self._max_cached_workflows,
                 max_concurrent_workflow_task_polls=self._max_concurrent_workflow_task_polls,
+                nonsticky_to_sticky_poll_ratio=self._nonsticky_to_sticky_poll_ratio,
+                max_concurrent_activity_task_polls=self._max_concurrent_activity_task_polls,
+                no_remote_activities=self._no_remote_activities,
                 sticky_queue_schedule_to_start_timeout_millis=int(
                     self._sticky_queue_schedule_to_start_timeout.total_seconds() * 1000
                 ),
+                max_heartbeat_throttle_interval_millis=int(
+                    self._max_heartbeat_throttle_interval.total_seconds() * 1000
+                ),
+                default_heartbeat_throttle_interval_millis=int(
+                    self._default_heartbeat_throttle_interval.total_seconds() * 1000
+                ),
+                max_activities_per_second=self._max_activities_per_second,
+                max_task_queue_activities_per_second=self._max_task_queue_activities_per_second,
+                graceful_shutdown_period_millis=int(
+                    self._graceful_shutdown_timeout.total_seconds() * 1000
+                ) if self._graceful_shutdown_timeout.total_seconds() > 0 else None,
+                max_concurrent_workflow_tasks=self._max_concurrent_workflow_tasks,
+                max_concurrent_activities=self._max_concurrent_activities,
+                max_concurrent_local_activities=self._max_concurrent_local_activities,
+                build_id=self._build_id,
                 telemetry=self._telemetry._to_json_dict() if self._telemetry else None,
             )
 
@@ -298,6 +378,7 @@ class Worker:
                     activities=self._activities
                     if not self._no_remote_activities
                     else None,
+                    workflow_failure_exception_types=self._workflow_failure_exception_types,
                 )
 
             # Create Trio activity worker if activities provided
@@ -356,12 +437,19 @@ class Worker:
             # Ensure bridge is shut down on error
             await bridge_wrapper.shutdown()
             raise
+        finally:
+            self._shutdown_complete = True
 
-    def shutdown(self) -> None:
-        """Initiate graceful shutdown of the worker.
+    async def shutdown(self) -> None:
+        """Initiate a worker shutdown and wait until complete.
 
-        This signals the worker to stop polling and complete in-flight activations.
-        The :py:meth:`run` method will return after shutdown is complete.
+        This can be called before the worker has even started and is safe for
+        repeated invocations. It simply sets a marker informing the worker to
+        shut down as it runs.
+
+        Note: Unlike sdk-python, this does not block waiting for full shutdown
+        completion since that would require more complex nursery management
+        with Trio. It initiates shutdown and returns promptly.
         """
         logger.info("Initiating worker shutdown")
         self._shutdown_event.set()
@@ -404,6 +492,6 @@ class Worker:
 
         This will shut down the worker and wait for it to complete.
         """
-        self.shutdown()
+        await self.shutdown()
         if hasattr(self, "_nursery_manager"):
             return await self._nursery_manager.__aexit__(exc_type, exc_val, exc_tb)

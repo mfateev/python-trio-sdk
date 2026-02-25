@@ -8,6 +8,7 @@ This tests:
 """
 
 import random
+from datetime import datetime, timezone
 
 import pytest
 
@@ -60,6 +61,9 @@ def _create_test_instance(
         run_id=run_id,
         workflow_type=workflow_type,
         task_queue=task_queue,
+        namespace="default",
+        attempt=1,
+        start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
     det = WorkflowInstanceDetails(
         defn=defn,

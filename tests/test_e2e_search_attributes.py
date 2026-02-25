@@ -100,7 +100,7 @@ async def test_e2e_upsert_search_attributes(trio_client) -> None:
         result = await handle.result()
         assert result == "processed-initial-status"
 
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
@@ -131,7 +131,7 @@ async def test_e2e_multiple_search_attributes(trio_client) -> None:
         result = await handle.result()
         assert result == "done-42"
 
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()
 
@@ -175,6 +175,6 @@ async def test_e2e_search_attribute_during_replay(trio_client) -> None:
         result = await handle.result()
         assert result == "completed"
 
-        worker.shutdown()
+        await worker.shutdown()
         await trio.sleep(0.3)
         nursery.cancel_scope.cancel()

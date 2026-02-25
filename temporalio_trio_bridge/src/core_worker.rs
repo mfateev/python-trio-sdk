@@ -12,7 +12,7 @@ use temporalio_common::telemetry::{
     MetricTemporality, OtelCollectorOptions, OtlpProtocol, PrometheusExporterOptions,
     TelemetryOptions,
 };
-use temporalio_common::worker::{WorkerTaskTypes, WorkerVersioningStrategy};
+use temporalio_common::worker::{PollerBehavior, WorkerTaskTypes, WorkerVersioningStrategy};
 use temporalio_common::Worker as WorkerTrait;
 use temporalio_sdk_core::telemetry::{build_otlp_metric_exporter, start_prometheus_metric_exporter};
 use temporalio_sdk_core::{init_worker, CoreRuntime, RetryClient, RuntimeOptions, Worker, WorkerConfig};
@@ -71,10 +71,37 @@ pub struct WorkerInitConfig {
     pub max_cached_workflows: usize,
     #[serde(default = "default_max_concurrent_polls")]
     pub max_concurrent_workflow_task_polls: usize,
+    #[serde(default = "default_nonsticky_to_sticky_poll_ratio")]
+    pub nonsticky_to_sticky_poll_ratio: f32,
+    #[serde(default = "default_max_concurrent_polls")]
+    pub max_concurrent_activity_task_polls: usize,
+    #[serde(default)]
+    pub no_remote_activities: bool,
     /// How long a workflow task is allowed to sit on the sticky queue before it is timed out
     /// and moved to the non-sticky queue. Value in milliseconds.
     #[serde(default = "default_sticky_queue_schedule_to_start_timeout_millis")]
     pub sticky_queue_schedule_to_start_timeout_millis: u64,
+    /// Longest interval for throttling activity heartbeats, in milliseconds.
+    #[serde(default = "default_max_heartbeat_throttle_interval_millis")]
+    pub max_heartbeat_throttle_interval_millis: u64,
+    /// Default interval for throttling activity heartbeats, in milliseconds.
+    #[serde(default = "default_default_heartbeat_throttle_interval_millis")]
+    pub default_heartbeat_throttle_interval_millis: u64,
+    #[serde(default)]
+    pub max_activities_per_second: Option<f64>,
+    #[serde(default)]
+    pub max_task_queue_activities_per_second: Option<f64>,
+    /// Graceful shutdown period in milliseconds.
+    #[serde(default)]
+    pub graceful_shutdown_period_millis: Option<u64>,
+    #[serde(default)]
+    pub max_concurrent_workflow_tasks: Option<usize>,
+    #[serde(default)]
+    pub max_concurrent_activities: Option<usize>,
+    #[serde(default)]
+    pub max_concurrent_local_activities: Option<usize>,
+    #[serde(default)]
+    pub build_id: Option<String>,
     #[serde(default)]
     pub telemetry: Option<TelemetryInitConfig>,
 }
@@ -87,8 +114,20 @@ fn default_max_concurrent_polls() -> usize {
     5
 }
 
+fn default_nonsticky_to_sticky_poll_ratio() -> f32 {
+    0.2
+}
+
 fn default_sticky_queue_schedule_to_start_timeout_millis() -> u64 {
     10_000 // 10 seconds
+}
+
+fn default_max_heartbeat_throttle_interval_millis() -> u64 {
+    60_000 // 60 seconds
+}
+
+fn default_default_heartbeat_throttle_interval_millis() -> u64 {
+    30_000 // 30 seconds
 }
 
 /// Wrapper around the Temporal SDK Core Worker.
@@ -222,18 +261,42 @@ impl CoreWorkerHandle {
         let retry_client = RetryClient::new(client, Default::default());
 
         // Build worker config (using bon builder)
+        let build_id = config.build_id.unwrap_or_else(|| "trio-worker".to_string());
         let worker_config = WorkerConfig::builder()
             .namespace(config.namespace.clone())
             .task_queue(config.task_queue.clone())
             .versioning_strategy(WorkerVersioningStrategy::None {
-                build_id: "trio-worker".to_string(),
+                build_id,
             })
             .task_types(WorkerTaskTypes {
                 enable_workflows: true,
                 enable_local_activities: false,
-                enable_remote_activities: true,
+                enable_remote_activities: !config.no_remote_activities,
                 enable_nexus: false,
             })
+            .max_cached_workflows(config.max_cached_workflows)
+            .workflow_task_poller_behavior(PollerBehavior::SimpleMaximum(
+                config.max_concurrent_workflow_task_polls,
+            ))
+            .nonsticky_to_sticky_poll_ratio(config.nonsticky_to_sticky_poll_ratio)
+            .activity_task_poller_behavior(PollerBehavior::SimpleMaximum(
+                config.max_concurrent_activity_task_polls,
+            ))
+            .sticky_queue_schedule_to_start_timeout(Duration::from_millis(
+                config.sticky_queue_schedule_to_start_timeout_millis,
+            ))
+            .max_heartbeat_throttle_interval(Duration::from_millis(
+                config.max_heartbeat_throttle_interval_millis,
+            ))
+            .default_heartbeat_throttle_interval(Duration::from_millis(
+                config.default_heartbeat_throttle_interval_millis,
+            ))
+            .maybe_max_worker_activities_per_second(config.max_activities_per_second)
+            .maybe_max_task_queue_activities_per_second(config.max_task_queue_activities_per_second)
+            .maybe_graceful_shutdown_period(config.graceful_shutdown_period_millis.map(Duration::from_millis))
+            .maybe_max_outstanding_workflow_tasks(config.max_concurrent_workflow_tasks)
+            .maybe_max_outstanding_activities(config.max_concurrent_activities)
+            .maybe_max_outstanding_local_activities(config.max_concurrent_local_activities)
             .build()
             .map_err(|e| anyhow!("Failed to build worker config: {}", e))?;
 

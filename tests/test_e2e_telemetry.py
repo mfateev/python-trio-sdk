@@ -102,7 +102,7 @@ async def test_worker_with_prometheus_metrics(trio_client):
             ), f"Expected known temporal metrics, got:\n{metrics_text[:1000]}"
 
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 
@@ -130,6 +130,6 @@ async def test_worker_without_telemetry(trio_client):
             # Verify worker is running (it started without error)
             assert worker.is_running
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()

@@ -1,5 +1,7 @@
 """Tests for headers propagation functionality."""
 
+from datetime import datetime, timezone
+
 import temporalio.api.common.v1
 import temporalio.converter
 
@@ -40,6 +42,9 @@ def _create_details(workflow_cls: type) -> WorkflowInstanceDetails:
         workflow_type=defn.name,
         run_id="run-1",
         task_queue="test-queue",
+        namespace="default",
+        attempt=1,
+        start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
     return WorkflowInstanceDetails(
         defn=defn,
@@ -171,6 +176,9 @@ def test_info_default_headers():
         workflow_type="Test",
         run_id="run-1",
         task_queue="q",
+        namespace="default",
+        attempt=1,
+        start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
     assert info.headers == {}
 
@@ -183,6 +191,9 @@ def test_info_with_headers():
         workflow_type="Test",
         run_id="run-1",
         task_queue="q",
+        namespace="default",
+        attempt=1,
+        start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
         headers={"x-trace": h},
     )
     assert info.headers["x-trace"].data == b"info-trace"

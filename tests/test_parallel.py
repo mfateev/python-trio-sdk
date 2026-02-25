@@ -5,6 +5,7 @@ interfering with each other, which is essential for Temporal's scalability.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 
 import pytest
 
@@ -72,6 +73,9 @@ def _create_details(
         workflow_type=defn.name,
         run_id=run_id,
         task_queue="test-queue",
+        namespace="default",
+        attempt=1,
+        start_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
     return WorkflowInstanceDetails(
         defn=defn,

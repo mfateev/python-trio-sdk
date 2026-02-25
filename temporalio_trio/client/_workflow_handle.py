@@ -4,25 +4,114 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Optional
 
 import temporalio.common
 import temporalio.exceptions
 import trio
 from temporalio.api.common.v1 import Payloads
-from temporalio.api.enums.v1 import EventType, WorkflowExecutionStatus
+from temporalio.api.enums.v1 import EventType
+from temporalio.api.enums.v1 import (
+    WorkflowExecutionStatus as _ProtoWorkflowExecutionStatus,
+)
 from temporalio.api.workflowservice.v1 import (
+    DescribeWorkflowExecutionResponse,
     GetWorkflowExecutionHistoryResponse,
     QueryWorkflowResponse,
 )
 from temporalio.converter import DataConverter
 
-from temporalio_trio.workflow import _QueryDefinition
+from temporalio_trio.workflow import _QueryDefinition, _SignalDefinition
 
 if TYPE_CHECKING:
     from ._client import Client
 
 logger = logging.getLogger(__name__)
+
+
+class WorkflowExecutionStatus(IntEnum):
+    """Status of a workflow execution.
+
+    Mirrors ``temporalio.api.enums.v1.WorkflowExecutionStatus`` as a
+    friendly :class:`IntEnum`.
+    """
+
+    RUNNING = int(
+        _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_RUNNING
+    )
+    COMPLETED = int(
+        _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_COMPLETED
+    )
+    FAILED = int(
+        _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_FAILED
+    )
+    CANCELED = int(
+        _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_CANCELED
+    )
+    TERMINATED = int(
+        _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_TERMINATED
+    )
+    CONTINUED_AS_NEW = int(
+        _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW
+    )
+    TIMED_OUT = int(
+        _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_TIMED_OUT
+    )
+
+
+@dataclass
+class WorkflowExecutionDescription:
+    """Description for a single workflow execution run.
+
+    Returned by :py:meth:`WorkflowHandle.describe`.
+    """
+
+    workflow_id: str
+    """ID for the workflow."""
+
+    run_id: str
+    """Run ID for this workflow run."""
+
+    status: Optional[WorkflowExecutionStatus]
+    """Current status of the workflow execution."""
+
+    workflow_type: str
+    """Type name for the workflow."""
+
+    task_queue: str
+    """Task queue for the workflow."""
+
+    start_time: Optional[datetime]
+    """When the workflow was created."""
+
+    close_time: Optional[datetime]
+    """When the workflow was closed if closed."""
+
+    execution_time: Optional[datetime]
+    """When this workflow run started or should start."""
+
+    history_length: int
+    """Number of events in the history."""
+
+    raw_description: DescribeWorkflowExecutionResponse
+    """Underlying protobuf description response."""
+
+
+@dataclass
+class WorkflowHistory:
+    """History for a single workflow execution.
+
+    Returned by :py:meth:`WorkflowHandle.fetch_history`.
+    """
+
+    workflow_id: str
+    """ID for the workflow."""
+
+    events: list[Any]
+    """List of history events (protobuf HistoryEvent objects)."""
 
 
 class WorkflowFailureError(temporalio.exceptions.TemporalError):
@@ -48,15 +137,25 @@ class WorkflowFailureError(temporalio.exceptions.TemporalError):
 class WorkflowQueryRejectedError(temporalio.exceptions.TemporalError):
     """Error that occurs when a query was rejected."""
 
-    def __init__(self, status: Optional[WorkflowExecutionStatus]) -> None:
+    def __init__(self, status: Optional[_ProtoWorkflowExecutionStatus]) -> None:
         """Create workflow query rejected error."""
         super().__init__(f"Query rejected, status: {status}")
         self._status = status
 
     @property
-    def status(self) -> Optional[WorkflowExecutionStatus]:
+    def status(self) -> Optional[_ProtoWorkflowExecutionStatus]:
         """Get workflow execution status causing rejection."""
         return self._status
+
+
+class WorkflowContinuedAsNewError(temporalio.exceptions.TemporalError):
+    """Raised when a workflow continues as new and follow_runs is False."""
+
+    def __init__(self, new_execution_run_id: str) -> None:
+        super().__init__(
+            f"Workflow continued as new with run ID: {new_execution_run_id}"
+        )
+        self.new_execution_run_id = new_execution_run_id
 
 
 class WorkflowHandle:
@@ -120,7 +219,9 @@ class WorkflowHandle:
         """Get run ID (None if tracking latest run)."""
         return self._run_id
 
-    async def result(self, *, timeout: Optional[float] = None) -> Any:
+    async def result(
+        self, *, follow_runs: bool = True, timeout: Optional[float] = None
+    ) -> Any:
         """Wait for workflow to complete and return result.
 
         This method uses server-side long polling - the server blocks until the
@@ -128,6 +229,9 @@ class WorkflowHandle:
         Python SDK behavior.
 
         Args:
+            follow_runs: If true (default), follows continue-as-new chains to
+                get the final result. If false, raises an error when the
+                workflow continues as new.
             timeout: Optional timeout in seconds
 
         Returns:
@@ -143,15 +247,12 @@ class WorkflowHandle:
         """
 
         async def wait_for_result() -> Any:
-            # Server-side long polling: The Rust bridge makes a GetWorkflowExecutionHistory
-            # call with wait_new_event=true and history_event_filter_type=CLOSE_EVENT.
-            # The server blocks until the workflow closes, then returns the close event.
-            # If server times out, we retry (rare - server timeout is typically 60s).
+            run_id = self._result_run_id
             while True:
                 # Get workflow close event via server-side long poll
                 response_bytes = await self._client._bridge.get_workflow_result(
                     workflow_id=self._workflow_id,
-                    run_id=self._result_run_id,
+                    run_id=run_id,
                     timeout=None,  # Let server-side timeout handle it
                 )
 
@@ -160,8 +261,14 @@ class WorkflowHandle:
                 response.ParseFromString(response_bytes)
 
                 # Try to extract result - returns _WorkflowResult if terminal event found
-                wrapped_result = await self._try_extract_result_from_history(response)
+                wrapped_result = await self._try_extract_result_from_history(
+                    response, follow_runs=follow_runs
+                )
                 if wrapped_result is not None:
+                    if wrapped_result.follow_run_id is not None:
+                        # Continue-as-new: follow to next run
+                        run_id = wrapped_result.follow_run_id
+                        continue
                     return wrapped_result.value
 
                 # No close event yet (server timed out), retry
@@ -199,7 +306,8 @@ class WorkflowHandle:
             result_type: For string queries, this can set the specific result
                 type hint to deserialize into.
             reject_condition: Condition for rejecting the query. If unset/None,
-                no rejection condition is applied.
+                the client's ``default_workflow_query_reject_condition`` is
+                used. If that is also None, no rejection condition is applied.
             timeout: Optional timeout in seconds.
 
         Returns:
@@ -228,6 +336,12 @@ class WorkflowHandle:
         else:
             query_name = str(query)
 
+        # Use client default reject condition if not explicitly provided
+        if reject_condition is None:
+            reject_condition = (
+                self._client._config.default_workflow_query_reject_condition
+            )
+
         # Normalize args
         resolved_args = temporalio.common._arg_or_args(arg, args)
 
@@ -244,6 +358,7 @@ class WorkflowHandle:
             run_id=self._run_id,
             query_type=query_name,
             args_bytes=args_bytes,
+            reject_condition=reject_condition.value if reject_condition is not None else None,
             timeout=timeout,
         )
 
@@ -254,7 +369,7 @@ class WorkflowHandle:
         # Check for rejection
         if resp.HasField("query_rejected"):
             raise WorkflowQueryRejectedError(
-                WorkflowExecutionStatus(resp.query_rejected.status)
+                _ProtoWorkflowExecutionStatus(resp.query_rejected.status)
                 if resp.query_rejected.status
                 else None
             )
@@ -272,25 +387,45 @@ class WorkflowHandle:
 
     async def signal(
         self,
-        signal_name: str,
-        *args: Any,
+        signal: str | Callable,
+        arg: Any = temporalio.common._arg_unset,
+        *,
+        args: Sequence[Any] = [],
         timeout: Optional[float] = None,
     ) -> None:
         """Send signal to workflow.
 
         Args:
-            signal_name: Signal name
-            *args: Signal arguments
-            timeout: Optional timeout in seconds
+            signal: Signal name or signal-decorated method reference.
+            arg: Single argument to the signal.
+            args: Multiple arguments to the signal. Cannot be set if arg is.
+            timeout: Optional timeout in seconds.
 
         Example:
             await handle.signal("update_value", 42)
-            await handle.signal("pause")
+            await handle.signal(MyWorkflow.my_signal, "data")
         """
+        # Resolve signal name from callable or string
+        if callable(signal):
+            defn = _SignalDefinition.from_fn(signal)
+            if not defn:
+                raise RuntimeError(
+                    f"Signal definition not found on {signal.__qualname__}, "
+                    "is it decorated with @workflow.signal?"
+                )
+            elif not defn.name:
+                raise RuntimeError("Cannot invoke dynamic signal definition")
+            signal_name = defn.name
+        else:
+            signal_name = str(signal)
+
+        # Normalize args
+        resolved_args = temporalio.common._arg_or_args(arg, args)
+
         # Encode signal arguments
         args_bytes = b""
-        if args:
-            payloads_list = await self._client.data_converter.encode(args)
+        if resolved_args:
+            payloads_list = await self._client.data_converter.encode(resolved_args)
             payloads = Payloads(payloads=payloads_list)
             args_bytes = payloads.SerializeToString()
 
@@ -345,13 +480,146 @@ class WorkflowHandle:
             timeout=timeout,
         )
 
+    async def describe(
+        self, *, timeout: Optional[float] = None
+    ) -> WorkflowExecutionDescription:
+        """Get workflow execution details.
+
+        This will get details for :py:attr:`run_id` if present. To use a
+        different run ID, create a new handle via
+        :py:meth:`Client.get_workflow_handle`.
+
+        Args:
+            timeout: Optional timeout in seconds.
+
+        Returns:
+            Workflow execution description with status, type, times, etc.
+
+        Raises:
+            RuntimeError: If the bridge call fails.
+
+        Example:
+            desc = await handle.describe()
+            print(f"Status: {desc.status}, Type: {desc.workflow_type}")
+        """
+        response_bytes = await self._client._bridge.describe_workflow(
+            workflow_id=self._workflow_id,
+            run_id=self._run_id,
+            timeout=timeout,
+        )
+
+        # Parse protobuf response
+        resp = DescribeWorkflowExecutionResponse()
+        resp.ParseFromString(response_bytes)
+
+        # Extract info from response
+        info = resp.workflow_execution_info
+
+        # Parse timestamps
+        start_time: Optional[datetime] = None
+        if info.HasField("start_time"):
+            start_time = info.start_time.ToDatetime().replace(tzinfo=timezone.utc)
+
+        close_time: Optional[datetime] = None
+        if info.HasField("close_time"):
+            close_time = info.close_time.ToDatetime().replace(tzinfo=timezone.utc)
+
+        execution_time: Optional[datetime] = None
+        if info.HasField("execution_time"):
+            execution_time = info.execution_time.ToDatetime().replace(
+                tzinfo=timezone.utc
+            )
+
+        # Parse status
+        status: Optional[WorkflowExecutionStatus] = None
+        if info.status:
+            status = WorkflowExecutionStatus(info.status)
+
+        return WorkflowExecutionDescription(
+            workflow_id=info.execution.workflow_id,
+            run_id=info.execution.run_id,
+            status=status,
+            workflow_type=info.type.name,
+            task_queue=info.task_queue,
+            start_time=start_time,
+            close_time=close_time,
+            execution_time=execution_time,
+            history_length=info.history_length,
+            raw_description=resp,
+        )
+
+    async def fetch_history(self) -> WorkflowHistory:
+        """Get workflow history.
+
+        Returns all history events for the workflow execution. If the workflow
+        has a large history, this will automatically paginate through all pages
+        to collect all events.
+
+        Returns:
+            WorkflowHistory with the workflow ID and all history events.
+
+        Example:
+            history = await handle.fetch_history()
+            for event in history.events:
+                print(f"Event: {event.event_type}")
+        """
+        events = await self.fetch_history_events()
+        return WorkflowHistory(
+            workflow_id=self._workflow_id,
+            events=events,
+        )
+
+    async def fetch_history_events(self) -> list[Any]:
+        """Get workflow history events.
+
+        Returns all history events for the workflow execution. If the workflow
+        has a large history, this will automatically paginate through all pages
+        to collect all events.
+
+        Returns:
+            List of history events (protobuf HistoryEvent objects).
+
+        Example:
+            events = await handle.fetch_history_events()
+            for event in events:
+                print(f"Event: {event.event_type}")
+        """
+        all_events: list[Any] = []
+        next_page_token = b""
+
+        while True:
+            response_bytes = (
+                await self._client._bridge.get_workflow_execution_history(
+                    workflow_id=self._workflow_id,
+                    run_id=self._run_id,
+                    next_page_token=next_page_token,
+                )
+            )
+
+            response = GetWorkflowExecutionHistoryResponse()
+            response.ParseFromString(response_bytes)
+
+            all_events.extend(response.history.events)
+
+            # Check for more pages
+            if response.next_page_token:
+                next_page_token = response.next_page_token
+            else:
+                break
+
+        return all_events
+
     async def _try_extract_result_from_history(
-        self, response: GetWorkflowExecutionHistoryResponse
+        self,
+        response: GetWorkflowExecutionHistoryResponse,
+        *,
+        follow_runs: bool = True,
     ) -> Optional["_WorkflowResult"]:
         """Try to extract workflow result from history response.
 
         Args:
             response: GetWorkflowExecutionHistoryResponse
+            follow_runs: If true, return follow_run_id for continue-as-new
 
         Returns:
             _WorkflowResult wrapper if terminal event found, None if still running
@@ -396,6 +664,20 @@ class WorkflowHandle:
                     )
                 )
 
+            elif event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_TIMED_OUT:
+                raise WorkflowFailureError(
+                    cause=temporalio.exceptions.TimeoutError("Workflow timed out")
+                )
+
+            elif event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW:
+                continued = event.workflow_execution_continued_as_new_event_attributes
+                new_run_id = continued.new_execution_run_id
+                if follow_runs:
+                    # Follow to the new run
+                    return _WorkflowResult(None, follow_run_id=new_run_id)
+                else:
+                    raise WorkflowContinuedAsNewError(new_run_id)
+
         # No terminal event found - workflow still running
         return None
 
@@ -421,12 +703,26 @@ class WorkflowHandle:
 
 
 class _WorkflowResult:
-    """Wrapper to distinguish between 'no result yet' and 'result is None'."""
+    """Wrapper to distinguish between 'no result yet' and 'result is None'.
 
-    __slots__ = ("value",)
+    Also supports follow_run_id for continue-as-new chains.
+    """
 
-    def __init__(self, value: Any) -> None:
+    __slots__ = ("value", "follow_run_id")
+
+    def __init__(
+        self, value: Any, follow_run_id: Optional[str] = None
+    ) -> None:
         self.value = value
+        self.follow_run_id = follow_run_id
 
 
-__all__ = ["WorkflowFailureError", "WorkflowHandle", "WorkflowQueryRejectedError"]
+__all__ = [
+    "WorkflowContinuedAsNewError",
+    "WorkflowExecutionDescription",
+    "WorkflowExecutionStatus",
+    "WorkflowFailureError",
+    "WorkflowHandle",
+    "WorkflowHistory",
+    "WorkflowQueryRejectedError",
+]

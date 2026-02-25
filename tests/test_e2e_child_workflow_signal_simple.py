@@ -123,7 +123,7 @@ async def test_simple_child_workflow_signal(trio_client):
             assert result["success"] is True
             assert result["child_result"] == "test123"
         finally:
-            worker.shutdown()
+            await worker.shutdown()
             await trio.sleep(0.3)
             nursery.cancel_scope.cancel()
 

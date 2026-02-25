@@ -63,15 +63,15 @@ async def test_start_workflow(mock_bridge):
     client = await Client.connect("localhost:7233")
     handle = await client.start_workflow(
         "MyWorkflow",
-        "arg1",
-        "arg2",
+        args=["arg1", "arg2"],
         id="wf-123",
         task_queue="my-queue",
     )
 
     assert isinstance(handle, WorkflowHandle)
     assert handle.workflow_id == "wf-123"
-    assert handle.run_id == "run-123"
+    # run_id is intentionally None on handles from start_workflow (tracks latest run)
+    assert handle.run_id is None
 
     # Verify bridge was called
     mock_bridge.start_workflow_execution.assert_called_once()
