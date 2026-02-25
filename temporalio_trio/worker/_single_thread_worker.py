@@ -477,12 +477,15 @@ class SingleThreadWorker:
                     state,
                 )
 
-                # Wait for main workflow to either complete or need suspension
-                # The workflow main will call signal_commands_ready when done
-                # Then we process subsequent activations
+                # Let all initial tasks (deferred update handlers, main
+                # workflow) settle before signaling the first completion.
+                # Temporarily disable on_suspend so that tasks calling
+                # wait_condition/sleep don't trigger signal_commands_ready
+                # prematurely — the coordinator handles that below.
+                await self._wait_and_signal(runtime, state)
+
+                # Process subsequent activations
                 while not state.is_complete:
-                    # Wait for next activation (first one will be delivered by
-                    # dispatcher after it reads the initial commands)
                     try:
                         activation = await state.wait_for_activation()
                     except trio.EndOfChannel:
@@ -499,24 +502,18 @@ class SingleThreadWorker:
                         runtime, activation, deferred_updates=pending_updates
                     )
 
-                    # Process deferred updates with proper awaiting
+                    # Process deferred updates
                     for update_job in pending_updates:
                         await self._apply_update_async(runtime, update_job)
 
-                    # Yield to scheduler to let woken tasks run
-                    # For activations with jobs that wake workflows (TimerFired, etc.),
-                    # we need to wait for the workflow to process and signal commands ready
-                    await trio.sleep(0)
+                    # Let all tasks settle, then signal commands ready
+                    await self._wait_and_signal(runtime, state)
 
-                    # If commands_ready is not set after yielding, signal it now.
-                    # This handles:
-                    # 1. Empty activations (heartbeat) - no jobs to wake workflow
-                    # 2. Informational jobs like ChildWorkflowStartedJob - don't wake workflow
-                    # 3. Jobs that wake workflow - workflow runs, produces commands, signals ready
-                    # After yielding, any woken tasks have had a chance to run.
-                    if not state.commands_ready.is_set() and not state.is_complete:
-                        # No commands produced - signal with current (empty) commands
-                        state.signal_commands_ready()
+            # Nursery exited — either all tasks completed normally or
+            # the scope was cancelled (workflow cancel/terminate).
+            # Ensure commands are signaled so the dispatcher isn't stuck.
+            if not state.commands_ready.is_set():
+                state.signal_commands_ready()
 
         except Exception as e:
             # Workflow task failed
@@ -638,6 +635,33 @@ class SingleThreadWorker:
                 update_name, bound_handler, bound_validator
             )
 
+    async def _wait_and_signal(
+        self,
+        runtime: WorkflowRuntime,
+        state: WorkflowState,
+    ) -> None:
+        """Wait for all nursery tasks to settle, then signal commands ready.
+
+        Temporarily disables ``on_suspend`` so that tasks entering
+        ``wait_condition`` / ``workflow_sleep`` / ``start_activity`` during
+        the wait don't trigger ``signal_commands_ready`` prematurely via
+        ``on_suspend``.  The coordinator (this method) is the sole caller
+        of ``signal_commands_ready`` during activation processing.
+
+        Args:
+            runtime: The workflow runtime.
+            state: The workflow state for signaling.
+        """
+        saved = runtime.on_suspend
+        runtime.on_suspend = None
+        try:
+            await trio.testing.wait_all_tasks_blocked()
+        finally:
+            runtime.on_suspend = saved
+
+        if not state.commands_ready.is_set():
+            state.signal_commands_ready()
+
     async def _execute_workflow_main(
         self,
         runtime: WorkflowRuntime,
@@ -682,9 +706,14 @@ class SingleThreadWorker:
             runtime.commands.append(FailWorkflowCommand(exception=e))
 
         finally:
-            # Mark state as complete and signal commands ready
+            # Notify condition waiters so that update handlers waiting on
+            # workflow state (e.g., wait_condition(lambda: self.returned))
+            # can observe the completion and finalize their results.
+            runtime.notify_condition_waiters()
+            # Mark state as complete. Do NOT call signal_commands_ready here;
+            # the coordinator (_wait_and_signal) handles signaling after all
+            # concurrent tasks (update handlers) have settled.
             state.mark_complete()
-            state.signal_commands_ready()
 
     def _apply_activation(
         self,
@@ -816,9 +845,17 @@ class SingleThreadWorker:
     async def _apply_update_async(
         self, runtime: WorkflowRuntime, update_job: UpdateWorkflowJob
     ) -> None:
-        """Apply an update, awaiting async handlers inline.
+        """Apply an update. Sync handlers run inline; async handlers spawn as tasks.
 
-        This ensures the completed command is available in the same activation.
+        This ensures:
+        - The accepted command is always in the current activation's completion.
+        - Sync handler's completed command is also in the current activation.
+        - Async handler's completed command arrives in any subsequent activation's
+          completion (via runtime.commands, picked up by signal_commands_ready).
+
+        Spawning async handlers as nursery tasks prevents deadlocks when a handler
+        awaits wait_condition() that depends on state set by the main workflow or
+        signals — the main workflow loop is no longer blocked waiting on the handler.
 
         Args:
             runtime: The workflow runtime.
@@ -876,18 +913,45 @@ class SingleThreadWorker:
             # Track in-progress
             runtime.in_progress_updates[update_job.id] = update_job.name
 
-            # Run handler - await inline for both sync and async
+            # Run handler
             try:
                 result = handler(*update_job.args)
                 if inspect.iscoroutine(result):
-                    result = await result
-                runtime.commands.append(
-                    UpdateResponseCommand(
-                        protocol_instance_id=update_job.protocol_instance_id,
-                        completed_result=result,
-                        _is_completed=True,
+                    # Async handler — spawn as nursery task instead of awaiting
+                    # inline. This prevents deadlocks when the handler awaits
+                    # wait_condition() that depends on state set by the main
+                    # workflow or signals.
+                    if runtime.nursery is not None:
+                        runtime.nursery.start_soon(
+                            self._run_update_handler_wrapper,
+                            result,
+                            update_job,
+                            runtime,
+                        )
+                    else:
+                        logger.warning(
+                            f"Cannot run async update handler {update_job.name}: "
+                            "no nursery available"
+                        )
+                        result.close()
+                        runtime.commands.append(
+                            UpdateResponseCommand(
+                                protocol_instance_id=update_job.protocol_instance_id,
+                                completed_result=None,
+                                _is_completed=True,
+                            )
+                        )
+                        runtime.in_progress_updates.pop(update_job.id, None)
+                else:
+                    # Sync handler — emit completed response immediately
+                    runtime.commands.append(
+                        UpdateResponseCommand(
+                            protocol_instance_id=update_job.protocol_instance_id,
+                            completed_result=result,
+                            _is_completed=True,
+                        )
                     )
-                )
+                    runtime.in_progress_updates.pop(update_job.id, None)
             except Exception as e:
                 runtime.commands.append(
                     UpdateResponseCommand(
@@ -895,11 +959,14 @@ class SingleThreadWorker:
                         rejected_failure=e,
                     )
                 )
-            finally:
                 runtime.in_progress_updates.pop(update_job.id, None)
-                runtime.notify_condition_waiters()
+
+            # Notify any wait_condition waiters that state may have changed
+            runtime.notify_condition_waiters()
         finally:
-            # Clear current update info so it doesn't leak to other handlers
+            # Clear current update info so it doesn't leak to other handlers.
+            # For async handlers spawned as tasks, the task has its own
+            # ContextVar copy and sets/clears update_info independently.
             _current_update_info.set(None)
 
     def _apply_update(
@@ -1023,16 +1090,27 @@ class SingleThreadWorker:
         """Run an async update handler coroutine as a nursery task.
 
         This wrapper awaits the handler coroutine, emits the completion response,
-        and cleans up in-progress tracking.
+        and cleans up in-progress tracking. The completed/rejected command is
+        added to runtime.commands and picked up by the _run_workflow loop's
+        existing trio.sleep(0) + signal_commands_ready() pattern:
+
+        - If the handler completes during trio.sleep(0), the commands are included
+          in the current activation's completion.
+        - If the handler completes between activations (because an activation event
+          woke it), the commands are included in that activation's completion.
 
         Args:
             coro: The coroutine to await.
             update_job: The update job (for protocol_instance_id and id).
             runtime: The workflow runtime.
         """
-        from temporalio_trio.workflow import UpdateInfo, _set_current_update_info
+        from temporalio_trio.workflow import (
+            UpdateInfo,
+            _current_update_info,
+            _set_current_update_info,
+        )
 
-        # Set current update info for this task
+        # Set current update info for this task context
         _set_current_update_info(UpdateInfo(id=update_job.id, name=update_job.name))
 
         try:
@@ -1055,9 +1133,7 @@ class SingleThreadWorker:
         finally:
             runtime.in_progress_updates.pop(update_job.id, None)
             runtime.notify_condition_waiters()
-            # Signal commands ready so completion is sent
-            if runtime.on_suspend is not None:
-                runtime.on_suspend()
+            _current_update_info.set(None)
 
     def _apply_query(
         self, runtime: WorkflowRuntime, query_job: QueryWorkflowJob
