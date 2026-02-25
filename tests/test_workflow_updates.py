@@ -376,3 +376,246 @@ class TestUpdateActivationTypes:
             rejected_failure=err,
         )
         assert cmd.rejected_failure is err
+
+
+# ============================================================================
+# Additional tests ported from sdk-python
+# ============================================================================
+
+
+class TestMultipleUpdateHandlers:
+    """Tests for workflows with multiple update handler types.
+
+    Ported from sdk-python's UpdateHandlersWorkflow definition patterns.
+    """
+
+    def test_sync_and_async_handlers(self) -> None:
+        """Test workflow can have both sync and async update handlers."""
+
+        @workflow.defn
+        class MyWorkflow:
+            @workflow.run
+            async def run(self) -> None:
+                pass
+
+            @workflow.update
+            def sync_update(self) -> str:
+                return "sync"
+
+            @workflow.update
+            async def async_update(self) -> str:
+                return "async"
+
+        defn = _Definition.must_from_class(MyWorkflow)
+        assert "sync_update" in defn.updates
+        assert "async_update" in defn.updates
+
+    def test_named_and_default_handlers(self) -> None:
+        """Test workflow with named and default-named update handlers."""
+
+        @workflow.defn
+        class MyWorkflow:
+            @workflow.run
+            async def run(self) -> None:
+                pass
+
+            @workflow.update
+            def default_name(self) -> str:
+                return "default"
+
+            @workflow.update(name="custom-name")
+            def custom(self) -> str:
+                return "custom"
+
+        defn = _Definition.must_from_class(MyWorkflow)
+        assert "default_name" in defn.updates
+        assert "custom-name" in defn.updates
+        assert "custom" not in defn.updates
+
+    def test_update_with_signals_and_queries(self) -> None:
+        """Test workflow with updates, signals, and queries together."""
+
+        @workflow.defn
+        class MyWorkflow:
+            @workflow.run
+            async def run(self) -> None:
+                pass
+
+            @workflow.update
+            def my_update(self) -> str:
+                return "updated"
+
+            @workflow.signal
+            def my_signal(self) -> None:
+                pass
+
+            @workflow.query
+            def my_query(self) -> str:
+                return "query"
+
+        defn = _Definition.must_from_class(MyWorkflow)
+        assert "my_update" in defn.updates
+        assert "my_signal" in defn.signals
+        assert "my_query" in defn.queries
+
+    def test_validator_on_named_update(self) -> None:
+        """Test validator attached to a named update handler."""
+
+        @workflow.defn
+        class MyWorkflow:
+            @workflow.run
+            async def run(self) -> None:
+                pass
+
+            @workflow.update(name="set-value")
+            def set_value(self, v: int) -> int:
+                return v
+
+            @set_value.validator
+            def validate(self, v: int) -> None:
+                if v < 0:
+                    raise ValueError("negative")
+
+        defn = _Definition.must_from_class(MyWorkflow)
+        assert "set-value" in defn.updates
+        assert defn.updates["set-value"].validator is not None
+
+
+class TestUpdateDefinitionRetType:
+    """Tests for update return type extraction."""
+
+    def test_ret_type_extracted(self) -> None:
+        """Test that return type is extracted from type hints."""
+
+        @workflow.update
+        async def my_update(self, value: int) -> str:
+            return str(value)
+
+        defn = _UpdateDefinition.from_fn(my_update)
+        assert defn is not None
+        assert defn.ret_type is str
+
+    def test_arg_types_extracted(self) -> None:
+        """Test that argument types are extracted from type hints."""
+
+        @workflow.update
+        def my_update(self, a: int, b: str) -> bool:
+            return True
+
+        defn = _UpdateDefinition.from_fn(my_update)
+        assert defn is not None
+        assert defn.arg_types is not None
+        # Should have types for a and b (excluding self)
+        assert len(defn.arg_types) == 2
+
+
+class TestBridgeTypeConversion:
+    """Tests for UpdateWorkflowJob bridge conversion."""
+
+    def test_convert_do_update(self) -> None:
+        """Test converting a bridge DoUpdate to UpdateWorkflowJob."""
+        import temporalio.bridge.proto.workflow_activation.workflow_activation_pb2 as act_pb
+        import temporalio.converter
+
+        from temporalio_trio.worker._bridge_types import bridge_to_poc_activation
+
+        # Build a minimal activation with DoUpdate job
+        bridge_act = act_pb.WorkflowActivation()
+        bridge_act.run_id = "test-run-id"
+        bridge_act.timestamp.seconds = 1000
+
+        job = bridge_act.jobs.add()
+        job.do_update.id = "update-123"
+        job.do_update.protocol_instance_id = "proto-456"
+        job.do_update.name = "my_update"
+        job.do_update.run_validator = True
+
+        # Add an input payload
+        dc = temporalio.converter.DataConverter.default
+        payload = dc.payload_converter.to_payload(42)
+        job.do_update.input.append(payload)
+
+        # Convert
+        poc_act = bridge_to_poc_activation(bridge_act, dc)
+
+        assert len(poc_act.jobs) == 1
+        update_job = poc_act.jobs[0]
+        assert isinstance(update_job, UpdateWorkflowJob)
+        assert update_job.id == "update-123"
+        assert update_job.protocol_instance_id == "proto-456"
+        assert update_job.name == "my_update"
+        assert update_job.run_validator is True
+        assert update_job.args == (42,)
+
+    def test_convert_update_response_accepted(self) -> None:
+        """Test converting UpdateResponseCommand (accepted) to bridge."""
+        import temporalio.converter
+
+        from temporalio_trio.worker._activation import (
+            WorkflowActivationCompletion,
+        )
+        from temporalio_trio.worker._bridge_types import poc_to_bridge_completion
+
+        dc = temporalio.converter.DataConverter.default
+        cmd = UpdateResponseCommand(
+            protocol_instance_id="proto-1",
+            accepted=True,
+        )
+        poc_comp = WorkflowActivationCompletion(commands=[cmd])
+        bridge_comp = poc_to_bridge_completion("run-1", poc_comp, dc)
+
+        assert len(bridge_comp.successful.commands) == 1
+        bridge_cmd = bridge_comp.successful.commands[0]
+        assert bridge_cmd.update_response.protocol_instance_id == "proto-1"
+        assert bridge_cmd.update_response.HasField("accepted")
+
+    def test_convert_update_response_completed(self) -> None:
+        """Test converting UpdateResponseCommand (completed) to bridge."""
+        import temporalio.converter
+
+        from temporalio_trio.worker._activation import (
+            WorkflowActivationCompletion,
+        )
+        from temporalio_trio.worker._bridge_types import poc_to_bridge_completion
+
+        dc = temporalio.converter.DataConverter.default
+        cmd = UpdateResponseCommand(
+            protocol_instance_id="proto-1",
+            completed_result="hello",
+            _is_completed=True,
+        )
+        poc_comp = WorkflowActivationCompletion(commands=[cmd])
+        bridge_comp = poc_to_bridge_completion("run-1", poc_comp, dc)
+
+        assert len(bridge_comp.successful.commands) == 1
+        bridge_cmd = bridge_comp.successful.commands[0]
+        assert bridge_cmd.update_response.protocol_instance_id == "proto-1"
+        assert bridge_cmd.update_response.HasField("completed")
+        # Decode the result
+        result = dc.payload_converter.from_payload(
+            bridge_cmd.update_response.completed
+        )
+        assert result == "hello"
+
+    def test_convert_update_response_rejected(self) -> None:
+        """Test converting UpdateResponseCommand (rejected) to bridge."""
+        import temporalio.converter
+
+        from temporalio_trio.worker._activation import (
+            WorkflowActivationCompletion,
+        )
+        from temporalio_trio.worker._bridge_types import poc_to_bridge_completion
+
+        dc = temporalio.converter.DataConverter.default
+        cmd = UpdateResponseCommand(
+            protocol_instance_id="proto-1",
+            rejected_failure=ValueError("bad input"),
+        )
+        poc_comp = WorkflowActivationCompletion(commands=[cmd])
+        bridge_comp = poc_to_bridge_completion("run-1", poc_comp, dc)
+
+        assert len(bridge_comp.successful.commands) == 1
+        bridge_cmd = bridge_comp.successful.commands[0]
+        assert bridge_cmd.update_response.protocol_instance_id == "proto-1"
+        assert bridge_cmd.update_response.HasField("rejected")
+        assert "bad input" in bridge_cmd.update_response.rejected.message

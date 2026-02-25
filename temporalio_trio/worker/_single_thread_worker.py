@@ -824,76 +824,83 @@ class SingleThreadWorker:
             runtime: The workflow runtime.
             update_job: The update job.
         """
-        from temporalio_trio.workflow import UpdateInfo, _set_current_update_info
-
-        _set_current_update_info(UpdateInfo(id=update_job.id, name=update_job.name))
-
-        # Look up handler
-        handler = runtime.update_handlers.get(update_job.name)
-        if handler is None:
-            handler = runtime.update_handlers.get(None)
-        if handler is None:
-            runtime.commands.append(
-                UpdateResponseCommand(
-                    protocol_instance_id=update_job.protocol_instance_id,
-                    rejected_failure=RuntimeError(
-                        f"Update handler for '{update_job.name}' expected but not found, "
-                        f"and there is no dynamic handler."
-                    ),
-                )
-            )
-            return
-
-        # Run validator if requested
-        if update_job.run_validator:
-            validator = runtime.update_validators.get(update_job.name)
-            if validator is None:
-                validator = runtime.update_validators.get(None)
-            if validator is not None:
-                try:
-                    validator(*update_job.args)
-                except Exception as e:
-                    runtime.commands.append(
-                        UpdateResponseCommand(
-                            protocol_instance_id=update_job.protocol_instance_id,
-                            rejected_failure=e,
-                        )
-                    )
-                    return
-
-        # Accept
-        runtime.commands.append(
-            UpdateResponseCommand(
-                protocol_instance_id=update_job.protocol_instance_id,
-                accepted=True,
-            )
+        from temporalio_trio.workflow import (
+            UpdateInfo,
+            _current_update_info,
+            _set_current_update_info,
         )
 
-        # Track in-progress
-        runtime.in_progress_updates[update_job.id] = update_job.name
-
-        # Run handler - await inline for both sync and async
+        _set_current_update_info(UpdateInfo(id=update_job.id, name=update_job.name))
         try:
-            result = handler(*update_job.args)
-            if inspect.iscoroutine(result):
-                result = await result
+            # Look up handler
+            handler = runtime.update_handlers.get(update_job.name)
+            if handler is None:
+                handler = runtime.update_handlers.get(None)
+            if handler is None:
+                runtime.commands.append(
+                    UpdateResponseCommand(
+                        protocol_instance_id=update_job.protocol_instance_id,
+                        rejected_failure=RuntimeError(
+                            f"Update handler for '{update_job.name}' expected but not found, "
+                            f"and there is no dynamic handler."
+                        ),
+                    )
+                )
+                return
+
+            # Run validator if requested
+            if update_job.run_validator:
+                validator = runtime.update_validators.get(update_job.name)
+                if validator is None:
+                    validator = runtime.update_validators.get(None)
+                if validator is not None:
+                    try:
+                        validator(*update_job.args)
+                    except Exception as e:
+                        runtime.commands.append(
+                            UpdateResponseCommand(
+                                protocol_instance_id=update_job.protocol_instance_id,
+                                rejected_failure=e,
+                            )
+                        )
+                        return
+
+            # Accept
             runtime.commands.append(
                 UpdateResponseCommand(
                     protocol_instance_id=update_job.protocol_instance_id,
-                    completed_result=result,
-                    _is_completed=True,
+                    accepted=True,
                 )
             )
-        except Exception as e:
-            runtime.commands.append(
-                UpdateResponseCommand(
-                    protocol_instance_id=update_job.protocol_instance_id,
-                    rejected_failure=e,
+
+            # Track in-progress
+            runtime.in_progress_updates[update_job.id] = update_job.name
+
+            # Run handler - await inline for both sync and async
+            try:
+                result = handler(*update_job.args)
+                if inspect.iscoroutine(result):
+                    result = await result
+                runtime.commands.append(
+                    UpdateResponseCommand(
+                        protocol_instance_id=update_job.protocol_instance_id,
+                        completed_result=result,
+                        _is_completed=True,
+                    )
                 )
-            )
+            except Exception as e:
+                runtime.commands.append(
+                    UpdateResponseCommand(
+                        protocol_instance_id=update_job.protocol_instance_id,
+                        rejected_failure=e,
+                    )
+                )
+            finally:
+                runtime.in_progress_updates.pop(update_job.id, None)
+                runtime.notify_condition_waiters()
         finally:
-            runtime.in_progress_updates.pop(update_job.id, None)
-            runtime.notify_condition_waiters()
+            # Clear current update info so it doesn't leak to other handlers
+            _current_update_info.set(None)
 
     def _apply_update(
         self, runtime: WorkflowRuntime, update_job: UpdateWorkflowJob
