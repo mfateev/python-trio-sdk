@@ -374,6 +374,52 @@ impl CoreClientHandle {
         Ok(())
     }
 
+    /// Update a workflow execution
+    pub async fn update_workflow(
+        &self,
+        request_bytes: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let mut guard = self.client.lock().await;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("Client not initialized"))?;
+
+        use temporalio_common::protos::temporal::api::workflowservice::v1::UpdateWorkflowExecutionRequest;
+        let request = UpdateWorkflowExecutionRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode update workflow request: {}", e))?;
+
+        let response = client
+            .update_workflow_execution(tonic::Request::new(request))
+            .await
+            .map_err(|e| anyhow!("Failed to update workflow: {}", e))?;
+
+        let bytes = response.into_inner().encode_to_vec();
+        Ok(bytes)
+    }
+
+    /// Poll for a workflow execution update result
+    pub async fn poll_workflow_execution_update(
+        &self,
+        request_bytes: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let mut guard = self.client.lock().await;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("Client not initialized"))?;
+
+        use temporalio_common::protos::temporal::api::workflowservice::v1::PollWorkflowExecutionUpdateRequest;
+        let request = PollWorkflowExecutionUpdateRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode poll update request: {}", e))?;
+
+        let response = client
+            .poll_workflow_execution_update(tonic::Request::new(request))
+            .await
+            .map_err(|e| anyhow!("Failed to poll update: {}", e))?;
+
+        let bytes = response.into_inner().encode_to_vec();
+        Ok(bytes)
+    }
+
     /// List workflow executions
     pub async fn list_workflow_executions(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
         let mut guard = self.client.lock().await;

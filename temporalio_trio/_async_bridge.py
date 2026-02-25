@@ -985,6 +985,138 @@ class TrioBridgeWrapper:
 
         return result_container[0]
 
+    async def update_workflow(
+        self,
+        request_bytes: bytes,
+        timeout: Optional[float] = None,
+    ) -> bytes:
+        """Send an update to a workflow execution.
+
+        Args:
+            request_bytes: Serialized UpdateWorkflowExecutionRequest bytes (protobuf)
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Serialized UpdateWorkflowExecutionResponse bytes (protobuf)
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        event = trio.Event()
+        result_container: list = []
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for update workflow result."""
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError("update_workflow returned success without data")
+                        )
+                    else:
+                        result_container.append(bytes(data_bytes))
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "update_workflow", request_bytes, deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("update_workflow timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        if not result_container:
+            raise RuntimeError("update_workflow returned no result")
+
+        return result_container[0]
+
+    async def poll_workflow_execution_update(
+        self,
+        request_bytes: bytes,
+        timeout: Optional[float] = None,
+    ) -> bytes:
+        """Poll for a workflow execution update result.
+
+        Args:
+            request_bytes: Serialized PollWorkflowExecutionUpdateRequest bytes (protobuf)
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Serialized PollWorkflowExecutionUpdateResponse bytes (protobuf)
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        event = trio.Event()
+        result_container: list = []
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            """Callback for poll update result."""
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError(
+                                "poll_workflow_execution_update returned success without data"
+                            )
+                        )
+                    else:
+                        result_container.append(bytes(data_bytes))
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "poll_workflow_execution_update", request_bytes, deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("poll_workflow_execution_update timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        if not result_container:
+            raise RuntimeError("poll_workflow_execution_update returned no result")
+
+        return result_container[0]
+
     async def poll_activity_task(self, timeout: Optional[float] = None) -> bytes:
         """Poll for an activity task.
 

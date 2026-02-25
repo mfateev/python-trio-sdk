@@ -33,6 +33,7 @@ from temporalio_trio.worker._activation import (
     SignalExternalWorkflowCommand,
     StartChildWorkflowCommand,
     StartTimerCommand,
+    UpdateResponseCommand,
     UpsertSearchAttributesCommand,
 )
 
@@ -283,6 +284,18 @@ class WorkflowRuntime:
 
     query_handlers: dict[str, Callable[..., Any]] = field(default_factory=dict)
     """Query handlers: query_name -> handler function."""
+
+    # Update handlers
+    update_handlers: dict[str | None, Callable[..., Any]] = field(default_factory=dict)
+    """Update handlers: update_name -> handler function (None key for dynamic)."""
+
+    update_validators: dict[str | None, Callable[..., None]] = field(
+        default_factory=dict
+    )
+    """Update validators: update_name -> validator function (None key for dynamic)."""
+
+    in_progress_updates: dict[str, str] = field(default_factory=dict)
+    """In-progress update executions: update_id -> update_name."""
 
     # Cancellation (Phase 7)
     cancel_requested: bool = False
@@ -925,6 +938,31 @@ class WorkflowRuntime:
             handler: The handler function (must be synchronous).
         """
         self.query_handlers[name] = handler
+
+    def register_update_handler(
+        self,
+        name: str | None,
+        handler: Callable[..., Any],
+        validator: Callable[..., None] | None = None,
+    ) -> None:
+        """Register an update handler.
+
+        Args:
+            name: The name of the update to handle (None for dynamic).
+            handler: The handler function (can be sync or async).
+            validator: Optional validator function.
+        """
+        self.update_handlers[name] = handler
+        if validator is not None:
+            self.update_validators[name] = validator
+
+    def workflow_all_handlers_finished(self) -> bool:
+        """Whether all update and signal handlers have finished executing.
+
+        Returns:
+            True if there are no in-progress update or signal handler executions.
+        """
+        return len(self.in_progress_updates) == 0
 
     # Timer methods (Phase 2)
 

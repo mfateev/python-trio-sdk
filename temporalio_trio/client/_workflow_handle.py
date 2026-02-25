@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Optional
 
+import temporalio.api.update.v1
 import temporalio.common
 import temporalio.exceptions
 import trio
@@ -24,7 +25,11 @@ from temporalio.api.workflowservice.v1 import (
 )
 from temporalio.converter import DataConverter
 
-from temporalio_trio.workflow import _QueryDefinition, _SignalDefinition
+from temporalio_trio.workflow import (
+    _QueryDefinition,
+    _SignalDefinition,
+    _UpdateDefinition,
+)
 
 if TYPE_CHECKING:
     from ._client import Client
@@ -156,6 +161,19 @@ class WorkflowContinuedAsNewError(temporalio.exceptions.TemporalError):
             f"Workflow continued as new with run ID: {new_execution_run_id}"
         )
         self.new_execution_run_id = new_execution_run_id
+
+
+class WorkflowUpdateStage(IntEnum):
+    """Stage of a workflow update to wait for."""
+
+    ADMITTED = 1
+    """Update has been admitted by the server."""
+
+    ACCEPTED = 2
+    """Update has been accepted (validator passed)."""
+
+    COMPLETED = 3
+    """Update handler has completed."""
 
 
 class WorkflowHandle:
@@ -480,6 +498,180 @@ class WorkflowHandle:
             timeout=timeout,
         )
 
+    async def execute_update(
+        self,
+        update: str | Callable[..., Any],
+        arg: Any = None,
+        *,
+        args: Sequence[Any] = [],
+        id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> Any:
+        """Send an update request and wait for it to complete.
+
+        Args:
+            update: Update name or handler reference.
+            arg: Single argument to the update.
+            args: Multiple arguments to the update.
+            id: Optional update ID. Generated if not provided.
+            timeout: Optional timeout in seconds.
+
+        Returns:
+            The result of the update handler.
+
+        Raises:
+            RuntimeError: If the update fails.
+        """
+        handle = await self.start_update(
+            update,
+            arg=arg,
+            args=args,
+            id=id,
+            wait_for_stage=WorkflowUpdateStage.COMPLETED,
+            timeout=timeout,
+        )
+        return handle.result_value
+
+    async def start_update(
+        self,
+        update: str | Callable[..., Any],
+        arg: Any = None,
+        *,
+        args: Sequence[Any] = [],
+        id: Optional[str] = None,
+        wait_for_stage: "WorkflowUpdateStage" = WorkflowUpdateStage.ACCEPTED,
+        timeout: Optional[float] = None,
+    ) -> "WorkflowUpdateHandle":
+        """Send an update request and wait for it to reach the specified stage.
+
+        Args:
+            update: Update name or handler reference.
+            arg: Single argument to the update.
+            args: Multiple arguments to the update.
+            id: Optional update ID. Generated if not provided.
+            wait_for_stage: Stage to wait for (ACCEPTED or COMPLETED).
+            timeout: Optional timeout in seconds.
+
+        Returns:
+            Handle to the update.
+
+        Raises:
+            RuntimeError: If the update fails validation or handler fails.
+        """
+        import uuid
+
+        from temporalio.api.common.v1 import Payloads, WorkflowExecution
+        from temporalio.api.enums.v1 import UpdateWorkflowExecutionLifecycleStage
+        from temporalio.api.update.v1 import (
+            Input as UpdateInput,
+            Meta as UpdateMeta,
+            Request as UpdateRequest,
+            WaitPolicy,
+        )
+        from temporalio.api.workflowservice.v1 import (
+            UpdateWorkflowExecutionRequest,
+            UpdateWorkflowExecutionResponse,
+        )
+
+        # Resolve update name
+        if callable(update):
+            defn = _UpdateDefinition.from_fn(update)
+            if defn and defn.name:
+                update_name = defn.name
+            else:
+                update_name = getattr(update, "__name__", str(update))
+        else:
+            update_name = update
+
+        # Handle arg/args
+        if arg is not None and args:
+            raise ValueError("Cannot specify both arg and args")
+        if arg is not None:
+            actual_args = [arg]
+        else:
+            actual_args = list(args)
+
+        # Generate update ID if not provided
+        update_id = id or str(uuid.uuid4())
+
+        # Encode arguments
+        data_converter = self._client.data_converter
+        input_payloads = None
+        if actual_args:
+            encoded = data_converter.payload_converter.to_payloads(actual_args)
+            input_payloads = Payloads(payloads=encoded)
+
+        # Map stage
+        if wait_for_stage == WorkflowUpdateStage.COMPLETED:
+            lifecycle_stage = (
+                UpdateWorkflowExecutionLifecycleStage.UPDATE_WORKFLOW_EXECUTION_LIFECYCLE_STAGE_COMPLETED
+            )
+        else:
+            lifecycle_stage = (
+                UpdateWorkflowExecutionLifecycleStage.UPDATE_WORKFLOW_EXECUTION_LIFECYCLE_STAGE_ACCEPTED
+            )
+
+        # Build the UpdateWorkflowExecutionRequest
+        request = UpdateWorkflowExecutionRequest(
+            namespace=self._client.namespace,
+            workflow_execution=WorkflowExecution(
+                workflow_id=self._workflow_id,
+                run_id=self._run_id or "",
+            ),
+            request=UpdateRequest(
+                meta=UpdateMeta(
+                    update_id=update_id,
+                    identity=self._client.identity,
+                ),
+                input=UpdateInput(
+                    name=update_name,
+                    args=input_payloads,
+                ),
+            ),
+            wait_policy=WaitPolicy(
+                lifecycle_stage=lifecycle_stage,
+            ),
+        )
+
+        # Send via bridge
+        response_bytes = await self._client._bridge.update_workflow(
+            request.SerializeToString(),
+            timeout=timeout,
+        )
+
+        # Parse response
+        response = UpdateWorkflowExecutionResponse()
+        response.ParseFromString(response_bytes)
+
+        # Extract result if completed
+        result_value = None
+        if response.HasField("outcome"):
+            outcome = response.outcome
+            if outcome.HasField("success"):
+                if outcome.success.payloads:
+                    decoded = data_converter.payload_converter.from_payloads(
+                        outcome.success.payloads
+                    )
+                    result_value = decoded[0] if decoded else None
+            elif outcome.HasField("failure"):
+                # Convert failure to exception
+                from temporalio_trio.worker._failure_converter import (
+                    failure_to_exception,
+                )
+
+                cause = failure_to_exception(
+                    outcome.failure,
+                    data_converter.payload_converter,
+                )
+                raise RuntimeError(f"Update failed: {cause}")
+
+        return WorkflowUpdateHandle(
+            id=update_id,
+            workflow_id=self._workflow_id,
+            result_value=result_value,
+            _client=self._client,
+        )
+
     async def describe(
         self, *, timeout: Optional[float] = None
     ) -> WorkflowExecutionDescription:
@@ -717,6 +909,90 @@ class _WorkflowResult:
         self.follow_run_id = follow_run_id
 
 
+@dataclass
+class WorkflowUpdateHandle:
+    """Handle to a workflow update.
+
+    Returned by :py:meth:`WorkflowHandle.start_update`.
+    """
+
+    id: str
+    """Update ID."""
+
+    workflow_id: str
+    """Workflow ID."""
+
+    result_value: Any = None
+    """Result value if the update has completed."""
+
+    _client: Any = None
+    """Client reference for future polling."""
+
+    async def result(self, *, timeout: Optional[float] = None) -> Any:
+        """Get the result of the update.
+
+        If the update has already completed, returns the stored result.
+        Otherwise, polls for the result.
+
+        Args:
+            timeout: Optional timeout in seconds.
+
+        Returns:
+            The result of the update handler.
+        """
+        if self.result_value is not None:
+            return self.result_value
+
+        # Poll for result
+        from temporalio.api.update.v1 import WaitPolicy
+        from temporalio.api.enums.v1 import UpdateWorkflowExecutionLifecycleStage
+        from temporalio.api.workflowservice.v1 import (
+            PollWorkflowExecutionUpdateRequest,
+            PollWorkflowExecutionUpdateResponse,
+        )
+        from temporalio.api.update.v1 import UpdateRef
+        from temporalio.api.common.v1 import WorkflowExecution
+
+        request = PollWorkflowExecutionUpdateRequest(
+            namespace=self._client.namespace,
+            update_ref=UpdateRef(
+                workflow_execution=WorkflowExecution(
+                    workflow_id=self.workflow_id,
+                ),
+                update_id=self.id,
+            ),
+            identity=self._client.identity,
+            wait_policy=WaitPolicy(
+                lifecycle_stage=UpdateWorkflowExecutionLifecycleStage.UPDATE_WORKFLOW_EXECUTION_LIFECYCLE_STAGE_COMPLETED,
+            ),
+        )
+
+        response_bytes = await self._client._bridge.poll_workflow_execution_update(
+            request.SerializeToString(),
+            timeout=timeout,
+        )
+
+        response = PollWorkflowExecutionUpdateResponse()
+        response.ParseFromString(response_bytes)
+
+        if response.HasField("outcome"):
+            outcome = response.outcome
+            if outcome.HasField("success"):
+                if outcome.success.payloads:
+                    decoded = self._client.data_converter.payload_converter.from_payloads(
+                        outcome.success
+                    )
+                    self.result_value = decoded[0] if decoded else None
+                    return self.result_value
+            elif outcome.HasField("failure"):
+                cause = await self._client.data_converter.decode_failure(
+                    outcome.failure
+                )
+                raise RuntimeError(f"Update failed: {cause}")
+
+        return self.result_value
+
+
 __all__ = [
     "WorkflowContinuedAsNewError",
     "WorkflowExecutionDescription",
@@ -725,4 +1001,6 @@ __all__ = [
     "WorkflowHandle",
     "WorkflowHistory",
     "WorkflowQueryRejectedError",
+    "WorkflowUpdateHandle",
+    "WorkflowUpdateStage",
 ]

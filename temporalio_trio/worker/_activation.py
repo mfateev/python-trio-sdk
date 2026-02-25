@@ -59,6 +59,9 @@ __all__ = [
     "CancelExternalResolvedJob",
     # Search attribute commands
     "UpsertSearchAttributesCommand",
+    # Update workflow
+    "UpdateWorkflowJob",
+    "UpdateResponseCommand",
 ]
 
 
@@ -977,6 +980,80 @@ class ContinueAsNewCommand:
 
 
 # =============================================================================
+# Update Workflow (for workflow update handlers)
+# =============================================================================
+
+
+@dataclass
+class UpdateWorkflowJob:
+    """Job to invoke a workflow update handler.
+
+    This job is sent when an update is requested on the workflow.
+    The workflow should run the validator (if requested), accept/reject,
+    then run the handler and return a result.
+
+    Attributes:
+        id: Workflow-unique identifier for this update.
+        protocol_instance_id: Server-side tracking ID for the update protocol.
+        name: Name of the update handler to invoke.
+        args: Arguments to pass to the update handler.
+        run_validator: Whether to run the validator before the handler.
+        headers: Optional headers associated with the update.
+    """
+
+    id: str
+    """Workflow-unique identifier for this update."""
+
+    protocol_instance_id: str
+    """Server-side tracking ID for the update protocol."""
+
+    name: str
+    """Name of the update handler to invoke."""
+
+    args: tuple[Any, ...]
+    """Arguments to pass to the update handler."""
+
+    run_validator: bool = False
+    """Whether to run the validator before the handler."""
+
+    headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Headers associated with the update (e.g. for tracing/auth interceptors)."""
+
+
+@dataclass
+class UpdateResponseCommand:
+    """Command to respond to a workflow update.
+
+    Multiple instances with the same protocol_instance_id may be emitted:
+    1. accepted=True (validator passed or not run)
+    2. completed with result (handler done) OR rejected with failure (handler failed)
+
+    Attributes:
+        protocol_instance_id: Server-side tracking ID for the update protocol.
+        accepted: Whether the update was accepted (validator passed).
+        rejected_failure: Exception if validator or handler rejected the update.
+        completed_result: Result value from the update handler.
+    """
+
+    protocol_instance_id: str
+    """Server-side tracking ID for the update protocol."""
+
+    accepted: bool = False
+    """Whether the update was accepted (validator passed)."""
+
+    rejected_failure: BaseException | None = None
+    """Exception if validator or handler rejected the update."""
+
+    completed_result: Any = None
+    """Result value from the update handler."""
+
+    _is_completed: bool = False
+    """Internal flag to distinguish completion from empty/None result."""
+
+
+# =============================================================================
 # Complete Type Aliases (defined after all types are available)
 # =============================================================================
 
@@ -993,6 +1070,7 @@ WorkflowJob = (
     | ChildWorkflowResolvedJob
     | SignalExternalResolvedJob
     | CancelExternalResolvedJob
+    | UpdateWorkflowJob
 )
 """Union type for all possible activation jobs."""
 
@@ -1013,5 +1091,6 @@ WorkflowCommand = (
     | RequestCancelExternalWorkflowCommand
     | UpsertSearchAttributesCommand
     | ContinueAsNewCommand
+    | UpdateResponseCommand
 )
 """Union type for all possible completion commands."""

@@ -662,6 +662,37 @@ impl TrioAsyncBridge {
                 }
             }
 
+            "update_workflow" => {
+                let client = core_client.lock().await;
+                match client.update_workflow(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(
+                        request.request_id.clone(),
+                        bytes,
+                    ),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Update workflow failed: {}", e),
+                    ),
+                }
+            }
+
+            "poll_workflow_execution_update" => {
+                let client = core_client.lock().await;
+                match client
+                    .poll_workflow_execution_update(request.data.clone())
+                    .await
+                {
+                    Ok(bytes) => RequestResult::success(
+                        request.request_id.clone(),
+                        bytes,
+                    ),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Poll workflow execution update failed: {}", e),
+                    ),
+                }
+            }
+
             _ => RequestResult::error(
                 request.request_id.clone(),
                 format!("Unknown operation: {}", request.operation),
