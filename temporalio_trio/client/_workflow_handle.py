@@ -980,7 +980,7 @@ class WorkflowUpdateHandle:
             if outcome.HasField("success"):
                 if outcome.success.payloads:
                     decoded = self._client.data_converter.payload_converter.from_payloads(
-                        outcome.success
+                        outcome.success.payloads
                     )
                     self.result_value = decoded[0] if decoded else None
                     return self.result_value

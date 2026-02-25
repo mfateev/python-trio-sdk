@@ -697,3 +697,247 @@ async def test_update_targets_correct_execution(client: Client) -> None:
     await _run_with_worker(
         client, task_queue, [UpdateRespectsRunIdWorkflow], test
     )
+
+
+# ============================================================================
+# Workflow definitions for concurrent update handler tests
+# ============================================================================
+
+
+@workflow.defn
+class UpdateAwaitingSignalWorkflow:
+    """Workflow where async update handler awaits wait_condition set by signal.
+
+    This is the core deadlock scenario: the update handler calls
+    wait_condition(lambda: self._signal_received), which can only become true
+    when the main workflow processes a signal. If the update handler blocks
+    the _run_workflow loop, the signal can never arrive and the system
+    deadlocks.
+
+    Ported from sdk-python's UpdateCompletionIsHonoredWhenAfterWorkflowReturn
+    patterns.
+    """
+
+    def __init__(self) -> None:
+        self._signal_received = False
+        self._done = False
+
+    @workflow.run
+    async def run(self) -> str:
+        await workflow.wait_condition(lambda: self._done)
+        return "workflow-done"
+
+    @workflow.update
+    async def my_update(self) -> str:
+        # This wait_condition depends on state set by a signal.
+        # If this handler blocks the _run_workflow loop, the signal can never
+        # arrive and we deadlock.
+        await workflow.wait_condition(lambda: self._signal_received)
+        return "update-result"
+
+    @workflow.signal
+    def unblock_update(self) -> None:
+        self._signal_received = True
+
+    @workflow.signal
+    def finish(self) -> None:
+        self._done = True
+
+
+@workflow.defn
+class UpdateCompletionAfterWorkflowReturnWorkflow:
+    """Update handler completes after main workflow returns.
+
+    The update handler awaits wait_condition(workflow_returned), which becomes
+    true when the main workflow's run method returns. The completed command for
+    the update must be sent AFTER the workflow completion command, and the
+    protocol allows this since accepted and completed responses can span
+    different activation completions.
+
+    Ported from sdk-python's
+    UpdateCompletionIsHonoredWhenAfterWorkflowReturn1Workflow.
+    """
+
+    def __init__(self) -> None:
+        self._workflow_returned = False
+
+    @workflow.run
+    async def run(self) -> str:
+        self._workflow_returned = True
+        return "workflow-result"
+
+    @workflow.update
+    async def my_update(self) -> str:
+        await workflow.wait_condition(lambda: self._workflow_returned)
+        return "update-result"
+
+
+@workflow.defn
+class ConcurrentUpdatesWorkflow:
+    """Workflow with multiple concurrent async update handlers.
+
+    Demonstrates that multiple async update handlers can run concurrently,
+    each waiting on different signals to unblock them.
+    """
+
+    def __init__(self) -> None:
+        self._results: list[str] = []
+        self._unblock_first = False
+        self._unblock_second = False
+        self._done = False
+
+    @workflow.run
+    async def run(self) -> list[str]:
+        await workflow.wait_condition(lambda: self._done)
+        return self._results
+
+    @workflow.update
+    async def first_update(self) -> str:
+        await workflow.wait_condition(lambda: self._unblock_first)
+        self._results.append("first")
+        return "first-done"
+
+    @workflow.update
+    async def second_update(self) -> str:
+        await workflow.wait_condition(lambda: self._unblock_second)
+        self._results.append("second")
+        return "second-done"
+
+    @workflow.signal
+    def unblock_first(self) -> None:
+        self._unblock_first = True
+
+    @workflow.signal
+    def unblock_second(self) -> None:
+        self._unblock_second = True
+
+    @workflow.signal
+    def finish(self) -> None:
+        self._done = True
+
+
+# ============================================================================
+# E2E Tests - Concurrent update handlers
+# ============================================================================
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_update_handler_awaits_signal(client: Client) -> None:
+    """Test async update handler that awaits wait_condition set by a signal.
+
+    This is the core deadlock scenario: previously, the update handler would
+    block the _run_workflow loop, preventing the signal from arriving. With
+    concurrent update handlers, the handler runs as a nursery task and the
+    main workflow loop can process signals.
+    """
+    task_queue = f"test-update-signal-{uuid.uuid4().hex[:8]}"
+
+    async def test():
+        handle = await client.start_workflow(
+            UpdateAwaitingSignalWorkflow,
+            id=f"update-signal-{uuid.uuid4().hex[:8]}",
+            task_queue=task_queue,
+        )
+
+        # Start the update — it will await wait_condition(signal_received)
+        # Use start_update so we don't block waiting for the result
+        update_handle = await handle.start_update(
+            "my_update",
+        )
+
+        # Send signal to unblock the update handler
+        await handle.signal("unblock_update")
+
+        # Now get the update result — should succeed without deadlock
+        update_result = await update_handle.result()
+        assert update_result == "update-result"
+
+        # Finish the workflow
+        await handle.signal("finish")
+        wf_result = await handle.result()
+        assert wf_result == "workflow-done"
+
+    await _run_with_worker(
+        client, task_queue, [UpdateAwaitingSignalWorkflow], test
+    )
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_update_completion_after_workflow_return(client: Client) -> None:
+    """Test update handler completes after main workflow returns.
+
+    Ported from sdk-python's
+    test_update_completion_is_honored_when_after_workflow_return_1.
+
+    The update handler awaits wait_condition(workflow_returned), which becomes
+    true only when the main workflow's run method returns.
+    """
+    task_queue = f"test-update-after-return-{uuid.uuid4().hex[:8]}"
+
+    async def test():
+        handle = await client.start_workflow(
+            UpdateCompletionAfterWorkflowReturnWorkflow,
+            id=f"update-after-return-{uuid.uuid4().hex[:8]}",
+            task_queue=task_queue,
+        )
+
+        # The update handler awaits workflow_returned which becomes true
+        # when the main workflow run() method returns. The workflow run()
+        # returns immediately, but the update handler needs to observe that.
+        update_result = await handle.execute_update("my_update")
+        assert update_result == "update-result"
+
+        wf_result = await handle.result()
+        assert wf_result == "workflow-result"
+
+    await _run_with_worker(
+        client,
+        task_queue,
+        [UpdateCompletionAfterWorkflowReturnWorkflow],
+        test,
+    )
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_concurrent_update_handlers(client: Client) -> None:
+    """Test multiple concurrent async update handlers.
+
+    Two update handlers are started concurrently, each waiting on different
+    signals. They are unblocked in reverse order to verify true concurrency
+    (not serialized execution).
+    """
+    task_queue = f"test-concurrent-updates-{uuid.uuid4().hex[:8]}"
+
+    async def test():
+        handle = await client.start_workflow(
+            ConcurrentUpdatesWorkflow,
+            id=f"concurrent-updates-{uuid.uuid4().hex[:8]}",
+            task_queue=task_queue,
+        )
+
+        # Start both updates — they each await their own wait_condition
+        update1_handle = await handle.start_update("first_update")
+        update2_handle = await handle.start_update("second_update")
+
+        # Unblock in reverse order — second first, then first
+        await handle.signal("unblock_second")
+        result2 = await update2_handle.result()
+        assert result2 == "second-done"
+
+        await handle.signal("unblock_first")
+        result1 = await update1_handle.result()
+        assert result1 == "first-done"
+
+        # Finish workflow
+        await handle.signal("finish")
+        results = await handle.result()
+        # Both handlers completed
+        assert "first" in results
+        assert "second" in results
+
+    await _run_with_worker(
+        client, task_queue, [ConcurrentUpdatesWorkflow], test
+    )
