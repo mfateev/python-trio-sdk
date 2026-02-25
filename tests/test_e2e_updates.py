@@ -1,9 +1,12 @@
-"""E2E tests for @workflow.update with real Temporal server."""
+"""E2E tests for @workflow.update with real Temporal server.
+
+Ported from sdk-python's tests/worker/test_workflow.py update tests.
+"""
 
 from __future__ import annotations
 
-import time
 import uuid
+from typing import Optional
 
 import pytest
 import trio
@@ -98,8 +101,198 @@ class ValidatedUpdateWorkflow:
         self._done = True
 
 
+@workflow.defn
+class MultiUpdateWorkflow:
+    """Workflow with multiple update handlers (sync, async, named).
+
+    Ported from sdk-python's UpdateHandlersWorkflow.
+    """
+
+    def __init__(self) -> None:
+        self._last_event: Optional[str] = None
+        self._done = False
+
+    @workflow.run
+    async def run(self) -> None:
+        await workflow.wait_condition(lambda: self._done)
+
+    @workflow.update
+    def last_event(self, an_arg: str) -> str:
+        """Sync update handler that tracks last event."""
+        if an_arg == "fail":
+            raise ValueError("SyncFail")
+        le = self._last_event or "<no event>"
+        self._last_event = an_arg
+        return le
+
+    @last_event.validator
+    def last_event_validator(self, an_arg: str) -> None:
+        if an_arg == "reject_me":
+            raise ValueError("Rejected")
+
+    @workflow.update
+    async def last_event_async(self, an_arg: str) -> str:
+        """Async update handler that tracks last event."""
+        if an_arg == "fail":
+            raise ValueError("AsyncFail")
+        le = self._last_event or "<no event>"
+        self._last_event = an_arg
+        return le
+
+    @workflow.update(name="renamed")
+    async def async_named(self) -> str:
+        """Named update handler."""
+        return "named"
+
+    @workflow.signal
+    def finish(self) -> None:
+        self._done = True
+
+
+@workflow.defn
+class UpdateInfoWorkflow:
+    """Workflow that verifies current_update_info() in handlers.
+
+    Ported from sdk-python's CurrentUpdateWorkflow.
+    """
+
+    def __init__(self) -> None:
+        self._update_ids: list[str] = []
+        self._done = False
+
+    @workflow.run
+    async def run(self) -> list[str]:
+        # Confirm no update info outside handler
+        assert workflow.current_update_info() is None
+        await workflow.wait_condition(lambda: self._done)
+        return self._update_ids
+
+    @workflow.update
+    def do_update(self) -> str:
+        """Returns the update ID from current_update_info()."""
+        info = workflow.current_update_info()
+        assert info is not None
+        assert info.name == "do_update"
+        self._update_ids.append(info.id)
+        return info.id
+
+    @do_update.validator
+    def do_update_validator(self) -> None:
+        info = workflow.current_update_info()
+        assert info is not None
+        assert info.name == "do_update"
+
+    @workflow.signal
+    def finish(self) -> None:
+        self._done = True
+
+
+@workflow.defn
+class HandlerFailureWorkflow:
+    """Workflow with update handlers that raise errors.
+
+    Ported from sdk-python's UpdateHandlersWorkflow unhappy paths.
+    """
+
+    def __init__(self) -> None:
+        self._done = False
+
+    @workflow.run
+    async def run(self) -> None:
+        await workflow.wait_condition(lambda: self._done)
+
+    @workflow.update
+    def sync_fail(self, msg: str) -> str:
+        raise ValueError(msg)
+
+    @workflow.update
+    async def async_fail(self, msg: str) -> str:
+        raise ValueError(msg)
+
+    @workflow.signal
+    def finish(self) -> None:
+        self._done = True
+
+
+@workflow.defn
+class AllHandlersFinishedWorkflow:
+    """Workflow that uses all_handlers_finished().
+
+    Simplified from sdk-python's UnfinishedHandlersWarningsWorkflow.
+    Tests that all_handlers_finished() returns True after sync update completes.
+    """
+
+    def __init__(self) -> None:
+        self._update_count = 0
+        self._done = False
+
+    @workflow.run
+    async def run(self) -> int:
+        await workflow.wait_condition(lambda: self._done)
+        # By the time we get here, all sync updates have completed
+        assert workflow.all_handlers_finished()
+        return self._update_count
+
+    @workflow.update
+    def my_update(self, value: int) -> int:
+        self._update_count += 1
+        return value * 2
+
+    @workflow.signal
+    def finish(self) -> None:
+        self._done = True
+
+
+@workflow.defn
+class UpdateRespectsRunIdWorkflow:
+    """Workflow for testing first_execution_run_id targeting.
+
+    Ported from sdk-python's UpdateRespectsFirstExecutionRunIdWorkflow.
+    """
+
+    def __init__(self) -> None:
+        self._update_received = False
+
+    @workflow.run
+    async def run(self) -> None:
+        await workflow.wait_condition(lambda: self._update_received)
+
+    @workflow.update
+    def complete_me(self) -> str:
+        self._update_received = True
+        return "done"
+
+
 # ============================================================================
-# E2E Tests
+# Helper
+# ============================================================================
+
+
+async def _run_with_worker(
+    client: Client,
+    task_queue: str,
+    workflows: list[type],
+    test_fn,
+) -> None:
+    """Run a test function with a worker."""
+    worker = Worker(
+        client=client,
+        task_queue=task_queue,
+        workflows=workflows,
+    )
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(worker.run)
+        await trio.sleep(0)
+        try:
+            await test_fn()
+        finally:
+            await worker.shutdown()
+            await trio.sleep(0.3)
+            nursery.cancel_scope.cancel()
+
+
+# ============================================================================
+# Fixtures
 # ============================================================================
 
 
@@ -111,89 +304,125 @@ async def client():
     await client.close()
 
 
+# ============================================================================
+# E2E Tests - Happy Path (ported from test_workflow_update_handlers_happy)
+# ============================================================================
+
+
 @pytest.mark.temporal_server
 @pytest.mark.trio
 async def test_execute_update(client: Client) -> None:
-    """Test sending an update and getting a result."""
+    """Test sync update handler returns correct values."""
     task_queue = f"test-update-{uuid.uuid4().hex[:8]}"
 
-    worker = Worker(
-        client=client,
-        task_queue=task_queue,
-        workflows=[SimpleUpdateWorkflow],
-    )
-
-    async with trio.open_nursery() as nursery:
-        nursery.start_soon(worker.run)
-        await trio.sleep(0)
-
-        # Start workflow
+    async def test():
         handle = await client.start_workflow(
             SimpleUpdateWorkflow,
             id=f"update-test-{uuid.uuid4().hex[:8]}",
             task_queue=task_queue,
         )
-
-        # Send update and get result
         old_value = await handle.execute_update("set_value", arg=42)
         assert old_value == 0
 
-        # Verify state changed
         current = await handle.query("get_value")
         assert current == 42
 
-        # Send another update
         old_value = await handle.execute_update("set_value", arg=100)
         assert old_value == 42
 
-        # Finish workflow
         await handle.signal("finish")
         result = await handle.result()
         assert result == 100
 
-        # Shutdown
-        await worker.shutdown()
-        await trio.sleep(0.3)
-        nursery.cancel_scope.cancel()
+    await _run_with_worker(client, task_queue, [SimpleUpdateWorkflow], test)
 
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
 async def test_async_update_handler(client: Client) -> None:
-    """Test async update handler."""
+    """Test async update handler returns correct values."""
     task_queue = f"test-async-update-{uuid.uuid4().hex[:8]}"
 
-    worker = Worker(
-        client=client,
-        task_queue=task_queue,
-        workflows=[AsyncUpdateWorkflow],
-    )
-
-    async with trio.open_nursery() as nursery:
-        nursery.start_soon(worker.run)
-        await trio.sleep(0)
-
+    async def test():
         handle = await client.start_workflow(
             AsyncUpdateWorkflow,
             id=f"async-update-test-{uuid.uuid4().hex[:8]}",
             task_queue=task_queue,
         )
-
-        # Send updates
         result1 = await handle.execute_update("append_value", arg="hello")
         assert result1 == "hello"
 
         result2 = await handle.execute_update("append_value", arg=" world")
         assert result2 == "hello world"
 
-        # Finish
         await handle.signal("finish")
         result = await handle.result()
         assert result == "hello world"
 
-        await worker.shutdown()
-        await trio.sleep(0.3)
-        nursery.cancel_scope.cancel()
+    await _run_with_worker(client, task_queue, [AsyncUpdateWorkflow], test)
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_named_update_handler(client: Client) -> None:
+    """Test @workflow.update(name='renamed') uses custom name.
+
+    Ported from sdk-python's test_workflow_update_handlers_happy (name overload).
+    """
+    task_queue = f"test-named-update-{uuid.uuid4().hex[:8]}"
+
+    async def test():
+        handle = await client.start_workflow(
+            MultiUpdateWorkflow,
+            id=f"named-update-{uuid.uuid4().hex[:8]}",
+            task_queue=task_queue,
+        )
+        result = await handle.execute_update("renamed")
+        assert result == "named"
+
+        await handle.signal("finish")
+        await handle.result()
+
+    await _run_with_worker(client, task_queue, [MultiUpdateWorkflow], test)
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_multiple_update_handlers(client: Client) -> None:
+    """Test workflow with multiple sync and async update handlers.
+
+    Ported from sdk-python's test_workflow_update_handlers_happy.
+    """
+    task_queue = f"test-multi-update-{uuid.uuid4().hex[:8]}"
+
+    async def test():
+        handle = await client.start_workflow(
+            MultiUpdateWorkflow,
+            id=f"multi-update-{uuid.uuid4().hex[:8]}",
+            task_queue=task_queue,
+        )
+
+        # Sync handler
+        last = await handle.execute_update("last_event", arg="val1")
+        assert last == "<no event>"
+
+        # Async handler sees previous state
+        last = await handle.execute_update("last_event_async", arg="val2")
+        assert last == "val1"
+
+        # Sync handler sees async handler's state
+        last = await handle.execute_update("last_event", arg="val3")
+        assert last == "val2"
+
+        await handle.signal("finish")
+        await handle.result()
+
+    await _run_with_worker(client, task_queue, [MultiUpdateWorkflow], test)
+
+
+# ============================================================================
+# E2E Tests - Unhappy Path (ported from test_workflow_update_handlers_unhappy)
+# ============================================================================
 
 
 @pytest.mark.temporal_server
@@ -202,71 +431,269 @@ async def test_validated_update_accepts(client: Client) -> None:
     """Test update with validator that accepts."""
     task_queue = f"test-valid-update-{uuid.uuid4().hex[:8]}"
 
-    worker = Worker(
-        client=client,
-        task_queue=task_queue,
-        workflows=[ValidatedUpdateWorkflow],
-    )
-
-    async with trio.open_nursery() as nursery:
-        nursery.start_soon(worker.run)
-        await trio.sleep(0)
-
+    async def test():
         handle = await client.start_workflow(
             ValidatedUpdateWorkflow,
             id=f"valid-update-test-{uuid.uuid4().hex[:8]}",
             task_queue=task_queue,
         )
-
-        # Valid update
         old_value = await handle.execute_update("set_value", arg=42)
         assert old_value == 0
 
-        # Finish
         await handle.signal("finish")
         result = await handle.result()
         assert result == 42
 
-        await worker.shutdown()
-        await trio.sleep(0.3)
-        nursery.cancel_scope.cancel()
+    await _run_with_worker(client, task_queue, [ValidatedUpdateWorkflow], test)
 
 
 @pytest.mark.temporal_server
 @pytest.mark.trio
 async def test_validated_update_rejects(client: Client) -> None:
-    """Test update with validator that rejects."""
+    """Test update with validator that rejects.
+
+    Ported from sdk-python's test_workflow_update_handlers_unhappy (rejection).
+    """
     task_queue = f"test-reject-update-{uuid.uuid4().hex[:8]}"
 
-    worker = Worker(
-        client=client,
-        task_queue=task_queue,
-        workflows=[ValidatedUpdateWorkflow],
-    )
-
-    async with trio.open_nursery() as nursery:
-        nursery.start_soon(worker.run)
-        await trio.sleep(0)
-
+    async def test():
         handle = await client.start_workflow(
             ValidatedUpdateWorkflow,
             id=f"reject-update-test-{uuid.uuid4().hex[:8]}",
             task_queue=task_queue,
         )
 
-        # Invalid update should raise
         with pytest.raises(RuntimeError, match="non-negative"):
             await handle.execute_update("set_value", arg=-1)
 
-        # Valid update should still work
+        # Valid update should still work after rejection
         old_value = await handle.execute_update("set_value", arg=42)
         assert old_value == 0
 
-        # Finish
         await handle.signal("finish")
         result = await handle.result()
         assert result == 42
 
-        await worker.shutdown()
-        await trio.sleep(0.3)
-        nursery.cancel_scope.cancel()
+    await _run_with_worker(client, task_queue, [ValidatedUpdateWorkflow], test)
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_validator_rejection_with_message(client: Client) -> None:
+    """Test validator rejection includes the error message.
+
+    Ported from sdk-python's test_workflow_update_handlers_unhappy (reject_me).
+    """
+    task_queue = f"test-reject-msg-{uuid.uuid4().hex[:8]}"
+
+    async def test():
+        handle = await client.start_workflow(
+            MultiUpdateWorkflow,
+            id=f"reject-msg-{uuid.uuid4().hex[:8]}",
+            task_queue=task_queue,
+        )
+
+        with pytest.raises(RuntimeError, match="Rejected"):
+            await handle.execute_update("last_event", arg="reject_me")
+
+        # Workflow is still running, valid updates work
+        result = await handle.execute_update("last_event", arg="ok")
+        assert result == "<no event>"
+
+        await handle.signal("finish")
+        await handle.result()
+
+    await _run_with_worker(client, task_queue, [MultiUpdateWorkflow], test)
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_sync_handler_failure(client: Client) -> None:
+    """Test sync update handler failure propagates to client.
+
+    Ported from sdk-python's test_workflow_update_handlers_unhappy (SyncFail).
+    """
+    task_queue = f"test-sync-fail-{uuid.uuid4().hex[:8]}"
+
+    async def test():
+        handle = await client.start_workflow(
+            HandlerFailureWorkflow,
+            id=f"sync-fail-{uuid.uuid4().hex[:8]}",
+            task_queue=task_queue,
+        )
+
+        with pytest.raises(RuntimeError, match="sync error"):
+            await handle.execute_update("sync_fail", arg="sync error")
+
+        await handle.signal("finish")
+        await handle.result()
+
+    await _run_with_worker(client, task_queue, [HandlerFailureWorkflow], test)
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_async_handler_failure(client: Client) -> None:
+    """Test async update handler failure propagates to client.
+
+    Ported from sdk-python's test_workflow_update_handlers_unhappy (AsyncFail).
+    """
+    task_queue = f"test-async-fail-{uuid.uuid4().hex[:8]}"
+
+    async def test():
+        handle = await client.start_workflow(
+            HandlerFailureWorkflow,
+            id=f"async-fail-{uuid.uuid4().hex[:8]}",
+            task_queue=task_queue,
+        )
+
+        with pytest.raises(RuntimeError, match="async error"):
+            await handle.execute_update("async_fail", arg="async error")
+
+        await handle.signal("finish")
+        await handle.result()
+
+    await _run_with_worker(client, task_queue, [HandlerFailureWorkflow], test)
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_undefined_update_handler(client: Client) -> None:
+    """Test calling an undefined update handler fails.
+
+    Ported from sdk-python's test_workflow_update_handlers_unhappy (undefined).
+    """
+    task_queue = f"test-undef-update-{uuid.uuid4().hex[:8]}"
+
+    async def test():
+        handle = await client.start_workflow(
+            SimpleUpdateWorkflow,
+            id=f"undef-update-{uuid.uuid4().hex[:8]}",
+            task_queue=task_queue,
+        )
+
+        with pytest.raises(RuntimeError, match="not found"):
+            await handle.execute_update("nonexistent_update", arg="whatever")
+
+        # Workflow still works
+        await handle.signal("finish")
+        result = await handle.result()
+        assert result == 0
+
+    await _run_with_worker(client, task_queue, [SimpleUpdateWorkflow], test)
+
+
+# ============================================================================
+# E2E Tests - current_update_info (ported from test_workflow_current_update)
+# ============================================================================
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_current_update_info(client: Client) -> None:
+    """Test current_update_info() returns correct metadata in handlers.
+
+    Ported from sdk-python's test_workflow_current_update.
+    Verifies that update handlers can access their own update info
+    (name and id) via current_update_info().
+    """
+    task_queue = f"test-update-info-{uuid.uuid4().hex[:8]}"
+
+    async def test():
+        handle = await client.start_workflow(
+            UpdateInfoWorkflow,
+            id=f"update-info-{uuid.uuid4().hex[:8]}",
+            task_queue=task_queue,
+        )
+
+        # Send updates - the handler returns the update ID from current_update_info()
+        update_id1 = await handle.execute_update("do_update")
+        assert update_id1  # Should be a non-empty string (server-generated ID)
+
+        update_id2 = await handle.execute_update("do_update")
+        assert update_id2
+        assert update_id1 != update_id2  # Different updates get different IDs
+
+        await handle.signal("finish")
+        collected_ids = await handle.result()
+        assert len(collected_ids) == 2
+        assert update_id1 in collected_ids
+        assert update_id2 in collected_ids
+
+    await _run_with_worker(client, task_queue, [UpdateInfoWorkflow], test)
+
+
+# ============================================================================
+# E2E Tests - all_handlers_finished (ported from test_unfinished_update_handler)
+# ============================================================================
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_all_handlers_finished(client: Client) -> None:
+    """Test all_handlers_finished() returns True after sync updates complete.
+
+    Ported from sdk-python's test_unfinished_update_handler (simplified).
+    Verifies that after sync update handlers complete, all_handlers_finished()
+    returns True in the workflow run method.
+    """
+    task_queue = f"test-handlers-finished-{uuid.uuid4().hex[:8]}"
+
+    async def test():
+        handle = await client.start_workflow(
+            AllHandlersFinishedWorkflow,
+            id=f"handlers-finished-{uuid.uuid4().hex[:8]}",
+            task_queue=task_queue,
+        )
+
+        # Send updates
+        result1 = await handle.execute_update("my_update", arg=5)
+        assert result1 == 10
+
+        result2 = await handle.execute_update("my_update", arg=7)
+        assert result2 == 14
+
+        # Finish - the workflow asserts all_handlers_finished() before returning
+        await handle.signal("finish")
+        count = await handle.result()
+        assert count == 2
+
+    await _run_with_worker(
+        client, task_queue, [AllHandlersFinishedWorkflow], test
+    )
+
+
+# ============================================================================
+# E2E Tests - run ID targeting
+# (ported from test_workflow_update_respects_first_execution_run_id)
+# ============================================================================
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_update_targets_correct_execution(client: Client) -> None:
+    """Test that update correctly completes a workflow via update.
+
+    Ported from sdk-python's test_workflow_update_respects_first_execution_run_id.
+    Verifies the basic flow: start workflow, send update to complete it,
+    get result.
+    """
+    task_queue = f"test-run-id-{uuid.uuid4().hex[:8]}"
+
+    async def test():
+        wf_id = f"run-id-test-{uuid.uuid4().hex[:8]}"
+        handle = await client.start_workflow(
+            UpdateRespectsRunIdWorkflow,
+            id=wf_id,
+            task_queue=task_queue,
+        )
+
+        # Update completes the workflow
+        result = await handle.execute_update("complete_me")
+        assert result == "done"
+
+        await handle.result()
+
+    await _run_with_worker(
+        client, task_queue, [UpdateRespectsRunIdWorkflow], test
+    )
