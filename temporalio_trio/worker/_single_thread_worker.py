@@ -22,6 +22,7 @@ import random
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
+import temporalio.converter
 import trio
 
 from temporalio_trio.worker._activation import (
@@ -119,6 +120,8 @@ class SingleThreadWorker:
         replay_mode: bool = False,
         on_eviction_hook: Callable[[str, int | None, str | None], None]
         | None = None,
+        data_converter: temporalio.converter.DataConverter = temporalio.converter.DataConverter.default,
+        debug_mode: bool = False,
     ) -> None:
         """Initialize the single-thread worker.
 
@@ -135,6 +138,8 @@ class SingleThreadWorker:
                 (poll_replay_activation / complete_replay_activation).
             on_eviction_hook: Optional callback invoked on workflow eviction.
                 Called as ``on_eviction_hook(run_id, reason, message)``.
+            data_converter: Data converter for payload serialization.
+            debug_mode: If True, enable debug mode.
         """
         self._bridge = bridge
         self._task_queue = task_queue
@@ -142,6 +147,8 @@ class SingleThreadWorker:
         self._workflow_failure_exception_types = list(workflow_failure_exception_types)
         self._interceptors = list(interceptors)
         self._replay_mode = replay_mode
+        self._data_converter = data_converter
+        self._debug_mode = debug_mode
         self._on_eviction_hook = on_eviction_hook
         self._shutdown_event = trio.Event()
 
@@ -261,10 +268,7 @@ class SingleThreadWorker:
         bridge_act = wa.WorkflowActivation()
         bridge_act.ParseFromString(activation_bytes)
 
-        import temporalio.converter
-
-        data_converter = temporalio.converter.DataConverter()
-        poc_act = bridge_to_poc_activation(bridge_act, data_converter)
+        poc_act = bridge_to_poc_activation(bridge_act, self._data_converter)
 
         # Check if the raw protobuf had a remove_from_cache eviction job
         # (bridge_to_poc_activation tracks this via remove_from_cache flag,
@@ -1317,11 +1321,8 @@ class SingleThreadWorker:
 
         poc_completion = WorkflowActivationCompletion(commands=commands)
 
-        import temporalio.converter
-
-        data_converter = temporalio.converter.DataConverter()
         bridge_completion = poc_to_bridge_completion(
-            run_id, poc_completion, data_converter
+            run_id, poc_completion, self._data_converter
         )
 
         completion_bytes = bridge_completion.SerializeToString()

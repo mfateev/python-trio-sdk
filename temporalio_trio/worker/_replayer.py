@@ -14,6 +14,7 @@ from typing import (
     Optional,
     Type,
 )
+from typing_extensions import TypedDict
 
 import temporalio.api.history.v1
 import temporalio.converter
@@ -23,17 +24,17 @@ from temporalio_trio._async_bridge import TrioBridgeWrapper
 from temporalio_trio.client._workflow_handle import WorkflowHistory
 from temporalio_trio.worker._interceptor import Interceptor
 from temporalio_trio.worker._single_thread_worker import SingleThreadWorker
-from temporalio_trio.workflow import NondeterminismError
-
-if TYPE_CHECKING:
-    from typing_extensions import TypedDict
+from temporalio_trio.workflow import NondeterminismError, _Definition
 
 logger = logging.getLogger(__name__)
 
-# Eviction reason constants from protobuf
-_EVICTION_REASON_NONDETERMINISM = 3
-_EVICTION_REASON_CACHE_FULL = 1
-_EVICTION_REASON_LANG_REQUESTED = 5
+# Eviction reason constants derived from protobuf enum
+import temporalio.bridge.proto.workflow_activation.workflow_activation_pb2 as _wa_pb2
+
+_EvictionReason = _wa_pb2.RemoveFromCache.EvictionReason
+_EVICTION_REASON_NONDETERMINISM = int(_EvictionReason.NONDETERMINISM)
+_EVICTION_REASON_CACHE_FULL = int(_EvictionReason.CACHE_FULL)
+_EVICTION_REASON_LANG_REQUESTED = int(_EvictionReason.LANG_REQUESTED)
 
 
 class Replayer:
@@ -50,6 +51,7 @@ class Replayer:
         identity: Optional[str] = None,
         workflow_failure_exception_types: Sequence[Type[BaseException]] = [],
         debug_mode: bool = False,
+        disable_safe_workflow_eviction: bool = False,
     ) -> None:
         """Create a replayer to replay workflows from history.
 
@@ -63,6 +65,10 @@ class Replayer:
             workflow_failure_exception_types: Exception types that cause
                 workflow failure instead of task failure.
             debug_mode: If True, enable debug mode.
+            disable_safe_workflow_eviction: If True, disable safe workflow
+                eviction. This should generally only be set true if a user
+                is having non-determinism issues that are actually
+                deterministic.
         """
         if not workflows:
             raise ValueError("At least one workflow must be specified")
@@ -75,6 +81,7 @@ class Replayer:
             identity=identity,
             workflow_failure_exception_types=workflow_failure_exception_types,
             debug_mode=debug_mode,
+            disable_safe_workflow_eviction=disable_safe_workflow_eviction,
         )
 
     def config(self) -> ReplayerConfig:
@@ -83,7 +90,7 @@ class Replayer:
         Returns:
             Configuration, shallow-copied.
         """
-        config = self._config.copy()
+        config = ReplayerConfig(**self._config)  # type: ignore[arg-type]
         config["workflows"] = list(config["workflows"])
         return config
 
@@ -168,6 +175,8 @@ class Replayer:
 
         last_replay_failure: Optional[Exception] = None
         last_replay_complete = trio.Event()
+        worker_failed = trio.Event()
+        worker_error: Optional[BaseException] = None
 
         def on_eviction_hook(
             run_id: str,
@@ -188,7 +197,25 @@ class Replayer:
                 last_replay_failure = None
             last_replay_complete.set()
 
-        task_queue = f"replay-{self._config.get('build_id') or 'trio-replay-worker'}"
+        task_queue = f"replay-{self._config.get('build_id')}"
+
+        # Compute nondeterminism-as-workflow-fail flags
+        wf_fail_types = self._config.get(
+            "workflow_failure_exception_types", []
+        )
+        nondeterminism_as_wf_fail = any(
+            issubclass(NondeterminismError, typ) for typ in wf_fail_types
+        )
+        # Per-workflow types: check each registered workflow's
+        # failure_exception_types from its definition
+        nondeterminism_as_wf_fail_for_types: set[str] = set()
+        for wf_cls in self._config["workflows"]:
+            defn = _Definition.must_from_class(wf_cls)
+            if defn.name and any(
+                issubclass(NondeterminismError, typ)
+                for typ in defn.failure_exception_types
+            ):
+                nondeterminism_as_wf_fail_for_types.add(defn.name)
 
         try:
             # Initialize the replay worker in the bridge
@@ -197,6 +224,8 @@ class Replayer:
                 task_queue=task_queue,
                 build_id=self._config.get("build_id"),
                 identity=self._config.get("identity"),
+                nondeterminism_as_workflow_fail=nondeterminism_as_wf_fail,
+                nondeterminism_as_workflow_fail_for_types=nondeterminism_as_wf_fail_for_types,
             )
 
             # Create SingleThreadWorker in replay mode
@@ -210,6 +239,8 @@ class Replayer:
                 interceptors=self._config["interceptors"],
                 replay_mode=True,
                 on_eviction_hook=on_eviction_hook,
+                data_converter=self._config["data_converter"],
+                debug_mode=self._config["debug_mode"],
             )
 
             # We capture exceptions from the user's iteration and re-raise
@@ -221,8 +252,13 @@ class Replayer:
                 worker_task_scope = trio.CancelScope()
 
                 async def run_worker() -> None:
-                    with worker_task_scope:
-                        await worker.run()
+                    nonlocal worker_error
+                    try:
+                        with worker_task_scope:
+                            await worker.run()
+                    except BaseException as e:
+                        worker_error = e
+                        worker_failed.set()
 
                 nursery.start_soon(run_worker)
 
@@ -245,8 +281,22 @@ class Replayer:
                             history.workflow_id, history_bytes
                         )
 
-                        # Wait for eviction event (replay complete)
-                        await last_replay_complete.wait()
+                        # Wait for eviction event (replay complete) or worker failure
+                        async with trio.open_nursery() as race_nursery:
+
+                            async def wait_complete() -> None:
+                                await last_replay_complete.wait()
+                                race_nursery.cancel_scope.cancel()
+
+                            async def wait_failed() -> None:
+                                await worker_failed.wait()
+                                race_nursery.cancel_scope.cancel()
+
+                            race_nursery.start_soon(wait_complete)
+                            race_nursery.start_soon(wait_failed)
+
+                        if worker_failed.is_set() and worker_error is not None:
+                            raise worker_error
 
                         yield WorkflowReplayResult(
                             history=history,
@@ -297,11 +347,18 @@ class Replayer:
                 )
 
 
-class ReplayerConfig(dict):
-    """Config originally passed to :py:class:`Replayer`."""
+class ReplayerConfig(TypedDict, total=False):
+    """TypedDict of config originally passed to :py:class:`Replayer`."""
 
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
+    workflows: Sequence[Type]
+    namespace: str
+    data_converter: temporalio.converter.DataConverter
+    interceptors: Sequence[Interceptor]
+    build_id: Optional[str]
+    identity: Optional[str]
+    workflow_failure_exception_types: Sequence[Type[BaseException]]
+    debug_mode: bool
+    disable_safe_workflow_eviction: bool
 
 
 @dataclass(frozen=True)

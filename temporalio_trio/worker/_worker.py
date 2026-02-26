@@ -88,6 +88,7 @@ class Worker:
         telemetry: Optional[TelemetryConfig] = None,
         workflow_failure_exception_types: Sequence[type[BaseException]] = [],
         interceptors: Sequence[Interceptor] = [],
+        debug_mode: bool = False,
     ) -> None:
         """Create a worker to process Trio-based workflows and activities.
 
@@ -194,6 +195,7 @@ class Worker:
         self._telemetry = telemetry
         self._workflow_failure_exception_types = list(workflow_failure_exception_types)
         self._interceptors = list(interceptors)
+        self._debug_mode = debug_mode
 
         # Internal state
         self._single_thread_worker: Optional[SingleThreadWorker] = None
@@ -268,6 +270,7 @@ class Worker:
                 self._workflow_failure_exception_types
             ),
             "interceptors": list(self._interceptors),
+            "debug_mode": self._debug_mode,
         }
 
     def _get_target_url(self) -> str:
@@ -384,6 +387,8 @@ class Worker:
                     else None,
                     workflow_failure_exception_types=self._workflow_failure_exception_types,
                     interceptors=self._interceptors,
+                    data_converter=self._data_converter or temporalio.converter.DataConverter.default,
+                    debug_mode=self._debug_mode,
                 )
 
             # Create Trio activity worker if activities provided
