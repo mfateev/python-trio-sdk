@@ -8,14 +8,16 @@ use temporalio_client::ClientOptions;
 use temporalio_common::errors::PollError;
 use temporalio_common::protos::coresdk::workflow_completion::WorkflowActivationCompletion;
 use temporalio_common::protos::coresdk::{ActivityHeartbeat, ActivityTaskCompletion};
+use temporalio_common::protos::temporal::api::history::v1::History;
 use temporalio_common::telemetry::{
     MetricTemporality, OtelCollectorOptions, OtlpProtocol, PrometheusExporterOptions,
     TelemetryOptions,
 };
 use temporalio_common::worker::{PollerBehavior, WorkerTaskTypes, WorkerVersioningStrategy};
 use temporalio_common::Worker as WorkerTrait;
+use temporalio_sdk_core::replay::{HistoryFeeder, HistoryForReplay, ReplayWorkerInput};
 use temporalio_sdk_core::telemetry::{build_otlp_metric_exporter, start_prometheus_metric_exporter};
-use temporalio_sdk_core::{init_worker, CoreRuntime, RetryClient, RuntimeOptions, Worker, WorkerConfig};
+use temporalio_sdk_core::{init_replay_worker, init_worker, CoreRuntime, RetryClient, RuntimeOptions, Worker, WorkerConfig};
 use tokio::sync::Mutex;
 use url::Url;
 
@@ -436,6 +438,187 @@ impl CoreWorkerHandle {
 }
 
 impl Default for CoreWorkerHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Configuration for initializing the Replay Worker
+#[derive(serde::Deserialize)]
+pub struct ReplayWorkerInitConfig {
+    pub namespace: String,
+    pub task_queue: String,
+    #[serde(default)]
+    pub build_id: Option<String>,
+    #[serde(default)]
+    pub identity: Option<String>,
+}
+
+/// Wrapper around a Temporal SDK Core replay Worker + HistoryFeeder.
+///
+/// Uses sdk-core's `HistoryFeeder` to feed histories and `init_replay_worker`
+/// to create a Worker that replays them. The Worker uses the same
+/// `poll_workflow_activation` / `complete_workflow_activation` API as a normal
+/// worker, so the Python layer can reuse the SingleThreadWorker.
+pub struct ReplayWorkerHandle {
+    worker: Mutex<Option<Arc<Worker>>>,
+    feeder: Mutex<Option<HistoryFeeder>>,
+}
+
+impl ReplayWorkerHandle {
+    /// Create a new uninitialized ReplayWorkerHandle
+    pub fn new() -> Self {
+        Self {
+            worker: Mutex::new(None),
+            feeder: Mutex::new(None),
+        }
+    }
+
+    /// Get the worker Arc, or error if not initialized.
+    async fn worker(&self) -> Result<Arc<Worker>> {
+        self.worker
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow!("Replay worker not initialized"))
+    }
+
+    /// Initialize the replay worker with the given configuration.
+    pub async fn initialize(&self, config: ReplayWorkerInitConfig) -> Result<()> {
+        let mut worker_guard = self.worker.lock().await;
+        if worker_guard.is_some() {
+            return Err(anyhow!("Replay worker already initialized"));
+        }
+
+        let build_id = config.build_id.unwrap_or_else(|| "trio-replay-worker".to_string());
+
+        let worker_config = WorkerConfig::builder()
+            .namespace(config.namespace)
+            .task_queue(config.task_queue)
+            .versioning_strategy(temporalio_common::worker::WorkerVersioningStrategy::None {
+                build_id,
+            })
+            .task_types(WorkerTaskTypes::workflow_only())
+            .max_cached_workflows(2usize)
+            .workflow_task_poller_behavior(PollerBehavior::SimpleMaximum(2))
+            .nonsticky_to_sticky_poll_ratio(1.0f32)
+            .activity_task_poller_behavior(PollerBehavior::SimpleMaximum(1))
+            .sticky_queue_schedule_to_start_timeout(Duration::from_millis(1000))
+            .max_heartbeat_throttle_interval(Duration::from_millis(1000))
+            .default_heartbeat_throttle_interval(Duration::from_millis(1000))
+            .build()
+            .map_err(|e| anyhow!("Failed to build replay worker config: {}", e))?;
+
+        // Create HistoryFeeder (buffer_size=64 should be plenty for replay)
+        let (feeder, feeder_stream) = HistoryFeeder::new(64);
+
+        // Create replay worker using the feeder stream
+        let replay_input = ReplayWorkerInput::new(worker_config, feeder_stream);
+        let worker = init_replay_worker(replay_input)
+            .map_err(|e| anyhow!("Failed to init replay worker: {}", e))?;
+
+        *worker_guard = Some(Arc::new(worker));
+
+        let mut feeder_guard = self.feeder.lock().await;
+        *feeder_guard = Some(feeder);
+
+        Ok(())
+    }
+
+    /// Push a history into the replay worker for replay.
+    pub async fn push_history(&self, workflow_id: String, history_bytes: Vec<u8>) -> Result<()> {
+        let feeder_guard = self.feeder.lock().await;
+        let feeder = feeder_guard
+            .as_ref()
+            .ok_or_else(|| anyhow!("Replay worker not initialized or feeder closed"))?;
+
+        let history = History::decode(&history_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode history: {}", e))?;
+
+        feeder
+            .feed(HistoryForReplay::new(history, workflow_id))
+            .await
+            .map_err(|e| anyhow!("Failed to push history: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Close the history feeder (signals no more histories will be pushed).
+    /// This triggers the replay worker to eventually shut down.
+    pub async fn close_feeder(&self) -> Result<()> {
+        let mut feeder_guard = self.feeder.lock().await;
+        // Drop the feeder to close the channel
+        *feeder_guard = None;
+        Ok(())
+    }
+
+    /// Poll for a workflow activation from the replay worker.
+    pub async fn poll_workflow_activation(&self) -> Result<Vec<u8>> {
+        let worker = self.worker().await?;
+
+        let activation = match worker.poll_workflow_activation().await {
+            Ok(act) => act,
+            Err(PollError::ShutDown) => {
+                return Err(anyhow!("PollShutdownError"));
+            }
+            Err(err) => {
+                return Err(anyhow!("Replay poll failed: {}", err));
+            }
+        };
+
+        let bytes = activation.encode_to_vec();
+        Ok(bytes)
+    }
+
+    /// Complete a workflow activation for the replay worker.
+    pub async fn complete_workflow_activation(&self, completion_bytes: Vec<u8>) -> Result<()> {
+        let worker = self.worker().await?;
+
+        let completion = WorkflowActivationCompletion::decode(&completion_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode replay completion: {}", e))?;
+
+        worker
+            .complete_workflow_activation(completion)
+            .await
+            .map_err(|e| anyhow!("Replay complete failed: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Initiate graceful shutdown of the replay worker.
+    pub async fn initiate_shutdown(&self) -> Result<()> {
+        let worker = self.worker().await?;
+        worker.initiate_shutdown();
+        Ok(())
+    }
+
+    /// Finalize shutdown and wait for completion.
+    pub async fn finalize_shutdown(&self) -> Result<()> {
+        // Close feeder first if still open
+        {
+            let mut feeder_guard = self.feeder.lock().await;
+            *feeder_guard = None;
+        }
+
+        let worker = {
+            let mut guard = self.worker.lock().await;
+            guard.take()
+        };
+        if let Some(worker_arc) = worker {
+            match Arc::try_unwrap(worker_arc) {
+                Ok(worker) => {
+                    worker.finalize_shutdown().await;
+                }
+                Err(_arc) => {
+                    // Other references still exist; just drop our reference.
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for ReplayWorkerHandle {
     fn default() -> Self {
         Self::new()
     }

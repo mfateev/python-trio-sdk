@@ -14,7 +14,7 @@
  */
 
 use crate::core_client::{ClientInitConfig, CoreClientHandle};
-use crate::core_worker::{CoreWorkerHandle, WorkerInitConfig};
+use crate::core_worker::{CoreWorkerHandle, ReplayWorkerHandle, ReplayWorkerInitConfig, WorkerInitConfig};
 use crate::request::{Request, RequestResult};
 use futures_util::FutureExt;
 use parking_lot::Mutex;
@@ -50,18 +50,20 @@ impl TrioAsyncBridge {
         let shutdown = Arc::new(Mutex::new(false));
         let shutdown_clone = shutdown.clone();
 
-        // Create Core Worker and Client Handles
+        // Create Core Worker, Client, and Replay Worker Handles
         let core_worker = Arc::new(CoreWorkerHandle::new());
         let core_worker_clone = core_worker.clone();
         // Use async mutex for core_client to allow concurrent client operations
         let core_client = Arc::new(AsyncMutex::new(CoreClientHandle::new()));
         let core_client_clone = core_client.clone();
+        let replay_worker = Arc::new(ReplayWorkerHandle::new());
+        let replay_worker_clone = replay_worker.clone();
 
         // Spawn Rust thread with Tokio runtime
         std::thread::Builder::new()
             .name("RustTokioThread".to_string())
             .spawn(move || {
-                Self::rust_event_loop(rx, shutdown_clone, core_worker_clone, core_client_clone);
+                Self::rust_event_loop(rx, shutdown_clone, core_worker_clone, core_client_clone, replay_worker_clone);
             })
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
@@ -151,6 +153,7 @@ impl TrioAsyncBridge {
         shutdown: Arc<Mutex<bool>>,
         core_worker: Arc<CoreWorkerHandle>,
         core_client: Arc<AsyncMutex<CoreClientHandle>>,
+        replay_worker: Arc<ReplayWorkerHandle>,
     ) {
         // Create Tokio runtime (single-threaded)
         let rt = match tokio::runtime::Builder::new_current_thread()
@@ -188,7 +191,8 @@ impl TrioAsyncBridge {
                 // This allows concurrent processing of multiple requests
                 let core_worker_clone = core_worker.clone();
                 let core_client_clone = core_client.clone();
-                tokio::spawn(Self::process_request_async(request, core_worker_clone, core_client_clone));
+                let replay_worker_clone = replay_worker.clone();
+                tokio::spawn(Self::process_request_async(request, core_worker_clone, core_client_clone, replay_worker_clone));
             }
         });
     }
@@ -203,13 +207,14 @@ impl TrioAsyncBridge {
         request: Request,
         core_worker: Arc<CoreWorkerHandle>,
         core_client: Arc<AsyncMutex<CoreClientHandle>>,
+        replay_worker: Arc<ReplayWorkerHandle>,
     ) {
         let request_id = request.request_id.clone();
 
         // Wrap processing in catch_unwind to handle panics
         // Must do this before moving callback since we need request reference
         let panic_result = std::panic::AssertUnwindSafe(
-            Self::handle_operation(&request, core_worker, core_client)
+            Self::handle_operation(&request, core_worker, core_client, replay_worker)
         ).catch_unwind().await;
 
         // Move callback after processing (can't do this before because handle_operation needs &request)
@@ -243,6 +248,7 @@ impl TrioAsyncBridge {
         request: &Request,
         core_worker: Arc<CoreWorkerHandle>,
         core_client: Arc<AsyncMutex<CoreClientHandle>>,
+        replay_worker: Arc<ReplayWorkerHandle>,
     ) -> RequestResult {
         match request.operation.as_str() {
             "initialize" => {
@@ -689,6 +695,131 @@ impl TrioAsyncBridge {
                     Err(e) => RequestResult::error(
                         request.request_id.clone(),
                         format!("Poll workflow execution update failed: {}", e),
+                    ),
+                }
+            }
+
+            // Replay worker operations
+            "initialize_replay_worker" => {
+                let config: ReplayWorkerInitConfig = match serde_json::from_slice(&request.data) {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to parse replay worker config: {}", e),
+                        );
+                    }
+                };
+
+                match replay_worker.initialize(config).await {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Initialize replay worker failed: {}", e),
+                    ),
+                }
+            }
+
+            "push_replay_history" => {
+                // data is: JSON with workflow_id + history_bytes (base64-encoded or raw)
+                // We use a simpler approach: the Python side sends a JSON object with
+                // workflow_id (string) and the history protobuf bytes are sent separately.
+                // Actually, let's use a length-prefixed format:
+                // First 4 bytes = workflow_id length (big endian)
+                // Next N bytes = workflow_id (UTF-8)
+                // Remaining bytes = history protobuf
+                if request.data.len() < 4 {
+                    return RequestResult::error(
+                        request.request_id.clone(),
+                        "Push history data too short".to_string(),
+                    );
+                }
+                let wf_id_len = u32::from_be_bytes([
+                    request.data[0], request.data[1],
+                    request.data[2], request.data[3],
+                ]) as usize;
+                if request.data.len() < 4 + wf_id_len {
+                    return RequestResult::error(
+                        request.request_id.clone(),
+                        "Push history data too short for workflow_id".to_string(),
+                    );
+                }
+                let workflow_id = match String::from_utf8(request.data[4..4+wf_id_len].to_vec()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Invalid workflow_id UTF-8: {}", e),
+                        );
+                    }
+                };
+                let history_bytes = request.data[4+wf_id_len..].to_vec();
+
+                match replay_worker.push_history(workflow_id, history_bytes).await {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Push replay history failed: {}", e),
+                    ),
+                }
+            }
+
+            "close_replay_pusher" => {
+                match replay_worker.close_feeder().await {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Close replay pusher failed: {}", e),
+                    ),
+                }
+            }
+
+            "poll_replay_activation" => {
+                match replay_worker.poll_workflow_activation().await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => {
+                        let error_msg = e.to_string();
+                        if error_msg.contains("Shutdown") || error_msg.contains("shutdown") {
+                            RequestResult::error(
+                                request.request_id.clone(),
+                                "PollShutdownError".to_string(),
+                            )
+                        } else {
+                            RequestResult::error(
+                                request.request_id.clone(),
+                                format!("Replay poll failed: {}", error_msg),
+                            )
+                        }
+                    }
+                }
+            }
+
+            "complete_replay_activation" => {
+                match replay_worker.complete_workflow_activation(request.data.clone()).await {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Complete replay activation failed: {}", e),
+                    ),
+                }
+            }
+
+            "initiate_replay_shutdown" => {
+                match replay_worker.initiate_shutdown().await {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Replay shutdown initiation failed: {}", e),
+                    ),
+                }
+            }
+
+            "finalize_replay_shutdown" => {
+                match replay_worker.finalize_shutdown().await {
+                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Replay shutdown failed: {}", e),
                     ),
                 }
             }
