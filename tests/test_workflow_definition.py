@@ -310,6 +310,7 @@ class TestRuntimeClass:
 
             def workflow_payload_converter(self):
                 import temporalio.converter
+
                 return temporalio.converter.DataConverter.default.payload_converter
 
             def workflow_instance(self):
@@ -490,6 +491,7 @@ class TestRuntimeClass:
 
             def workflow_payload_converter(self):
                 import temporalio.converter
+
                 return temporalio.converter.DataConverter.default.payload_converter
 
             def workflow_instance(self):
@@ -684,6 +686,7 @@ class TestPublicAPI:
 
             def workflow_payload_converter(self):
                 import temporalio.converter
+
                 return temporalio.converter.DataConverter.default.payload_converter
 
             def workflow_instance(self):
@@ -866,6 +869,7 @@ class TestPublicAPI:
 
             def workflow_payload_converter(self):
                 import temporalio.converter
+
                 return temporalio.converter.DataConverter.default.payload_converter
 
             def workflow_instance(self):

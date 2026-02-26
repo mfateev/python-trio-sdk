@@ -20,7 +20,7 @@ import inspect
 import logging
 import random
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import trio
 
@@ -43,6 +43,22 @@ from temporalio_trio.worker._activation import (
     WorkflowActivation,
     WorkflowActivationCompletion,
     WorkflowStartedJob,
+)
+from temporalio_trio.worker._interceptor import (
+    ContinueAsNewInput,
+    ExecuteWorkflowInput,
+    HandleQueryInput,
+    HandleSignalInput,
+    HandleUpdateInput,
+    Interceptor,
+    SignalChildWorkflowInput,
+    SignalExternalWorkflowInput,
+    StartActivityInput,
+    StartChildWorkflowInput,
+    StartLocalActivityInput,
+    WorkflowInboundInterceptor,
+    WorkflowInterceptorClassInput,
+    WorkflowOutboundInterceptor,
 )
 from temporalio_trio.worker._runtime import (
     CancelWorkflowCommand,
@@ -99,6 +115,7 @@ class SingleThreadWorker:
         workflows: Sequence[type],
         activities: Sequence[Callable[..., Any]] | None = None,
         workflow_failure_exception_types: Sequence[type[BaseException]] = [],
+        interceptors: Sequence[Interceptor] = [],
     ) -> None:
         """Initialize the single-thread worker.
 
@@ -110,14 +127,24 @@ class SingleThreadWorker:
             workflow_failure_exception_types: Exception types that cause
                 workflow failure instead of task failure. Stored for
                 future enforcement.
+            interceptors: Interceptors for the worker.
         """
         self._bridge = bridge
         self._task_queue = task_queue
         self._activities = list(activities) if activities else []
-        self._workflow_failure_exception_types = list(
-            workflow_failure_exception_types
-        )
+        self._workflow_failure_exception_types = list(workflow_failure_exception_types)
+        self._interceptors = list(interceptors)
         self._shutdown_event = trio.Event()
+
+        # Collect workflow interceptor classes
+        self._workflow_interceptor_classes: list[type[WorkflowInboundInterceptor]] = []
+        interceptor_class_input = WorkflowInterceptorClassInput(
+            unsafe_extern_functions={}
+        )
+        for interceptor in self._interceptors:
+            cls = interceptor.workflow_interceptor_class(interceptor_class_input)
+            if cls is not None:
+                self._workflow_interceptor_classes.append(cls)
 
         # Register workflow definitions
         self._workflows: dict[str | None, _Definition] = {}
@@ -447,21 +474,38 @@ class SingleThreadWorker:
         # Register signal and query handlers from definition
         self._register_handlers(runtime, defn, workflow_obj)
 
+        # Build the workflow interceptor chain
+        root_inbound = _WorkflowInboundImpl(runtime)
+        inbound: WorkflowInboundInterceptor = root_inbound
+        for interceptor_class in reversed(self._workflow_interceptor_classes):
+            inbound = interceptor_class(inbound)
+        inbound.init(_WorkflowOutboundImpl(runtime))
+        runtime.inbound_interceptor = inbound
+        runtime.outbound_interceptor = root_inbound._outbound
+
         # Set runtime as current (both _runtime.py and workflow.py contextvars)
         # WorkflowRuntime implements all _Runtime ABC methods directly via duck typing
         token = _Runtime.set_current(runtime)
         legacy_token = set_current_runtime(runtime)
         try:
             # Apply initial activation jobs (now query handlers are registered)
-            # Collect deferred updates (async handlers need nursery)
+            # Collect deferred updates and queries (need nursery/async context)
             deferred_updates: list[UpdateWorkflowJob] = []
+            deferred_queries: list[QueryWorkflowJob] = []
             self._apply_activation(
-                runtime, initial_activation, deferred_updates=deferred_updates
+                runtime,
+                initial_activation,
+                deferred_updates=deferred_updates,
+                deferred_queries=deferred_queries,
             )
 
             # Run the workflow
             async with trio.open_nursery() as nursery:
                 runtime.nursery = nursery
+
+                # Apply deferred queries through interceptor chain
+                for query_job in deferred_queries:
+                    await self._apply_query_async(runtime, query_job)
 
                 # Apply deferred updates now that nursery is available
                 for update_job in deferred_updates:
@@ -496,11 +540,19 @@ class SingleThreadWorker:
                     runtime.time_ns = activation.timestamp_ns
                     runtime.is_replaying = getattr(activation, "is_replaying", False)
 
-                    # Apply activation jobs (updates are deferred)
+                    # Apply activation jobs (updates and queries are deferred)
                     pending_updates: list[UpdateWorkflowJob] = []
+                    pending_queries: list[QueryWorkflowJob] = []
                     self._apply_activation(
-                        runtime, activation, deferred_updates=pending_updates
+                        runtime,
+                        activation,
+                        deferred_updates=pending_updates,
+                        deferred_queries=pending_queries,
                     )
+
+                    # Process deferred queries through interceptor chain
+                    for query_job in pending_queries:
+                        await self._apply_query_async(runtime, query_job)
 
                     # Process deferred updates
                     for update_job in pending_updates:
@@ -631,9 +683,7 @@ class SingleThreadWorker:
                 bound_validator = update_defn.validator.__get__(
                     workflow_obj, type(workflow_obj)
                 )
-            runtime.register_update_handler(
-                update_name, bound_handler, bound_validator
-            )
+            runtime.register_update_handler(update_name, bound_handler, bound_validator)
 
     async def _wait_and_signal(
         self,
@@ -680,8 +730,15 @@ class SingleThreadWorker:
             state: The workflow state for signaling.
         """
         try:
-            # Run the workflow (instance already created)
-            result = await defn.run_fn(workflow_obj, *args)
+            # Run the workflow through the interceptor chain
+            result = await runtime.inbound_interceptor.execute_workflow(
+                ExecuteWorkflowInput(
+                    type=defn.cls,
+                    run_fn=defn.run_fn,
+                    args=args,
+                    headers=runtime.headers,
+                )
+            )
 
             # Workflow completed successfully
             runtime.commands.append(CompleteWorkflowCommand(result=result))
@@ -721,6 +778,7 @@ class SingleThreadWorker:
         activation: WorkflowActivation,
         *,
         deferred_updates: list[UpdateWorkflowJob] | None = None,
+        deferred_queries: list[QueryWorkflowJob] | None = None,
     ) -> None:
         """Apply activation jobs to the runtime.
 
@@ -732,6 +790,8 @@ class SingleThreadWorker:
             activation: The activation containing jobs.
             deferred_updates: If provided, collect update jobs here instead of
                 processing them immediately. Used when nursery isn't set up yet.
+            deferred_queries: If provided, collect query jobs here for async
+                processing through the interceptor chain.
         """
         for job in activation.jobs:
             if isinstance(job, TimerFiredJob):
@@ -745,7 +805,10 @@ class SingleThreadWorker:
             elif isinstance(job, SignalWorkflowJob):
                 self._apply_signal(runtime, job)
             elif isinstance(job, QueryWorkflowJob):
-                self._apply_query(runtime, job)
+                if deferred_queries is not None:
+                    deferred_queries.append(job)
+                else:
+                    self._apply_query(runtime, job)
             elif isinstance(job, ChildWorkflowStartedJob):
                 runtime.apply_child_workflow_started(
                     seq=job.seq,
@@ -813,10 +876,8 @@ class SingleThreadWorker:
                         f"Cannot run async signal handler {signal_job.signal_name}: "
                         "no nursery available"
                     )
-                    # Close the coroutine to avoid warnings
                     result.close()
         except Exception as e:
-            # Log but don't fail workflow - signal handlers should not crash workflows
             logger.warning(f"Signal handler error for {signal_job.signal_name}: {e}")
 
         # Notify any wait_condition waiters that state may have changed
@@ -845,17 +906,13 @@ class SingleThreadWorker:
     async def _apply_update_async(
         self, runtime: WorkflowRuntime, update_job: UpdateWorkflowJob
     ) -> None:
-        """Apply an update. Sync handlers run inline; async handlers spawn as tasks.
+        """Apply an update through the interceptor chain.
 
         This ensures:
         - The accepted command is always in the current activation's completion.
         - Sync handler's completed command is also in the current activation.
         - Async handler's completed command arrives in any subsequent activation's
           completion (via runtime.commands, picked up by signal_commands_ready).
-
-        Spawning async handlers as nursery tasks prevents deadlocks when a handler
-        awaits wait_condition() that depends on state set by the main workflow or
-        signals — the main workflow loop is no longer blocked waiting on the handler.
 
         Args:
             runtime: The workflow runtime.
@@ -885,14 +942,23 @@ class SingleThreadWorker:
                 )
                 return
 
-            # Run validator if requested
+            update_input = HandleUpdateInput(
+                id=update_job.id,
+                update=update_job.name,
+                args=update_job.args,
+                headers={},
+            )
+
+            # Run validator through interceptor chain if requested
             if update_job.run_validator:
                 validator = runtime.update_validators.get(update_job.name)
                 if validator is None:
                     validator = runtime.update_validators.get(None)
                 if validator is not None:
                     try:
-                        validator(*update_job.args)
+                        runtime.inbound_interceptor.handle_update_validator(
+                            update_input
+                        )
                     except Exception as e:
                         runtime.commands.append(
                             UpdateResponseCommand(
@@ -917,10 +983,7 @@ class SingleThreadWorker:
             try:
                 result = handler(*update_job.args)
                 if inspect.iscoroutine(result):
-                    # Async handler — spawn as nursery task instead of awaiting
-                    # inline. This prevents deadlocks when the handler awaits
-                    # wait_condition() that depends on state set by the main
-                    # workflow or signals.
+                    # Async handler — spawn as nursery task
                     if runtime.nursery is not None:
                         runtime.nursery.start_soon(
                             self._run_update_handler_wrapper,
@@ -964,9 +1027,6 @@ class SingleThreadWorker:
             # Notify any wait_condition waiters that state may have changed
             runtime.notify_condition_waiters()
         finally:
-            # Clear current update info so it doesn't leak to other handlers.
-            # For async handlers spawned as tasks, the task has its own
-            # ContextVar copy and sets/clears update_info independently.
             _current_update_info.set(None)
 
     def _apply_update(
@@ -1138,10 +1198,11 @@ class SingleThreadWorker:
     def _apply_query(
         self, runtime: WorkflowRuntime, query_job: QueryWorkflowJob
     ) -> None:
-        """Execute a query and add the result command.
+        """Execute a query directly (without interceptor chain).
 
-        Query handlers are synchronous and should not modify workflow state.
-        The result (or error) is added as a command.
+        Used for activations on completed workflows where the nursery
+        is not available. For normal query processing through interceptors,
+        see _apply_query_async.
 
         Args:
             runtime: The workflow runtime.
@@ -1161,6 +1222,50 @@ class SingleThreadWorker:
 
         try:
             result = handler(*query_job.args)
+            runtime.commands.append(
+                QuerySuccessCommand(
+                    query_id=query_job.query_id,
+                    result=result,
+                )
+            )
+        except Exception as e:
+            runtime.commands.append(
+                QueryFailureCommand(
+                    query_id=query_job.query_id,
+                    error=e,
+                )
+            )
+
+    async def _apply_query_async(
+        self, runtime: WorkflowRuntime, query_job: QueryWorkflowJob
+    ) -> None:
+        """Execute a query through the interceptor chain.
+
+        Args:
+            runtime: The workflow runtime.
+            query_job: The query job containing the query type and args.
+        """
+        handler = runtime.query_handlers.get(query_job.query_type)
+        if handler is None:
+            runtime.commands.append(
+                QueryFailureCommand(
+                    query_id=query_job.query_id,
+                    error=ValueError(
+                        f"No handler registered for query: {query_job.query_type}"
+                    ),
+                )
+            )
+            return
+
+        try:
+            result = await runtime.inbound_interceptor.handle_query(
+                HandleQueryInput(
+                    id=query_job.query_id,
+                    query=query_job.query_type,
+                    args=query_job.args,
+                    headers={},
+                )
+            )
             runtime.commands.append(
                 QuerySuccessCommand(
                     query_id=query_job.query_id,
@@ -1216,3 +1321,146 @@ class SingleThreadWorker:
         """Initiate graceful shutdown of the worker."""
         logger.info("Initiating SingleThreadWorker shutdown")
         self._shutdown_event.set()
+
+
+class _WorkflowInboundImpl(WorkflowInboundInterceptor):
+    """Terminal inbound interceptor that routes to the workflow runtime."""
+
+    def __init__(self, runtime: WorkflowRuntime) -> None:
+        # We intentionally don't call super().__init__ - this is the terminal
+        self._runtime = runtime
+        self._outbound: WorkflowOutboundInterceptor | None = None
+
+    def init(self, outbound: WorkflowOutboundInterceptor) -> None:
+        self._outbound = outbound
+
+    async def execute_workflow(self, input: ExecuteWorkflowInput) -> Any:
+        # Call the run function as an unbound method with the workflow object
+        return await input.run_fn(self._runtime.workflow_object, *input.args)
+
+    async def handle_signal(self, input: HandleSignalInput) -> None:
+        handler = self._runtime.signal_handlers.get(input.signal)
+        if handler is None:
+            logger.warning(f"No handler registered for signal: {input.signal}")
+            return
+        result = handler(*input.args)
+        if inspect.iscoroutine(result):
+            await result
+
+    async def handle_query(self, input: HandleQueryInput) -> Any:
+        handler = self._runtime.query_handlers.get(input.query)
+        if handler is None:
+            raise ValueError(f"No handler registered for query: {input.query}")
+        return handler(*input.args)
+
+    def handle_update_validator(self, input: HandleUpdateInput) -> None:
+        validator = self._runtime.update_validators.get(input.update)
+        if validator is None:
+            validator = self._runtime.update_validators.get(None)
+        if validator is not None:
+            validator(*input.args)
+
+    async def handle_update_handler(self, input: HandleUpdateInput) -> Any:
+        handler = self._runtime.update_handlers.get(input.update)
+        if handler is None:
+            handler = self._runtime.update_handlers.get(None)
+        if handler is None:
+            raise RuntimeError(
+                f"Update handler for '{input.update}' expected but not found, "
+                f"and there is no dynamic handler."
+            )
+        result = handler(*input.args)
+        if inspect.iscoroutine(result):
+            result = await result
+        return result
+
+
+class _WorkflowOutboundImpl(WorkflowOutboundInterceptor):
+    """Terminal outbound interceptor that delegates to the workflow runtime."""
+
+    def __init__(self, runtime: WorkflowRuntime) -> None:
+        # We intentionally don't call super().__init__ - this is the terminal
+        self._runtime = runtime
+
+    def continue_as_new(self, input: ContinueAsNewInput) -> NoReturn:
+        self._runtime.workflow_continue_as_new(
+            *input.args,
+            workflow=input.workflow,
+            task_queue=input.task_queue,
+            run_timeout=input.run_timeout,
+            task_timeout=input.task_timeout,
+            retry_policy=input.retry_policy,
+            memo=input.memo,
+            search_attributes=input.search_attributes,
+        )
+
+    def info(self) -> Any:
+        return self._runtime.workflow_info()
+
+    async def signal_child_workflow(self, input: SignalChildWorkflowInput) -> None:
+        await self._runtime.workflow_signal_external_workflow(
+            input.child_workflow_id,
+            input.signal,
+            input.args,
+            run_id=None,
+        )
+
+    async def signal_external_workflow(
+        self, input: SignalExternalWorkflowInput
+    ) -> None:
+        await self._runtime.workflow_signal_external_workflow(
+            input.workflow_id,
+            input.signal,
+            input.args,
+            run_id=input.workflow_run_id,
+        )
+
+    async def start_activity(self, input: StartActivityInput) -> Any:
+        return await self._runtime.workflow_execute_activity(
+            input.activity,
+            *input.args,
+            task_queue=input.task_queue,
+            schedule_to_close_timeout=input.schedule_to_close_timeout,
+            schedule_to_start_timeout=input.schedule_to_start_timeout,
+            start_to_close_timeout=input.start_to_close_timeout,
+            heartbeat_timeout=input.heartbeat_timeout,
+            retry_policy=input.retry_policy,
+            activity_id=input.activity_id,
+            cancellation_type=int(input.cancellation_type),
+        )
+
+    async def start_child_workflow(self, input: StartChildWorkflowInput) -> Any:
+        from temporalio_trio.workflow import (
+            ChildWorkflowCancellationType,
+            ParentClosePolicy,
+        )
+
+        return await self._runtime.workflow_start_child_workflow(
+            input.workflow,
+            *input.args,
+            id=input.id,
+            task_queue=input.task_queue,
+            cancellation_type=ChildWorkflowCancellationType(input.cancellation_type),
+            parent_close_policy=ParentClosePolicy(input.parent_close_policy),
+            execution_timeout=input.execution_timeout,
+            run_timeout=input.run_timeout,
+            task_timeout=input.task_timeout,
+            id_reuse_policy=input.id_reuse_policy,
+            retry_policy=input.retry_policy,
+            cron_schedule=input.cron_schedule,
+            memo=input.memo,
+            search_attributes=input.search_attributes,
+        )
+
+    async def start_local_activity(self, input: StartLocalActivityInput) -> Any:
+        return await self._runtime.workflow_execute_local_activity(
+            input.activity,
+            *input.args,
+            schedule_to_close_timeout=input.schedule_to_close_timeout,
+            schedule_to_start_timeout=input.schedule_to_start_timeout,
+            start_to_close_timeout=input.start_to_close_timeout,
+            retry_policy=input.retry_policy,
+            local_retry_threshold=input.local_retry_threshold,
+            activity_id=input.activity_id,
+            cancellation_type=int(input.cancellation_type),
+        )

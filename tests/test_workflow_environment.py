@@ -71,7 +71,7 @@ class TestWorkflowEnvironmentStartLocal:
         with patch("shutil.which", return_value=None):
             with pytest.raises(RuntimeError, match="Temporal CLI not found"):
                 await WorkflowEnvironment.start_local(
-                    temporal_cli_path=None,
+                    dev_server_existing_path=None,
                 )
 
     @pytest.mark.trio
@@ -80,7 +80,7 @@ class TestWorkflowEnvironmentStartLocal:
         with pytest.raises(Exception):
             # This should fail because the path doesn't exist
             await WorkflowEnvironment.start_local(
-                temporal_cli_path="/nonexistent/path/to/temporal",
+                dev_server_existing_path="/nonexistent/path/to/temporal",
             )
 
     def test_find_free_port(self):
@@ -204,7 +204,7 @@ class TestWorkflowEnvironmentIntegration:
             pytest.skip("Temporal CLI not found in PATH or common locations")
 
         async with await WorkflowEnvironment.start_local(
-            temporal_cli_path=cli_path
+            dev_server_existing_path=cli_path
         ) as env:
             # The environment should have a working client
             assert env.client is not None

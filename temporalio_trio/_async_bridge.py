@@ -186,7 +186,9 @@ class TrioBridgeWrapper:
         if max_activities_per_second is not None:
             config["max_activities_per_second"] = max_activities_per_second
         if max_task_queue_activities_per_second is not None:
-            config["max_task_queue_activities_per_second"] = max_task_queue_activities_per_second
+            config["max_task_queue_activities_per_second"] = (
+                max_task_queue_activities_per_second
+            )
         if graceful_shutdown_period_millis is not None:
             config["graceful_shutdown_period_millis"] = graceful_shutdown_period_millis
         if max_concurrent_workflow_tasks is not None:
@@ -822,7 +824,9 @@ class TrioBridgeWrapper:
                     data_bytes = result.get_data()
                     if data_bytes is None:
                         error_container.append(
-                            RuntimeError("describe_workflow returned success without data")
+                            RuntimeError(
+                                "describe_workflow returned success without data"
+                            )
                         )
                     else:
                         result_container.append(bytes(data_bytes))
@@ -835,7 +839,9 @@ class TrioBridgeWrapper:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
         self._rust_bridge.send_request(
-            "describe_workflow", json.dumps(request_data).encode("utf-8"), deliver_result
+            "describe_workflow",
+            json.dumps(request_data).encode("utf-8"),
+            deliver_result,
         )
 
         if timeout is not None:
@@ -899,9 +905,7 @@ class TrioBridgeWrapper:
             finally:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        self._rust_bridge.send_request(
-            "list_workflows", request_bytes, deliver_result
-        )
+        self._rust_bridge.send_request("list_workflows", request_bytes, deliver_result)
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
@@ -952,7 +956,9 @@ class TrioBridgeWrapper:
                     data_bytes = result.get_data()
                     if data_bytes is None:
                         error_container.append(
-                            RuntimeError("count_workflows returned success without data")
+                            RuntimeError(
+                                "count_workflows returned success without data"
+                            )
                         )
                     else:
                         result_container.append(bytes(data_bytes))
@@ -964,9 +970,7 @@ class TrioBridgeWrapper:
             finally:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        self._rust_bridge.send_request(
-            "count_workflows", request_bytes, deliver_result
-        )
+        self._rust_bridge.send_request("count_workflows", request_bytes, deliver_result)
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
@@ -1017,7 +1021,9 @@ class TrioBridgeWrapper:
                     data_bytes = result.get_data()
                     if data_bytes is None:
                         error_container.append(
-                            RuntimeError("update_workflow returned success without data")
+                            RuntimeError(
+                                "update_workflow returned success without data"
+                            )
                         )
                     else:
                         result_container.append(bytes(data_bytes))
@@ -1029,9 +1035,7 @@ class TrioBridgeWrapper:
             finally:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        self._rust_bridge.send_request(
-            "update_workflow", request_bytes, deliver_result
-        )
+        self._rust_bridge.send_request("update_workflow", request_bytes, deliver_result)
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:

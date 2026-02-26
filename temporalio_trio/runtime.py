@@ -116,9 +116,7 @@ class Runtime:
 
     _default: ClassVar[Optional["Runtime"]] = None
 
-    def __init__(
-        self, *, telemetry: TelemetryConfig = TelemetryConfig()
-    ) -> None:
+    def __init__(self, *, telemetry: TelemetryConfig = TelemetryConfig()) -> None:
         """Create a new runtime.
 
         Args:
@@ -141,9 +139,7 @@ class Runtime:
         return Runtime._default
 
     @staticmethod
-    def set_default(
-        runtime: "Runtime", *, error_if_already_set: bool = True
-    ) -> None:
+    def set_default(runtime: "Runtime", *, error_if_already_set: bool = True) -> None:
         """Set the default runtime.
 
         Args:

@@ -421,6 +421,7 @@ async def test_get_external_workflow_handle_properties() -> None:
 
         def workflow_payload_converter(self):
             import temporalio.converter
+
             return temporalio.converter.DataConverter.default.payload_converter
 
         def workflow_instance(self):

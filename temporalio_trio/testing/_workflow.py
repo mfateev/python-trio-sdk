@@ -15,10 +15,9 @@ import warnings
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, AsyncIterator, Optional, Sequence
 
-import trio
-
 import temporalio.common
 import temporalio.converter
+import trio
 
 if TYPE_CHECKING:
     from temporalio_trio.client import Client
@@ -310,6 +309,8 @@ class WorkflowEnvironment:
                 server_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 server_process.kill()
+            if server_process.stderr is not None:
+                server_process.stderr.close()
             raise RuntimeError(
                 f"Could not connect to Temporal dev server at {target_url} "
                 f"after {max_attempts} attempts"
@@ -338,6 +339,9 @@ class WorkflowEnvironment:
                 logger.warning("Dev server did not stop gracefully, killing")
                 self._server_process.kill()
                 self._server_process.wait()
+            # Close the stderr pipe to avoid leaking file descriptors
+            if self._server_process.stderr is not None:
+                self._server_process.stderr.close()
             self._server_process = None
             logger.info("Temporal dev server stopped")
 

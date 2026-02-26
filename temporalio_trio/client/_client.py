@@ -12,8 +12,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence, Type, TypeVar, Union
 
-import trio
 import temporalio.common
+import temporalio.converter
+import trio
 from temporalio.api.common.v1 import Payloads, WorkflowExecution
 from temporalio.api.enums.v1 import WorkflowIdConflictPolicy, WorkflowIdReusePolicy
 from temporalio.api.sdk.v1 import UserMetadata
@@ -28,7 +29,6 @@ from temporalio.api.workflowservice.v1 import (
     StartWorkflowExecutionResponse,
 )
 from temporalio.common import RetryPolicy, SearchAttributes
-import temporalio.converter
 from temporalio.converter import DataConverter
 
 from .._async_bridge import TrioBridgeWrapper
@@ -513,15 +513,11 @@ class Client:
             # Parse timestamps
             start_time: Optional[datetime] = None
             if info.HasField("start_time"):
-                start_time = info.start_time.ToDatetime().replace(
-                    tzinfo=timezone.utc
-                )
+                start_time = info.start_time.ToDatetime().replace(tzinfo=timezone.utc)
 
             close_time: Optional[datetime] = None
             if info.HasField("close_time"):
-                close_time = info.close_time.ToDatetime().replace(
-                    tzinfo=timezone.utc
-                )
+                close_time = info.close_time.ToDatetime().replace(tzinfo=timezone.utc)
 
             # Parse status
             status: Optional[WorkflowExecutionStatus] = None

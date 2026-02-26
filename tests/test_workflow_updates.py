@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import trio
+
 from temporalio_trio import workflow
 from temporalio_trio.worker._activation import (
     UpdateResponseCommand,
@@ -21,7 +22,6 @@ from temporalio_trio.workflow import (
     _UpdateDefinition,
     current_update_info,
 )
-
 
 # ============================================================================
 # Decorator tests
@@ -592,9 +592,7 @@ class TestBridgeTypeConversion:
         assert bridge_cmd.update_response.protocol_instance_id == "proto-1"
         assert bridge_cmd.update_response.HasField("completed")
         # Decode the result
-        result = dc.payload_converter.from_payload(
-            bridge_cmd.update_response.completed
-        )
+        result = dc.payload_converter.from_payload(bridge_cmd.update_response.completed)
         assert result == "hello"
 
     def test_convert_update_response_rejected(self) -> None:

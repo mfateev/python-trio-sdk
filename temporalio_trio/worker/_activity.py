@@ -21,6 +21,12 @@ import trio
 
 from temporalio_trio import activity
 from temporalio_trio._async_bridge import TrioBridgeWrapper
+from temporalio_trio.worker._interceptor import (
+    ActivityInboundInterceptor,
+    ActivityOutboundInterceptor,
+    ExecuteActivityInput,
+    Interceptor,
+)
 
 if TYPE_CHECKING:
     pass
@@ -110,9 +116,11 @@ class TrioActivityWorker:
         data_converter: temporalio.converter.DataConverter | None = None,
         max_heartbeat_throttle_interval: timedelta = timedelta(seconds=60),
         default_heartbeat_throttle_interval: timedelta = timedelta(seconds=30),
+        interceptors: Sequence[Interceptor] = [],
     ) -> None:
         """Initialize the Trio activity worker."""
         self._bridge = bridge_wrapper
+        self._interceptors = list(interceptors)
         self._task_queue = task_queue
         self._data_converter = data_converter or temporalio.converter.DataConverter()
         self._max_heartbeat_throttle_interval = max_heartbeat_throttle_interval
@@ -294,8 +302,19 @@ class TrioActivityWorker:
         completion = temporalio.bridge.proto.ActivityTaskCompletion()
         completion.task_token = task_token
 
-        # Execute the activity with context
+        # Set context early so interceptors can access activity.info() during init
         token = activity._Context.set(context)
+
+        # Build the interceptor chain
+        inbound_impl: ActivityInboundInterceptor = _ActivityInboundImpl()
+        for interceptor in reversed(self._interceptors):
+            inbound_impl = interceptor.intercept_activity(inbound_impl)
+        outbound_impl = _ActivityOutboundImpl(
+            info_fn=context.info,
+            heartbeat_fn=queue_heartbeat,
+        )
+        # Init sets context.info and context.heartbeat to go through the chain
+        inbound_impl.init(outbound_impl)
         try:
             async with trio.open_nursery() as nursery:
                 # Create a separate cancel scope for the activity itself
@@ -312,8 +331,15 @@ class TrioActivityWorker:
                 result: Any = None
                 try:
                     with activity_scope:
-                        # Execute the activity
-                        result = await defn.fn(*args)
+                        # Execute the activity through the interceptor chain
+                        result = await inbound_impl.execute_activity(
+                            ExecuteActivityInput(
+                                fn=defn.fn,
+                                args=args,
+                                executor=None,
+                                headers=dict(getattr(start, "header_fields", {})),
+                            )
+                        )
                 except BaseException as e:
                     err = e
 
@@ -596,3 +622,45 @@ class TrioActivityWorker:
         """
         logger.info("Initiating activity worker shutdown")
         self._shutdown_event.set()
+
+
+class _ActivityInboundImpl(ActivityInboundInterceptor):
+    """Terminal inbound interceptor that executes the activity function."""
+
+    def __init__(self) -> None:
+        # We intentionally don't call super().__init__ - this is the terminal
+        pass
+
+    def init(self, outbound: ActivityOutboundInterceptor) -> None:
+        # Set the context callables to the outbound interceptor methods.
+        # The outbound received here is the outermost outbound interceptor
+        # (after user interceptors may have wrapped it during init propagation).
+        # This ensures activity.info() and activity.heartbeat() go through
+        # the full interceptor chain.
+        context = activity._Context.current()
+        context.info = outbound.info  # type: ignore[assignment]
+        context.heartbeat = outbound.heartbeat  # type: ignore[assignment]
+
+    async def execute_activity(self, input: ExecuteActivityInput) -> Any:
+        return await input.fn(*input.args)
+
+
+class _ActivityOutboundImpl(ActivityOutboundInterceptor):
+    """Terminal outbound interceptor that delegates to the raw activity context."""
+
+    def __init__(
+        self,
+        info_fn: Callable[[], activity.Info],
+        heartbeat_fn: Callable[..., None] | None,
+    ) -> None:
+        # No next - this is the terminal
+        self._info_fn = info_fn
+        self._heartbeat_fn = heartbeat_fn
+
+    def info(self) -> activity.Info:
+        return self._info_fn()
+
+    def heartbeat(self, *details: Any) -> None:
+        if self._heartbeat_fn is None:
+            raise RuntimeError("Can only execute heartbeat after interceptor init")
+        self._heartbeat_fn(*details)

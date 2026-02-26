@@ -297,6 +297,13 @@ class WorkflowRuntime:
     in_progress_updates: dict[str, str] = field(default_factory=dict)
     """In-progress update executions: update_id -> update_name."""
 
+    # Interceptor chain
+    inbound_interceptor: Any = None
+    """The outermost inbound interceptor (or None if no interceptors)."""
+
+    outbound_interceptor: Any = None
+    """The outermost outbound interceptor (or None if no interceptors)."""
+
     # Cancellation (Phase 7)
     cancel_requested: bool = False
     """Whether workflow cancellation has been requested."""
@@ -955,6 +962,14 @@ class WorkflowRuntime:
         self.update_handlers[name] = handler
         if validator is not None:
             self.update_validators[name] = validator
+
+    def workflow_instance(self) -> Any:
+        """Get the current workflow instance object.
+
+        Returns:
+            The workflow object.
+        """
+        return self.workflow_object
 
     def workflow_all_handlers_finished(self) -> bool:
         """Whether all update and signal handlers have finished executing.

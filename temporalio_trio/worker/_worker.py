@@ -20,6 +20,7 @@ import trio
 
 from temporalio_trio._async_bridge import TrioBridgeWrapper
 from temporalio_trio.runtime import TelemetryConfig
+from temporalio_trio.worker._interceptor import Interceptor
 from temporalio_trio.worker._single_thread_worker import SingleThreadWorker
 
 if TYPE_CHECKING:
@@ -86,6 +87,7 @@ class Worker:
         max_concurrent_local_activities: Optional[int] = None,
         telemetry: Optional[TelemetryConfig] = None,
         workflow_failure_exception_types: Sequence[type[BaseException]] = [],
+        interceptors: Sequence[Interceptor] = [],
     ) -> None:
         """Create a worker to process Trio-based workflows and activities.
 
@@ -190,9 +192,8 @@ class Worker:
         self._max_concurrent_activities = max_concurrent_activities or 100
         self._max_concurrent_local_activities = max_concurrent_local_activities or 100
         self._telemetry = telemetry
-        self._workflow_failure_exception_types = list(
-            workflow_failure_exception_types
-        )
+        self._workflow_failure_exception_types = list(workflow_failure_exception_types)
+        self._interceptors = list(interceptors)
 
         # Internal state
         self._single_thread_worker: Optional[SingleThreadWorker] = None
@@ -266,6 +267,7 @@ class Worker:
             "workflow_failure_exception_types": list(
                 self._workflow_failure_exception_types
             ),
+            "interceptors": list(self._interceptors),
         }
 
     def _get_target_url(self) -> str:
@@ -356,7 +358,9 @@ class Worker:
                 max_task_queue_activities_per_second=self._max_task_queue_activities_per_second,
                 graceful_shutdown_period_millis=int(
                     self._graceful_shutdown_timeout.total_seconds() * 1000
-                ) if self._graceful_shutdown_timeout.total_seconds() > 0 else None,
+                )
+                if self._graceful_shutdown_timeout.total_seconds() > 0
+                else None,
                 max_concurrent_workflow_tasks=self._max_concurrent_workflow_tasks,
                 max_concurrent_activities=self._max_concurrent_activities,
                 max_concurrent_local_activities=self._max_concurrent_local_activities,
@@ -379,6 +383,7 @@ class Worker:
                     if not self._no_remote_activities
                     else None,
                     workflow_failure_exception_types=self._workflow_failure_exception_types,
+                    interceptors=self._interceptors,
                 )
 
             # Create Trio activity worker if activities provided
@@ -393,6 +398,7 @@ class Worker:
                     data_converter=self._data_converter,
                     max_heartbeat_throttle_interval=self._max_heartbeat_throttle_interval,
                     default_heartbeat_throttle_interval=self._default_heartbeat_throttle_interval,
+                    interceptors=self._interceptors,
                 )
 
             logger.info(f"Starting Trio worker on {self._namespace}/{self._task_queue}")

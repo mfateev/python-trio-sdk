@@ -34,6 +34,14 @@ import temporalio.exceptions
 if TYPE_CHECKING:
     pass
 
+
+def _interceptor_mod():
+    """Lazily import interceptor module to avoid circular imports."""
+    from temporalio_trio.worker import _interceptor
+
+    return _interceptor
+
+
 __all__ = [
     "defn",
     "init",
@@ -727,7 +735,9 @@ class _SignalDefinition:
     fn: Callable[..., None | Awaitable[None]]
     is_method: bool
     description: str | None = None
-    unfinished_policy: HandlerUnfinishedPolicy = HandlerUnfinishedPolicy.WARN_AND_ABANDON
+    unfinished_policy: HandlerUnfinishedPolicy = (
+        HandlerUnfinishedPolicy.WARN_AND_ABANDON
+    )
     arg_types: list[type] | None = None
 
     @staticmethod
@@ -771,7 +781,9 @@ class _UpdateDefinition:
     name: str | None  # None for dynamic handlers
     fn: Callable[..., Any]
     is_method: bool
-    unfinished_policy: HandlerUnfinishedPolicy = HandlerUnfinishedPolicy.WARN_AND_ABANDON
+    unfinished_policy: HandlerUnfinishedPolicy = (
+        HandlerUnfinishedPolicy.WARN_AND_ABANDON
+    )
     description: str | None = None
     arg_types: list[type] | None = None
     ret_type: type | None = None
@@ -830,9 +842,7 @@ class _Definition:
     dynamic: bool = False
     """If True, this workflow accepts dynamic dispatching and name is None."""
 
-    failure_exception_types: Sequence[type[BaseException]] = field(
-        default_factory=list
-    )
+    failure_exception_types: Sequence[type[BaseException]] = field(default_factory=list)
     """Exception types that cause workflow failure instead of task failure."""
 
     init_fn: Callable | None = None
@@ -848,9 +858,7 @@ class _Definition:
 
     def __post_init__(self) -> None:
         if self.arg_types is None and self.ret_type is None:
-            arg_types, ret_type = temporalio.common._type_hints_from_func(
-                self.run_fn
-            )
+            arg_types, ret_type = temporalio.common._type_hints_from_func(self.run_fn)
             self.arg_types = arg_types
             self.ret_type = ret_type
 
@@ -1384,7 +1392,11 @@ def info() -> Info:
     Raises:
         _NotInWorkflowContextError: If not in a workflow context.
     """
-    return _Runtime.current().workflow_info()
+    runtime = _Runtime.current()
+    outbound = getattr(runtime, "outbound_interceptor", None)
+    if outbound is not None:
+        return outbound.info()
+    return runtime.workflow_info()
 
 
 def memo() -> Mapping[str, Any]:
@@ -1656,7 +1668,41 @@ async def execute_activity(
         RuntimeError: If the activity fails or is cancelled.
         _NotInWorkflowContextError: If not in a workflow context.
     """
-    return await _Runtime.current().workflow_execute_activity(
+    runtime = _Runtime.current()
+    outbound = getattr(runtime, "outbound_interceptor", None)
+    if outbound is not None:
+        # Get activity name
+        if isinstance(activity, str):
+            activity_name = activity
+        else:
+            defn_attr = getattr(activity, "__temporal_activity_definition", None)
+            activity_name = (
+                defn_attr.name
+                if defn_attr
+                else getattr(activity, "__name__", str(activity))
+            )
+        return await outbound.start_activity(
+            _interceptor_mod().StartActivityInput(
+                activity=activity_name,
+                args=args,
+                activity_id=activity_id,
+                task_queue=task_queue,
+                schedule_to_close_timeout=schedule_to_close_timeout,
+                schedule_to_start_timeout=schedule_to_start_timeout,
+                start_to_close_timeout=start_to_close_timeout,
+                heartbeat_timeout=heartbeat_timeout,
+                retry_policy=retry_policy,
+                cancellation_type=cancellation_type,
+                headers={},
+                disable_eager_execution=False,
+                versioning_intent=None,
+                summary=None,
+                priority=temporalio.common.Priority.default,
+                arg_types=None,
+                ret_type=None,
+            )
+        )
+    return await runtime.workflow_execute_activity(
         activity,
         *args,
         task_queue=task_queue,
@@ -1720,7 +1766,36 @@ async def execute_local_activity(
         RuntimeError: If the activity fails or is cancelled.
         _NotInWorkflowContextError: If not in a workflow context.
     """
-    return await _Runtime.current().workflow_execute_local_activity(
+    runtime = _Runtime.current()
+    outbound = getattr(runtime, "outbound_interceptor", None)
+    if outbound is not None:
+        # Get activity name
+        if isinstance(activity, str):
+            activity_name = activity
+        else:
+            defn_attr = getattr(activity, "__temporal_activity_definition", None)
+            activity_name = (
+                defn_attr.name
+                if defn_attr
+                else getattr(activity, "__name__", str(activity))
+            )
+        return await outbound.start_local_activity(
+            _interceptor_mod().StartLocalActivityInput(
+                activity=activity_name,
+                args=args,
+                activity_id=activity_id,
+                schedule_to_close_timeout=schedule_to_close_timeout,
+                schedule_to_start_timeout=schedule_to_start_timeout,
+                start_to_close_timeout=start_to_close_timeout,
+                retry_policy=retry_policy,
+                local_retry_threshold=local_retry_threshold,
+                cancellation_type=cancellation_type,
+                headers={},
+                arg_types=None,
+                ret_type=None,
+            )
+        )
+    return await runtime.workflow_execute_local_activity(
         activity,
         *args,
         schedule_to_close_timeout=schedule_to_close_timeout,
@@ -1986,12 +2061,24 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
         else:
             signal_name = signal
 
-        # Use the same signaling mechanism as external workflows
-        # A child workflow is just an external workflow that we started
-        await _Runtime.current().workflow_signal_external_workflow(
+        # Route through outbound interceptor if available
+        runtime = _Runtime.current()
+        resolved_args = temporalio.common._arg_or_args(arg, args)
+        outbound = getattr(runtime, "outbound_interceptor", None)
+        if outbound is not None:
+            await outbound.signal_child_workflow(
+                _interceptor_mod().SignalChildWorkflowInput(
+                    signal=signal_name,
+                    args=resolved_args,
+                    child_workflow_id=self._id,
+                    headers={},
+                )
+            )
+            return
+        await runtime.workflow_signal_external_workflow(
             self._id,
             signal_name,
-            temporalio.common._arg_or_args(arg, args),
+            resolved_args,
             run_id=self._first_execution_run_id,
         )
 
@@ -2106,10 +2193,24 @@ class ExternalWorkflowHandle(Generic[SelfType]):
         else:
             signal_name = signal
 
+        resolved_args = temporalio.common._arg_or_args(arg, args)
+        outbound = getattr(self._runtime, "outbound_interceptor", None)
+        if outbound is not None:
+            await outbound.signal_external_workflow(
+                _interceptor_mod().SignalExternalWorkflowInput(
+                    signal=signal_name,
+                    args=resolved_args,
+                    namespace=getattr(self._runtime, "namespace", "default"),
+                    workflow_id=self._workflow_id,
+                    workflow_run_id=self._run_id,
+                    headers={},
+                )
+            )
+            return
         await self._runtime.workflow_signal_external_workflow(
             self._workflow_id,
             signal_name,
-            temporalio.common._arg_or_args(arg, args),
+            resolved_args,
             run_id=self._run_id,
         )
 
@@ -2287,10 +2388,58 @@ async def start_child_workflow(
         _NotInWorkflowContextError: If not in a workflow context.
         RuntimeError: If the child workflow fails to start.
     """
-    return await _Runtime.current().workflow_start_child_workflow(
+    runtime = _Runtime.current()
+    resolved_args = temporalio.common._arg_or_args(arg, args)
+    resolved_id = id or str(uuid4())
+    outbound = getattr(runtime, "outbound_interceptor", None)
+    if outbound is not None:
+        # Get workflow name
+        if isinstance(workflow, str):
+            wf_name = workflow
+        elif isinstance(workflow, type):
+            defn = _Definition.from_class(workflow)
+            wf_name = defn.name if defn else workflow.__name__
+        else:
+            # It's a method reference (e.g., MyWorkflow.run)
+            defn = _Definition.from_run_fn(workflow)
+            if defn:
+                wf_name = defn.name
+            else:
+                qualname = getattr(workflow, "__qualname__", "")
+                wf_name = (
+                    qualname.rsplit(".", 1)[0]
+                    if "." in qualname
+                    else getattr(workflow, "__name__", str(workflow))
+                )
+        return await outbound.start_child_workflow(
+            _interceptor_mod().StartChildWorkflowInput(
+                workflow=wf_name,
+                args=resolved_args,
+                id=resolved_id,
+                task_queue=task_queue,
+                cancellation_type=cancellation_type,
+                parent_close_policy=parent_close_policy,
+                execution_timeout=execution_timeout,
+                run_timeout=run_timeout,
+                task_timeout=task_timeout,
+                id_reuse_policy=id_reuse_policy,
+                retry_policy=retry_policy,
+                cron_schedule=cron_schedule,
+                memo=memo,
+                search_attributes=search_attributes,
+                headers={},
+                versioning_intent=None,
+                static_summary=None,
+                static_details=None,
+                priority=temporalio.common.Priority.default,
+                arg_types=None,
+                ret_type=None,
+            )
+        )
+    return await runtime.workflow_start_child_workflow(
         workflow,
-        *temporalio.common._arg_or_args(arg, args),
-        id=id or str(uuid4()),  # Uses our deterministic uuid4()
+        *resolved_args,
+        id=resolved_id,
         task_queue=task_queue,
         cancellation_type=cancellation_type,
         parent_close_policy=parent_close_policy,
@@ -2435,8 +2584,37 @@ def continue_as_new(
         ContinueAsNewError: Always raised to stop the workflow.
         _NotInWorkflowContextError: If not in a workflow context.
     """
-    _Runtime.current().workflow_continue_as_new(
-        *temporalio.common._arg_or_args(arg, args),
+    runtime = _Runtime.current()
+    resolved_args = temporalio.common._arg_or_args(arg, args)
+    outbound = getattr(runtime, "outbound_interceptor", None)
+    if outbound is not None:
+        # Get workflow name
+        wf_name = None
+        if workflow is not None:
+            if isinstance(workflow, str):
+                wf_name = workflow
+            else:
+                defn = _Definition.from_class(workflow)
+                wf_name = (
+                    defn.name if defn else getattr(workflow, "__name__", str(workflow))
+                )
+        outbound.continue_as_new(
+            _interceptor_mod().ContinueAsNewInput(
+                workflow=wf_name,
+                args=resolved_args,
+                task_queue=task_queue,
+                run_timeout=run_timeout,
+                task_timeout=task_timeout,
+                retry_policy=retry_policy,
+                memo=memo,
+                search_attributes=search_attributes,
+                headers={},
+                versioning_intent=None,
+                arg_types=None,
+            )
+        )
+    runtime.workflow_continue_as_new(
+        *resolved_args,
         workflow=workflow,
         task_queue=task_queue,
         run_timeout=run_timeout,
@@ -2583,9 +2761,7 @@ class LoggerAdapter(logging.LoggerAdapter):
             Default is False.
     """
 
-    def __init__(
-        self, logger: logging.Logger, extra: Mapping[str, Any] | None
-    ) -> None:
+    def __init__(self, logger: logging.Logger, extra: Mapping[str, Any] | None) -> None:
         """Create the logger adapter.
 
         Args:

@@ -22,7 +22,6 @@ from temporalio_trio import activity, workflow
 from temporalio_trio.client import Client
 from temporalio_trio.worker import Worker
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================
@@ -165,7 +164,9 @@ async def test_e2e_stress_100_simple(trio_client) -> None:
         # Verify all results
         assert len(results) == num_workflows
         for i in range(num_workflows):
-            assert results[i] == f"simple-{i}", f"Workflow {i}: expected 'simple-{i}', got '{results[i]}'"
+            assert results[i] == f"simple-{i}", (
+                f"Workflow {i}: expected 'simple-{i}', got '{results[i]}'"
+            )
 
         await worker.shutdown()
         await trio.sleep(0.3)
@@ -214,7 +215,9 @@ async def test_e2e_stress_100_timers(trio_client) -> None:
         # Verify all results
         assert len(results) == num_workflows
         for i in range(num_workflows):
-            assert results[i] == f"timer-{i}", f"Workflow {i}: expected 'timer-{i}', got '{results[i]}'"
+            assert results[i] == f"timer-{i}", (
+                f"Workflow {i}: expected 'timer-{i}', got '{results[i]}'"
+            )
 
         await worker.shutdown()
         await trio.sleep(0.3)
@@ -264,7 +267,9 @@ async def test_e2e_stress_100_activities(trio_client) -> None:
         # Verify all results
         assert len(results) == num_workflows
         for i in range(num_workflows):
-            assert results[i] == f"activity-{i}", f"Workflow {i}: expected 'activity-{i}', got '{results[i]}'"
+            assert results[i] == f"activity-{i}", (
+                f"Workflow {i}: expected 'activity-{i}', got '{results[i]}'"
+            )
 
         await worker.shutdown()
         await trio.sleep(0.3)
@@ -385,7 +390,11 @@ async def test_e2e_stress_100_mixed(trio_client) -> None:
         worker = Worker(
             trio_client,
             task_queue=task_queue,
-            workflows=[SimpleStressWorkflow, TimerStressWorkflow, ActivityStressWorkflow],
+            workflows=[
+                SimpleStressWorkflow,
+                TimerStressWorkflow,
+                ActivityStressWorkflow,
+            ],
             activities=[stress_activity],
         )
         nursery.start_soon(worker.run)
@@ -480,7 +489,9 @@ async def test_e2e_stress_200_workflows(trio_client) -> None:
         # Verify all results
         assert len(results) == num_workflows
         for i in range(num_workflows):
-            assert results[i] == f"timer-{i}", f"Workflow {i}: expected 'timer-{i}', got '{results[i]}'"
+            assert results[i] == f"timer-{i}", (
+                f"Workflow {i}: expected 'timer-{i}', got '{results[i]}'"
+            )
 
         await worker.shutdown()
         await trio.sleep(0.3)
