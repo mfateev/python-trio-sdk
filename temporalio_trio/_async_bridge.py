@@ -1709,6 +1709,337 @@ class TrioBridgeWrapper:
         self.initiate_shutdown()
         await self.finalize_shutdown(timeout=timeout)
 
+    # ==========================================================================
+    # Replay Worker Operations
+    # ==========================================================================
+
+    async def initialize_replay_worker(
+        self,
+        namespace: str,
+        task_queue: str,
+        build_id: Optional[str] = None,
+        identity: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Initialize a replay worker in the bridge.
+
+        Args:
+            namespace: Temporal namespace.
+            task_queue: Task queue name.
+            build_id: Build identifier for worker versioning.
+            identity: Worker identity.
+            timeout: Optional timeout in seconds.
+        """
+        self._check_running()
+
+        import json
+
+        config: dict = {
+            "namespace": namespace,
+            "task_queue": task_queue,
+        }
+        if build_id is not None:
+            config["build_id"] = build_id
+        if identity is not None:
+            config["identity"] = identity
+
+        config_bytes = json.dumps(config).encode("utf-8")
+
+        event = trio.Event()
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            try:
+                if not result.success:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "initialize_replay_worker", config_bytes, deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("initialize_replay_worker timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+    async def push_replay_history(
+        self,
+        workflow_id: str,
+        history_bytes: bytes,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Push a workflow history for replay.
+
+        Args:
+            workflow_id: The workflow ID for this history.
+            history_bytes: Serialized History protobuf bytes.
+            timeout: Optional timeout in seconds.
+        """
+        self._check_running()
+
+        # Length-prefixed format: 4 bytes workflow_id length (big endian) +
+        # workflow_id bytes + history protobuf bytes
+        wf_id_bytes = workflow_id.encode("utf-8")
+        data = (
+            len(wf_id_bytes).to_bytes(4, byteorder="big")
+            + wf_id_bytes
+            + history_bytes
+        )
+
+        event = trio.Event()
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            try:
+                if not result.success:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "push_replay_history", data, deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("push_replay_history timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+    async def close_replay_pusher(
+        self, timeout: Optional[float] = None
+    ) -> None:
+        """Close the replay history pusher (no more histories will be pushed).
+
+        Args:
+            timeout: Optional timeout in seconds.
+        """
+        self._check_running()
+
+        event = trio.Event()
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            try:
+                if not result.success:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "close_replay_pusher", b"", deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("close_replay_pusher timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+    async def poll_replay_activation(
+        self, timeout: Optional[float] = None
+    ) -> bytes:
+        """Poll for a workflow activation from the replay worker.
+
+        Args:
+            timeout: Optional timeout in seconds.
+
+        Returns:
+            Serialized workflow activation bytes (protobuf).
+        """
+        self._check_running()
+
+        event = trio.Event()
+        result_container: list = []
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError(
+                                "poll_replay_activation returned success without data"
+                            )
+                        )
+                    else:
+                        result_container.append(bytes(data_bytes))
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "poll_replay_activation", b"", deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("poll_replay_activation timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        return result_container[0]
+
+    async def complete_replay_activation(
+        self, completion_bytes: bytes, timeout: Optional[float] = None
+    ) -> None:
+        """Complete a workflow activation for the replay worker.
+
+        Args:
+            completion_bytes: Serialized workflow activation completion (protobuf).
+            timeout: Optional timeout in seconds.
+        """
+        self._check_can_complete()
+
+        event = trio.Event()
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            try:
+                if not result.success:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "complete_replay_activation", completion_bytes, deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("complete_replay_activation timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+    async def initiate_replay_shutdown(
+        self, timeout: Optional[float] = None
+    ) -> None:
+        """Initiate graceful shutdown of the replay worker.
+
+        Args:
+            timeout: Optional timeout in seconds.
+        """
+        event = trio.Event()
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            try:
+                if not result.success:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                try:
+                    trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+                except Exception:
+                    pass
+
+        try:
+            self._rust_bridge.send_request(
+                "initiate_replay_shutdown", b"", deliver_result
+            )
+        except RuntimeError:
+            return
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("initiate_replay_shutdown timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+    async def finalize_replay_shutdown(
+        self, timeout: Optional[float] = None
+    ) -> None:
+        """Finalize shutdown of the replay worker.
+
+        Args:
+            timeout: Optional timeout in seconds.
+        """
+        event = trio.Event()
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            try:
+                if not result.success:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                try:
+                    trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+                except Exception:
+                    pass
+
+        try:
+            self._rust_bridge.send_request(
+                "finalize_replay_shutdown", b"", deliver_result
+            )
+        except RuntimeError:
+            return
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("finalize_replay_shutdown timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
     def _check_running(self) -> None:
         """Check that the bridge is in running state.
 

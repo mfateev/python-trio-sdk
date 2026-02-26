@@ -2252,6 +2252,7 @@ dependencies = [
  "temporalio-common",
  "temporalio-sdk-core",
  "tokio",
+ "tokio-stream",
  "tonic",
  "url",
  "uuid",

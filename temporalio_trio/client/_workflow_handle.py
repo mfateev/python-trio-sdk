@@ -106,6 +106,65 @@ class WorkflowHistory:
     events: list[Any]
     """List of history events (protobuf HistoryEvent objects)."""
 
+    @property
+    def run_id(self) -> str:
+        """Run ID extracted from the first event."""
+        if not self.events:
+            raise RuntimeError("No events")
+        if not self.events[0].HasField(
+            "workflow_execution_started_event_attributes"
+        ):
+            raise RuntimeError("First event is not workflow start")
+        return (
+            self.events[0]
+            .workflow_execution_started_event_attributes
+            .original_execution_run_id
+        )
+
+    @staticmethod
+    def from_json(
+        workflow_id: str, history: "str | dict[str, Any]"
+    ) -> "WorkflowHistory":
+        """Construct a WorkflowHistory from an ID and a JSON dump of history.
+
+        This is built to work both with Temporal UI/tctl JSON as well as
+        :py:meth:`to_json` even though they are slightly different.
+
+        Args:
+            workflow_id: The workflow's ID.
+            history: A string or parsed-to-dict representation of workflow
+                history.
+
+        Returns:
+            Workflow history.
+        """
+        parsed = _history_from_json(history)
+        return WorkflowHistory(workflow_id, list(parsed.events))
+
+    def to_json(self) -> str:
+        """Convert this history to JSON.
+
+        Note, this does not include the workflow ID.
+        """
+        import google.protobuf.json_format
+        import temporalio.api.history.v1
+
+        return google.protobuf.json_format.MessageToJson(
+            temporalio.api.history.v1.History(events=self.events)
+        )
+
+    def to_json_dict(self) -> "dict[str, Any]":
+        """Convert this history to JSON-compatible dict.
+
+        Note, this does not include the workflow ID.
+        """
+        import google.protobuf.json_format
+        import temporalio.api.history.v1
+
+        return google.protobuf.json_format.MessageToDict(
+            temporalio.api.history.v1.History(events=self.events)
+        )
+
 
 class WorkflowFailureError(temporalio.exceptions.TemporalError):
     """Error that occurs when a workflow is unsuccessful.
@@ -985,6 +1044,153 @@ class WorkflowUpdateHandle:
                 raise RuntimeError(f"Update failed: {cause}")
 
         return self.result_value
+
+
+def _history_from_json(
+    history: "str | dict[str, Any]",
+) -> Any:
+    """Parse a JSON history into a History protobuf.
+
+    Handles enum fixups for compatibility with Temporal UI/tctl JSON format.
+    Ported from sdk-python's ``_history_from_json``.
+    """
+    import copy
+    import json
+    import re
+
+    import google.protobuf.json_format
+    import temporalio.api.history.v1
+
+    if isinstance(history, str):
+        history = json.loads(history)
+    else:
+        history = copy.deepcopy(history)
+    if not isinstance(history, dict):
+        raise ValueError("JSON history not a dictionary")
+    events = history.get("events")
+    if not hasattr(events, "__iter__"):
+        raise ValueError("History does not have iterable 'events'")
+
+    pascal_case_match = re.compile("([A-Z]+)")
+
+    def fix_history_enum(
+        prefix: str, parent: dict[str, Any], *attrs: str
+    ) -> None:
+        if attrs[0] == "*":
+            for child in parent.values():
+                if isinstance(child, dict):
+                    fix_history_enum(prefix, child, *attrs[1:])
+        else:
+            child = parent.get(attrs[0])
+            if isinstance(child, str) and len(attrs) == 1:
+                if not parent[attrs[0]].startswith(prefix):
+                    parent[attrs[0]] = (
+                        prefix
+                        + pascal_case_match.sub(r"_\1", child).upper()
+                    )
+            elif isinstance(child, dict) and len(attrs) > 1:
+                fix_history_enum(prefix, child, *attrs[1:])
+            elif isinstance(child, list) and len(attrs) > 1:
+                for child_item in child:
+                    if isinstance(child_item, dict):
+                        fix_history_enum(prefix, child_item, *attrs[1:])
+
+    def fix_history_failure(
+        parent: dict[str, Any], *attrs: str
+    ) -> None:
+        fix_history_enum(
+            "TIMEOUT_TYPE",
+            parent,
+            *attrs,
+            "timeoutFailureInfo",
+            "timeoutType",
+        )
+        fix_history_enum("RETRY_STATE", parent, *attrs, "*", "retryState")
+        parents = [parent]
+        for attr in attrs:
+            new_parents: list[dict[str, Any]] = []
+            for p in parents:
+                if attr == "*":
+                    for v in p.values():
+                        if isinstance(v, dict):
+                            new_parents.append(v)
+                else:
+                    child = p.get(attr)
+                    if isinstance(child, dict):
+                        new_parents.append(child)
+            if not new_parents:
+                return
+            parents = new_parents
+        for p in parents:
+            fix_history_failure(p, "cause")
+
+    for event in events:
+        if not isinstance(event, dict):
+            raise ValueError("Event not a dictionary")
+        fix_history_enum(
+            "CANCEL_EXTERNAL_WORKFLOW_EXECUTION_FAILED_CAUSE",
+            event,
+            "requestCancelExternalWorkflowExecutionFailedEventAttributes",
+            "cause",
+        )
+        fix_history_enum(
+            "CONTINUE_AS_NEW_INITIATOR", event, "*", "initiator"
+        )
+        fix_history_enum("EVENT_TYPE", event, "eventType")
+        fix_history_enum(
+            "PARENT_CLOSE_POLICY",
+            event,
+            "startChildWorkflowExecutionInitiatedEventAttributes",
+            "parentClosePolicy",
+        )
+        fix_history_enum("RETRY_STATE", event, "*", "retryState")
+        fix_history_enum(
+            "SIGNAL_EXTERNAL_WORKFLOW_EXECUTION_FAILED_CAUSE",
+            event,
+            "signalExternalWorkflowExecutionFailedEventAttributes",
+            "cause",
+        )
+        fix_history_enum(
+            "START_CHILD_WORKFLOW_EXECUTION_FAILED_CAUSE",
+            event,
+            "startChildWorkflowExecutionFailedEventAttributes",
+            "cause",
+        )
+        fix_history_enum(
+            "TASK_QUEUE_KIND", event, "*", "taskQueue", "kind"
+        )
+        fix_history_enum(
+            "TIMEOUT_TYPE",
+            event,
+            "workflowTaskTimedOutEventAttributes",
+            "timeoutType",
+        )
+        fix_history_enum(
+            "WORKFLOW_ID_REUSE_POLICY",
+            event,
+            "startChildWorkflowExecutionInitiatedEventAttributes",
+            "workflowIdReusePolicy",
+        )
+        fix_history_enum(
+            "WORKFLOW_TASK_FAILED_CAUSE",
+            event,
+            "workflowTaskFailedEventAttributes",
+            "cause",
+        )
+        fix_history_failure(event, "*", "failure")
+        fix_history_failure(
+            event, "activityTaskStartedEventAttributes", "lastFailure"
+        )
+        fix_history_failure(
+            event,
+            "workflowExecutionStartedEventAttributes",
+            "continuedFailure",
+        )
+    return google.protobuf.json_format.ParseDict(
+        history,
+        temporalio.api.history.v1.History(),
+        ignore_unknown_fields=True,
+    )
 
 
 __all__ = [

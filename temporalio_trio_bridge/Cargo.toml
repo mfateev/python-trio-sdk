@@ -27,6 +27,8 @@ temporalio-sdk-core = { version = "0.1.0", path = "../sdk-core/crates/sdk-core" 
 temporalio-common = { version = "0.1.0", path = "../sdk-core/crates/common" }
 temporalio-client = { version = "0.1.0", path = "../sdk-core/crates/client" }
 
+tokio-stream = "0.1"
+
 [profile.release]
 opt-level = 3
 lto = true

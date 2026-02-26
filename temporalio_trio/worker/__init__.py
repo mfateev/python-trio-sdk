@@ -41,6 +41,12 @@ from temporalio_trio.worker._interceptor import (
     WorkflowInterceptorClassInput,
     WorkflowOutboundInterceptor,
 )
+from temporalio_trio.worker._replayer import (
+    Replayer,
+    ReplayerConfig,
+    WorkflowReplayResult,
+    WorkflowReplayResults,
+)
 from temporalio_trio.worker._single_thread_worker import SingleThreadWorker
 from temporalio_trio.worker._worker import Worker
 from temporalio_trio.worker._workflow_instance import (
@@ -72,6 +78,11 @@ __all__ = [
     "WorkflowOutboundInterceptor",
     # High-level Worker API
     "Worker",
+    # Replayer
+    "Replayer",
+    "ReplayerConfig",
+    "WorkflowReplayResult",
+    "WorkflowReplayResults",
     # Single-threaded worker (new execution model)
     "SingleThreadWorker",
     # Activity worker

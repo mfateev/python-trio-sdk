@@ -22,7 +22,7 @@ mod request;
 
 pub use bridge::TrioAsyncBridge;
 pub use core_client::CoreClientHandle;
-pub use core_worker::CoreWorkerHandle;
+pub use core_worker::{CoreWorkerHandle, ReplayWorkerHandle};
 pub use request::{Request, RequestId, RequestResult};
 
 /// PyO3 module initialization

@@ -278,6 +278,12 @@ class WorkflowActivation:
     remove_from_cache: bool = False
     """Whether this is a cache eviction activation."""
 
+    eviction_reason: int | None = None
+    """Eviction reason code from remove_from_cache (if eviction)."""
+
+    eviction_message: str | None = None
+    """Eviction message from remove_from_cache (if eviction)."""
+
     is_replaying: bool = False
     """Whether this activation is replaying from history."""
 

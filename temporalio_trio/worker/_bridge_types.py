@@ -108,6 +108,8 @@ def bridge_to_poc_activation(
         | NotifyHasPatchJob
     ] = []
     is_eviction = False
+    eviction_reason: int | None = None
+    eviction_message: str | None = None
     for job in bridge_act.jobs:
         # Check which job type this is (oneof field)
         job_type = job.WhichOneof("variant")
@@ -161,6 +163,9 @@ def bridge_to_poc_activation(
         elif job_type == "remove_from_cache":
             # Track eviction - this activation is a cache eviction request
             is_eviction = True
+            rfc = job.remove_from_cache
+            eviction_reason = int(rfc.reason) if rfc.reason else None
+            eviction_message = rfc.message if rfc.message else None
             continue
         else:
             # Unsupported job types - raise error with helpful message
@@ -179,6 +184,8 @@ def bridge_to_poc_activation(
         timestamp_ns=timestamp_ns,
         run_id=bridge_act.run_id,
         remove_from_cache=is_eviction,
+        eviction_reason=eviction_reason,
+        eviction_message=eviction_message,
         is_replaying=bridge_act.is_replaying,
         randomness_seed=randomness_seed,
     )

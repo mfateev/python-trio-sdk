@@ -116,6 +116,9 @@ class SingleThreadWorker:
         activities: Sequence[Callable[..., Any]] | None = None,
         workflow_failure_exception_types: Sequence[type[BaseException]] = [],
         interceptors: Sequence[Interceptor] = [],
+        replay_mode: bool = False,
+        on_eviction_hook: Callable[[str, int | None, str | None], None]
+        | None = None,
     ) -> None:
         """Initialize the single-thread worker.
 
@@ -128,12 +131,18 @@ class SingleThreadWorker:
                 workflow failure instead of task failure. Stored for
                 future enforcement.
             interceptors: Interceptors for the worker.
+            replay_mode: If True, use replay bridge operations
+                (poll_replay_activation / complete_replay_activation).
+            on_eviction_hook: Optional callback invoked on workflow eviction.
+                Called as ``on_eviction_hook(run_id, reason, message)``.
         """
         self._bridge = bridge
         self._task_queue = task_queue
         self._activities = list(activities) if activities else []
         self._workflow_failure_exception_types = list(workflow_failure_exception_types)
         self._interceptors = list(interceptors)
+        self._replay_mode = replay_mode
+        self._on_eviction_hook = on_eviction_hook
         self._shutdown_event = trio.Event()
 
         # Collect workflow interceptor classes
@@ -198,7 +207,10 @@ class SingleThreadWorker:
             try:
                 # Poll for the next activation
                 logger.debug("Polling for next activation...")
-                activation_bytes = await self._bridge.poll_workflow_activation()
+                if self._replay_mode:
+                    activation_bytes = await self._bridge.poll_replay_activation()
+                else:
+                    activation_bytes = await self._bridge.poll_workflow_activation()
                 logger.debug(
                     f"Received activation: {len(activation_bytes) if isinstance(activation_bytes, bytes) else 'parsed'}"
                 )
@@ -260,6 +272,11 @@ class SingleThreadWorker:
         for job in bridge_act.jobs:
             if job.WhichOneof("variant") == "remove_from_cache":
                 poc_act.remove_from_cache = True
+                rfc = job.remove_from_cache
+                if poc_act.eviction_reason is None and rfc.reason:
+                    poc_act.eviction_reason = int(rfc.reason)
+                if poc_act.eviction_message is None and rfc.message:
+                    poc_act.eviction_message = rfc.message
                 break
 
         return poc_act
@@ -287,6 +304,13 @@ class SingleThreadWorker:
             logger.debug(f"Evicting workflow {run_id}")
             if run_id in self._workflow_states:
                 del self._workflow_states[run_id]
+            # Call eviction hook if set
+            if self._on_eviction_hook is not None:
+                self._on_eviction_hook(
+                    run_id,
+                    getattr(activation, "eviction_reason", None),
+                    getattr(activation, "eviction_message", None),
+                )
             # Send empty completion
             await self._send_empty_completion(run_id)
             logger.debug(f"Eviction complete for {run_id}, returning to poll loop")
@@ -1301,7 +1325,10 @@ class SingleThreadWorker:
         )
 
         completion_bytes = bridge_completion.SerializeToString()
-        await self._bridge.complete_workflow_activation(completion_bytes)
+        if self._replay_mode:
+            await self._bridge.complete_replay_activation(completion_bytes)
+        else:
+            await self._bridge.complete_workflow_activation(completion_bytes)
 
     async def _send_empty_completion(self, run_id: str) -> None:
         """Send an empty success completion for cache eviction.
@@ -1315,7 +1342,10 @@ class SingleThreadWorker:
         comp.run_id = run_id
         comp.successful.SetInParent()
         completion_bytes = comp.SerializeToString()
-        await self._bridge.complete_workflow_activation(completion_bytes)
+        if self._replay_mode:
+            await self._bridge.complete_replay_activation(completion_bytes)
+        else:
+            await self._bridge.complete_workflow_activation(completion_bytes)
 
     def shutdown(self) -> None:
         """Initiate graceful shutdown of the worker."""
