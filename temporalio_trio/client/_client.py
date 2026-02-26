@@ -15,9 +15,11 @@ from typing import Any, Optional, Sequence, Type, TypeVar, Union
 import temporalio.common
 import temporalio.converter
 import trio
-from temporalio.api.common.v1 import Payloads, WorkflowExecution
+from google.protobuf.duration_pb2 import Duration
+from temporalio.api.common.v1 import Payloads, WorkflowExecution, WorkflowType
 from temporalio.api.enums.v1 import WorkflowIdConflictPolicy, WorkflowIdReusePolicy
 from temporalio.api.sdk.v1 import UserMetadata
+from temporalio.api.taskqueue.v1 import TaskQueue
 from temporalio.api.workflowservice.v1 import (
     CountWorkflowExecutionsRequest,
     CountWorkflowExecutionsResponse,
@@ -275,15 +277,17 @@ class Client:
             ] = SignalWithStartWorkflowExecutionRequest(
                 namespace=self._config.namespace,
                 workflow_id=id,
-                workflow_type={"name": workflow_type},
-                task_queue={"name": task_queue},
+                workflow_type=WorkflowType(name=workflow_type),
+                task_queue=TaskQueue(name=task_queue),
                 input=input_payloads,
                 workflow_execution_timeout=self._duration_to_proto(execution_timeout),
                 workflow_run_timeout=self._duration_to_proto(run_timeout),
                 workflow_task_timeout=self._duration_to_proto(task_timeout),
-                identity=self._config.identity,
+                identity=self._config.identity or "",
                 workflow_id_reuse_policy=id_reuse_policy,
-                workflow_id_conflict_policy=int(id_conflict_policy),
+                workflow_id_conflict_policy=WorkflowIdConflictPolicy.ValueType(
+                    int(id_conflict_policy)
+                ),
                 signal_name=start_signal,
             )
             # Encode signal args
@@ -296,15 +300,17 @@ class Client:
             request = StartWorkflowExecutionRequest(
                 namespace=self._config.namespace,
                 workflow_id=id,
-                workflow_type={"name": workflow_type},
-                task_queue={"name": task_queue},
+                workflow_type=WorkflowType(name=workflow_type),
+                task_queue=TaskQueue(name=task_queue),
                 input=input_payloads,
                 workflow_execution_timeout=self._duration_to_proto(execution_timeout),
                 workflow_run_timeout=self._duration_to_proto(run_timeout),
                 workflow_task_timeout=self._duration_to_proto(task_timeout),
-                identity=self._config.identity,
+                identity=self._config.identity or "",
                 workflow_id_reuse_policy=id_reuse_policy,
-                workflow_id_conflict_policy=int(id_conflict_policy),
+                workflow_id_conflict_policy=WorkflowIdConflictPolicy.ValueType(
+                    int(id_conflict_policy)
+                ),
                 request_eager_execution=request_eager_start,
             )
 
@@ -592,8 +598,10 @@ class Client:
         return self._config.identity or ""
 
     @staticmethod
-    def _duration_to_proto(duration: Union[timedelta, float, None]) -> Optional[dict]:
-        """Convert duration to protobuf duration dict.
+    def _duration_to_proto(
+        duration: Union[timedelta, float, None],
+    ) -> Optional[Duration]:
+        """Convert duration to protobuf Duration.
 
         Accepts timedelta, float (seconds), or None.
         """
@@ -605,7 +613,7 @@ class Client:
             total_seconds = duration
         seconds = int(total_seconds)
         nanos = int((total_seconds - seconds) * 1e9)
-        return {"seconds": seconds, "nanos": nanos}
+        return Duration(seconds=seconds, nanos=nanos)
 
 
 __all__ = ["Client", "ClientConfig", "WorkflowExecutionInfo"]

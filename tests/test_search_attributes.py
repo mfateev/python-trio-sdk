@@ -76,7 +76,7 @@ def _create_details(workflow_cls: type) -> WorkflowInstanceDetails:
     defn = workflow._Definition.must_from_class(workflow_cls)
     info = workflow.Info(
         workflow_id="test-wf-1",
-        workflow_type=defn.name,
+        workflow_type=defn.name or "",
         run_id="run-1",
         task_queue="test-queue",
         namespace="default",

@@ -11,9 +11,11 @@ needing to know about protobuf details.
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any
 
 import google.protobuf.duration_pb2
 import temporalio.api.common.v1
+import temporalio.api.failure.v1
 import temporalio.api.sdk.v1.user_metadata_pb2 as user_metadata_pb
 import temporalio.bridge.proto.activity_result.activity_result_pb2 as act_result_pb
 import temporalio.bridge.proto.workflow_activation.workflow_activation_pb2 as act_pb
@@ -101,6 +103,8 @@ def bridge_to_poc_activation(
         | ChildWorkflowStartFailedJob
         | ChildWorkflowResolvedJob
         | SignalExternalResolvedJob
+        | CancelExternalResolvedJob
+        | UpdateWorkflowJob
         | NotifyHasPatchJob
     ] = []
     is_eviction = False
@@ -757,7 +761,9 @@ def poc_to_bridge_completion(
                     )
 
             # Set cancellation type
-            bridge_cmd.schedule_activity.cancellation_type = cmd.cancellation_type
+            bridge_cmd.schedule_activity.cancellation_type = (
+                cmd_pb.ActivityCancellationType.ValueType(cmd.cancellation_type)
+            )
 
             # Apply headers
             temporalio.common._apply_headers(
@@ -823,7 +829,9 @@ def poc_to_bridge_completion(
                     )
 
             # Set cancellation type
-            bridge_cmd.schedule_local_activity.cancellation_type = cmd.cancellation_type
+            bridge_cmd.schedule_local_activity.cancellation_type = (
+                cmd_pb.ActivityCancellationType.ValueType(cmd.cancellation_type)
+            )
 
             # Apply headers
             temporalio.common._apply_headers(

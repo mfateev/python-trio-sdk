@@ -18,11 +18,18 @@ from collections.abc import Mapping, Sequence
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Callable, NoReturn
+from typing import TYPE_CHECKING, Any, Callable, NoReturn, cast
 
 import temporalio.api.common.v1
 import temporalio.common
 import trio
+
+if TYPE_CHECKING:
+    from temporalio_trio.workflow import (
+        ChildWorkflowHandle,
+        ExternalWorkflowHandle,
+        Info,
+    )
 
 from temporalio_trio.worker._activation import (
     CancelWorkflowCommand,
@@ -531,7 +538,7 @@ class WorkflowRuntime:
         elif isinstance(workflow, type):
             # It's a class
             defn = _Definition.from_class(workflow)
-            workflow_type = defn.name if defn else workflow.__name__
+            workflow_type = (defn.name if defn else None) or workflow.__name__
         elif hasattr(workflow, "__temporal_workflow_run"):
             # It's a method decorated with @workflow.run
             # Extract class name from __qualname__ (e.g., "MyWorkflow.run" -> "MyWorkflow")
@@ -744,7 +751,7 @@ class WorkflowRuntime:
         else:
             # It's a type - get the workflow definition name
             defn = _Definition.from_class(workflow)
-            if defn is not None:
+            if defn is not None and defn.name is not None:
                 workflow_type = defn.name
             else:
                 # Fallback to class name
@@ -754,29 +761,29 @@ class WorkflowRuntime:
         class _ContinueAsNewError(ContinueAsNewError):
             """Internal continue-as-new error with command generation."""
 
-            def __init__(inner_self) -> None:
+            def __init__(self) -> None:
                 super().__init__("Continue as new")
-                inner_self._workflow_type = workflow_type
-                inner_self._args = args
-                inner_self._task_queue = task_queue
-                inner_self._run_timeout = run_timeout
-                inner_self._task_timeout = task_timeout
-                inner_self._retry_policy = retry_policy
-                inner_self._memo = memo
-                inner_self._search_attributes = search_attributes
+                self._workflow_type = workflow_type
+                self._args = args
+                self._task_queue = task_queue
+                self._run_timeout = run_timeout
+                self._task_timeout = task_timeout
+                self._retry_policy = retry_policy
+                self._memo = memo
+                self._search_attributes = search_attributes
 
-            def _apply_command(inner_self, commands: list) -> None:
+            def _apply_command(self, commands: list) -> None:
                 """Add ContinueAsNewCommand to commands list."""
                 commands.append(
                     ContinueAsNewCommand(
-                        workflow_type=inner_self._workflow_type,
-                        args=inner_self._args,
-                        task_queue=inner_self._task_queue,
-                        run_timeout=inner_self._run_timeout,
-                        task_timeout=inner_self._task_timeout,
-                        retry_policy=inner_self._retry_policy,
-                        memo=inner_self._memo,
-                        search_attributes=inner_self._search_attributes,
+                        workflow_type=self._workflow_type,
+                        args=self._args,
+                        task_queue=self._task_queue,
+                        run_timeout=self._run_timeout,
+                        task_timeout=self._task_timeout,
+                        retry_policy=self._retry_policy,
+                        memo=self._memo,
+                        search_attributes=self._search_attributes,
                     )
                 )
 
@@ -797,9 +804,9 @@ class WorkflowRuntime:
         Returns:
             Handle to the external workflow.
         """
-        from temporalio_trio.workflow import ExternalWorkflowHandle
+        from temporalio_trio.workflow import ExternalWorkflowHandle, _Runtime
 
-        return ExternalWorkflowHandle(self, workflow_id, run_id)
+        return ExternalWorkflowHandle(cast(_Runtime, self), workflow_id, run_id)
 
     async def workflow_signal_external_workflow(
         self,
@@ -1447,7 +1454,14 @@ class WorkflowRuntime:
 
         # Create an error to wake the parent with
         error = ChildWorkflowError(
-            f"Child workflow {workflow_type} ({workflow_id}) failed to start: {cause}"
+            f"Child workflow {workflow_type} ({workflow_id}) failed to start: {cause}",
+            namespace=self.namespace,
+            workflow_id=workflow_id,
+            run_id="",
+            workflow_type=workflow_type,
+            initiated_event_id=0,
+            started_event_id=0,
+            retry_state=None,
         )
         self.completed_children[seq] = error
 

@@ -138,7 +138,7 @@ class TestQueryHandler:
         info = Info(
             workflow_id="test-wf-id",
             run_id="test-run-id",
-            workflow_type=defn.name,
+            workflow_type=defn.name or "",
             task_queue="test-queue",
             namespace="default",
             attempt=1,

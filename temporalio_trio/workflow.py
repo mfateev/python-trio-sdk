@@ -2398,11 +2398,11 @@ async def start_child_workflow(
             wf_name = workflow
         elif isinstance(workflow, type):
             defn = _Definition.from_class(workflow)
-            wf_name = defn.name if defn else workflow.__name__
+            wf_name = (defn.name or workflow.__name__) if defn else workflow.__name__
         else:
             # It's a method reference (e.g., MyWorkflow.run)
             defn = _Definition.from_run_fn(workflow)
-            if defn:
+            if defn and defn.name:
                 wf_name = defn.name
             else:
                 qualname = getattr(workflow, "__qualname__", "")

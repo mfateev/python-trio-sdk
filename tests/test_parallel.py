@@ -70,7 +70,7 @@ def _create_details(
     defn = workflow._Definition.must_from_class(workflow_cls)
     info = workflow.Info(
         workflow_id=workflow_id,
-        workflow_type=defn.name,
+        workflow_type=defn.name or "",
         run_id=run_id,
         task_queue="test-queue",
         namespace="default",
@@ -96,7 +96,7 @@ def _execute_workflow_to_completion(
     # Start workflow
     completion = instance.activate(
         WorkflowActivation(
-            jobs=[WorkflowStartedJob(workflow_type=details.defn.name, args=args)],
+            jobs=[WorkflowStartedJob(workflow_type=details.defn.name or "", args=args)],
             timestamp_ns=current_time_ns,
         )
     )

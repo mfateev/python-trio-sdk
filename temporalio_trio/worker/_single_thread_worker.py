@@ -20,7 +20,7 @@ import inspect
 import logging
 import random
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import trio
 
@@ -485,7 +485,7 @@ class SingleThreadWorker:
 
         # Set runtime as current (both _runtime.py and workflow.py contextvars)
         # WorkflowRuntime implements all _Runtime ABC methods directly via duck typing
-        token = _Runtime.set_current(runtime)
+        token = _Runtime.set_current(cast(_Runtime, runtime))
         legacy_token = set_current_runtime(runtime)
         try:
             # Apply initial activation jobs (now query handlers are registered)
@@ -753,7 +753,7 @@ class SingleThreadWorker:
             # Workflow requested continue as new - apply the command
             logger.debug("Workflow requested continue as new")
             if hasattr(e, "_apply_command"):
-                e._apply_command(runtime.commands)
+                e._apply_command(runtime.commands)  # type: ignore[attr-defined]
             else:
                 # Fallback: should not happen with proper implementation
                 logger.warning("ContinueAsNewError without _apply_command method")
@@ -1391,7 +1391,7 @@ class _WorkflowOutboundImpl(WorkflowOutboundInterceptor):
             task_timeout=input.task_timeout,
             retry_policy=input.retry_policy,
             memo=input.memo,
-            search_attributes=input.search_attributes,
+            search_attributes=input.search_attributes,  # type: ignore[arg-type]
         )
 
     def info(self) -> Any:
@@ -1449,7 +1449,7 @@ class _WorkflowOutboundImpl(WorkflowOutboundInterceptor):
             retry_policy=input.retry_policy,
             cron_schedule=input.cron_schedule,
             memo=input.memo,
-            search_attributes=input.search_attributes,
+            search_attributes=input.search_attributes,  # type: ignore[arg-type]
         )
 
     async def start_local_activity(self, input: StartLocalActivityInput) -> Any:

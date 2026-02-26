@@ -130,13 +130,13 @@ class WorkflowFailureError(temporalio.exceptions.TemporalError):
 class WorkflowQueryRejectedError(temporalio.exceptions.TemporalError):
     """Error that occurs when a query was rejected."""
 
-    def __init__(self, status: Optional[_ProtoWorkflowExecutionStatus]) -> None:
+    def __init__(self, status: Optional[int]) -> None:
         """Create workflow query rejected error."""
         super().__init__(f"Query rejected, status: {status}")
         self._status = status
 
     @property
-    def status(self) -> Optional[_ProtoWorkflowExecutionStatus]:
+    def status(self) -> Optional[int]:
         """Get workflow execution status causing rejection."""
         return self._status
 
@@ -377,9 +377,7 @@ class WorkflowHandle:
         # Check for rejection
         if resp.HasField("query_rejected"):
             raise WorkflowQueryRejectedError(
-                _ProtoWorkflowExecutionStatus(resp.query_rejected.status)
-                if resp.query_rejected.status
-                else None
+                resp.query_rejected.status if resp.query_rejected.status else None
             )
 
         # Decode result
@@ -848,7 +846,11 @@ class WorkflowHandle:
 
             elif event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_TIMED_OUT:
                 raise WorkflowFailureError(
-                    cause=temporalio.exceptions.TimeoutError("Workflow timed out")
+                    cause=temporalio.exceptions.TimeoutError(
+                        "Workflow timed out",
+                        type=None,
+                        last_heartbeat_details=[],
+                    )
                 )
 
             elif (

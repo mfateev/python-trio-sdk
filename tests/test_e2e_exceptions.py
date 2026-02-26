@@ -162,6 +162,7 @@ async def test_e2e_activity_error_type_preserved(trio_client):
                 result = json.loads(result)
 
             # Verify error was caught as ActivityError
+            assert result is not None, "Expected workflow to return a result"
             assert result["success"] is False, "Expected workflow to catch an error"
             assert result["error_type"] == "ActivityError", (
                 f"Expected ActivityError, got {result['error_type']}"
@@ -312,6 +313,7 @@ async def test_e2e_child_workflow_error_type_preserved(trio_client):
                 result = json.loads(result)
 
             # Verify error was caught as ChildWorkflowError
+            assert result is not None, "Expected workflow to return a result"
             assert result["success"] is False, "Expected workflow to catch an error"
             assert result["error_type"] == "ChildWorkflowError", (
                 f"Expected ChildWorkflowError, got {result['error_type']}"
