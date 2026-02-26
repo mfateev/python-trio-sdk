@@ -151,9 +151,7 @@ def bridge_to_poc_activation(
                 )
             )
         elif job_type == "do_update":
-            poc_jobs.append(
-                _convert_do_update(job.do_update, data_converter)
-            )
+            poc_jobs.append(_convert_do_update(job.do_update, data_converter))
         elif job_type == "notify_has_patch":
             poc_jobs.append(_convert_notify_has_patch(job.notify_has_patch))
         elif job_type == "remove_from_cache":
@@ -603,9 +601,7 @@ def _convert_do_update(
     Returns:
         POC UpdateWorkflowJob
     """
-    args = tuple(
-        data_converter.payload_converter.from_payload(p) for p in update.input
-    )
+    args = tuple(data_converter.payload_converter.from_payload(p) for p in update.input)
     return UpdateWorkflowJob(
         id=update.id,
         protocol_instance_id=update.protocol_instance_id,
@@ -816,9 +812,7 @@ def poc_to_bridge_completion(
                         cmd.retry_policy.maximum_interval,
                     )
                 if cmd.retry_policy.backoff_coefficient:
-                    bridge_cmd.schedule_local_activity.retry_policy.backoff_coefficient = (
-                        cmd.retry_policy.backoff_coefficient
-                    )
+                    bridge_cmd.schedule_local_activity.retry_policy.backoff_coefficient = cmd.retry_policy.backoff_coefficient
                 if cmd.retry_policy.maximum_attempts:
                     bridge_cmd.schedule_local_activity.retry_policy.maximum_attempts = (
                         cmd.retry_policy.maximum_attempts
@@ -1070,9 +1064,7 @@ def poc_to_bridge_completion(
 
         elif isinstance(cmd, UpdateResponseCommand):
             # Convert UpdateResponseCommand to UpdateResponse
-            bridge_cmd.update_response.protocol_instance_id = (
-                cmd.protocol_instance_id
-            )
+            bridge_cmd.update_response.protocol_instance_id = cmd.protocol_instance_id
             if cmd.accepted:
                 bridge_cmd.update_response.accepted.SetInParent()
             elif cmd.rejected_failure is not None:

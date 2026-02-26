@@ -44,27 +44,15 @@ class WorkflowExecutionStatus(IntEnum):
     friendly :class:`IntEnum`.
     """
 
-    RUNNING = int(
-        _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_RUNNING
-    )
-    COMPLETED = int(
-        _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_COMPLETED
-    )
-    FAILED = int(
-        _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_FAILED
-    )
-    CANCELED = int(
-        _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_CANCELED
-    )
-    TERMINATED = int(
-        _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_TERMINATED
-    )
+    RUNNING = int(_ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_RUNNING)
+    COMPLETED = int(_ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_COMPLETED)
+    FAILED = int(_ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_FAILED)
+    CANCELED = int(_ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_CANCELED)
+    TERMINATED = int(_ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_TERMINATED)
     CONTINUED_AS_NEW = int(
         _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW
     )
-    TIMED_OUT = int(
-        _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_TIMED_OUT
-    )
+    TIMED_OUT = int(_ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_TIMED_OUT)
 
 
 @dataclass
@@ -376,7 +364,9 @@ class WorkflowHandle:
             run_id=self._run_id,
             query_type=query_name,
             args_bytes=args_bytes,
-            reject_condition=reject_condition.value if reject_condition is not None else None,
+            reject_condition=reject_condition.value
+            if reject_condition is not None
+            else None,
             timeout=timeout,
         )
 
@@ -564,8 +554,14 @@ class WorkflowHandle:
         from temporalio.api.enums.v1 import UpdateWorkflowExecutionLifecycleStage
         from temporalio.api.update.v1 import (
             Input as UpdateInput,
+        )
+        from temporalio.api.update.v1 import (
             Meta as UpdateMeta,
+        )
+        from temporalio.api.update.v1 import (
             Request as UpdateRequest,
+        )
+        from temporalio.api.update.v1 import (
             WaitPolicy,
         )
         from temporalio.api.workflowservice.v1 import (
@@ -603,13 +599,9 @@ class WorkflowHandle:
 
         # Map stage
         if wait_for_stage == WorkflowUpdateStage.COMPLETED:
-            lifecycle_stage = (
-                UpdateWorkflowExecutionLifecycleStage.UPDATE_WORKFLOW_EXECUTION_LIFECYCLE_STAGE_COMPLETED
-            )
+            lifecycle_stage = UpdateWorkflowExecutionLifecycleStage.UPDATE_WORKFLOW_EXECUTION_LIFECYCLE_STAGE_COMPLETED
         else:
-            lifecycle_stage = (
-                UpdateWorkflowExecutionLifecycleStage.UPDATE_WORKFLOW_EXECUTION_LIFECYCLE_STAGE_ACCEPTED
-            )
+            lifecycle_stage = UpdateWorkflowExecutionLifecycleStage.UPDATE_WORKFLOW_EXECUTION_LIFECYCLE_STAGE_ACCEPTED
 
         # Build the UpdateWorkflowExecutionRequest
         request = UpdateWorkflowExecutionRequest(
@@ -780,12 +772,10 @@ class WorkflowHandle:
         next_page_token = b""
 
         while True:
-            response_bytes = (
-                await self._client._bridge.get_workflow_execution_history(
-                    workflow_id=self._workflow_id,
-                    run_id=self._run_id,
-                    next_page_token=next_page_token,
-                )
+            response_bytes = await self._client._bridge.get_workflow_execution_history(
+                workflow_id=self._workflow_id,
+                run_id=self._run_id,
+                next_page_token=next_page_token,
             )
 
             response = GetWorkflowExecutionHistoryResponse()
@@ -861,7 +851,10 @@ class WorkflowHandle:
                     cause=temporalio.exceptions.TimeoutError("Workflow timed out")
                 )
 
-            elif event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW:
+            elif (
+                event.event_type
+                == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW
+            ):
                 continued = event.workflow_execution_continued_as_new_event_attributes
                 new_run_id = continued.new_execution_run_id
                 if follow_runs:
@@ -902,9 +895,7 @@ class _WorkflowResult:
 
     __slots__ = ("value", "follow_run_id")
 
-    def __init__(
-        self, value: Any, follow_run_id: Optional[str] = None
-    ) -> None:
+    def __init__(self, value: Any, follow_run_id: Optional[str] = None) -> None:
         self.value = value
         self.follow_run_id = follow_run_id
 
@@ -944,14 +935,13 @@ class WorkflowUpdateHandle:
             return self.result_value
 
         # Poll for result
-        from temporalio.api.update.v1 import WaitPolicy
+        from temporalio.api.common.v1 import WorkflowExecution
         from temporalio.api.enums.v1 import UpdateWorkflowExecutionLifecycleStage
+        from temporalio.api.update.v1 import UpdateRef, WaitPolicy
         from temporalio.api.workflowservice.v1 import (
             PollWorkflowExecutionUpdateRequest,
             PollWorkflowExecutionUpdateResponse,
         )
-        from temporalio.api.update.v1 import UpdateRef
-        from temporalio.api.common.v1 import WorkflowExecution
 
         request = PollWorkflowExecutionUpdateRequest(
             namespace=self._client.namespace,
@@ -979,8 +969,10 @@ class WorkflowUpdateHandle:
             outcome = response.outcome
             if outcome.HasField("success"):
                 if outcome.success.payloads:
-                    decoded = self._client.data_converter.payload_converter.from_payloads(
-                        outcome.success.payloads
+                    decoded = (
+                        self._client.data_converter.payload_converter.from_payloads(
+                            outcome.success.payloads
+                        )
                     )
                     self.result_value = decoded[0] if decoded else None
                     return self.result_value

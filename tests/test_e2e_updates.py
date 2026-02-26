@@ -15,7 +15,6 @@ from temporalio_trio import workflow
 from temporalio_trio.client import Client
 from temporalio_trio.worker import Worker
 
-
 # ============================================================================
 # Workflow definitions for E2E tests
 # ============================================================================
@@ -658,9 +657,7 @@ async def test_all_handlers_finished(client: Client) -> None:
         count = await handle.result()
         assert count == 2
 
-    await _run_with_worker(
-        client, task_queue, [AllHandlersFinishedWorkflow], test
-    )
+    await _run_with_worker(client, task_queue, [AllHandlersFinishedWorkflow], test)
 
 
 # ============================================================================
@@ -694,9 +691,7 @@ async def test_update_targets_correct_execution(client: Client) -> None:
 
         await handle.result()
 
-    await _run_with_worker(
-        client, task_queue, [UpdateRespectsRunIdWorkflow], test
-    )
+    await _run_with_worker(client, task_queue, [UpdateRespectsRunIdWorkflow], test)
 
 
 # ============================================================================
@@ -858,9 +853,7 @@ async def test_update_handler_awaits_signal(client: Client) -> None:
         wf_result = await handle.result()
         assert wf_result == "workflow-done"
 
-    await _run_with_worker(
-        client, task_queue, [UpdateAwaitingSignalWorkflow], test
-    )
+    await _run_with_worker(client, task_queue, [UpdateAwaitingSignalWorkflow], test)
 
 
 @pytest.mark.temporal_server
@@ -938,6 +931,4 @@ async def test_concurrent_update_handlers(client: Client) -> None:
         assert "first" in results
         assert "second" in results
 
-    await _run_with_worker(
-        client, task_queue, [ConcurrentUpdatesWorkflow], test
-    )
+    await _run_with_worker(client, task_queue, [ConcurrentUpdatesWorkflow], test)

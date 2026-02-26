@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 from temporalio_trio.worker._activation import (
     ActivityResolvedJob,
     CancelChildWorkflowCommand,
+    CancelExternalResolvedJob,
     CancelTimerCommand,
     CancelWorkflowCommand,
-    CancelExternalResolvedJob,
     CancelWorkflowJob,
     ChildWorkflowResolvedJob,
     ChildWorkflowStartedJob,
@@ -67,9 +67,9 @@ from temporalio_trio.workflow import (
     _Definition,
     _QueryDefinition,
     _Runtime,
+    _set_current_update_info,
     _SignalDefinition,
     _UpdateDefinition,
-    _set_current_update_info,
 )
 
 __all__ = [
@@ -606,16 +606,17 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 # because Trio's global state prevents multiple guest runs per thread.
                 clock = WorkflowClock(self._time_ns)
 
-                try:
-                    trio.run(
-                        self._run_workflow,
-                        deterministic=True,  # type: ignore[call-arg]
-                        random_seed=self._random.getrandbits(64),  # type: ignore[call-arg]
-                        clock=clock,
-                    )
-                except _WorkflowYield:
-                    # Expected - workflow yielded waiting for external event
-                    pass
+                # _WorkflowYield is caught inside _run_workflow_guarded so it
+                # never escapes through trio.run() as a BaseException.  Letting
+                # a BaseException propagate out of the main task can prevent
+                # Trio from closing its internal wakeup socket pair, leaking a
+                # file descriptor.
+                trio.run(
+                    self._run_workflow_guarded,
+                    deterministic=True,  # type: ignore[call-arg]
+                    random_seed=self._random.getrandbits(64),  # type: ignore[call-arg]
+                    clock=clock,
+                )
 
             finally:
                 _Runtime.reset_current(token)
@@ -627,6 +628,20 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         self._pending_queries.clear()
 
         return WorkflowActivationCompletion(commands=self._commands)
+
+    async def _run_workflow_guarded(self) -> None:
+        """Wrapper that catches _WorkflowYield so it never escapes trio.run().
+
+        Letting a BaseException propagate out of trio.run()'s main task can
+        prevent Trio from closing its internal wakeup socket pair, causing a
+        ResourceWarning for an unclosed file descriptor.
+        """
+        try:
+            await self._run_workflow()
+        except _WorkflowYield:
+            # Expected – workflow needs to wait for an external event.
+            # Swallowed here so trio.run() can exit cleanly.
+            pass
 
     async def _run_workflow(self) -> None:
         """Run the workflow from the beginning.
@@ -652,7 +667,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             result = await self._defn.run_fn(self._workflow_obj, *self._start_args)
             self._commands.append(CompleteWorkflowCommand(result=result))
         except _WorkflowYield:
-            # Re-raise to propagate yield signal
+            # Re-raise to _run_workflow_guarded which swallows it
             raise
         except _ContinueAsNewError as err:
             # Workflow requested continue as new - emit command

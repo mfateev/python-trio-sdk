@@ -22,6 +22,25 @@ from temporalio_trio.worker._activation import (
 )
 from temporalio_trio.worker._activity import TrioActivityWorker
 from temporalio_trio.worker._clock import WorkflowClock
+from temporalio_trio.worker._interceptor import (
+    ActivityInboundInterceptor,
+    ActivityOutboundInterceptor,
+    ContinueAsNewInput,
+    ExecuteActivityInput,
+    ExecuteWorkflowInput,
+    HandleQueryInput,
+    HandleSignalInput,
+    HandleUpdateInput,
+    Interceptor,
+    SignalChildWorkflowInput,
+    SignalExternalWorkflowInput,
+    StartActivityInput,
+    StartChildWorkflowInput,
+    StartLocalActivityInput,
+    WorkflowInboundInterceptor,
+    WorkflowInterceptorClassInput,
+    WorkflowOutboundInterceptor,
+)
 from temporalio_trio.worker._single_thread_worker import SingleThreadWorker
 from temporalio_trio.worker._worker import Worker
 from temporalio_trio.worker._workflow_instance import (
@@ -33,6 +52,24 @@ from temporalio_trio.worker._workflow_instance import (
 )
 
 __all__ = [
+    # Interceptor framework
+    "Interceptor",
+    "WorkflowInterceptorClassInput",
+    "ExecuteActivityInput",
+    "ActivityInboundInterceptor",
+    "ActivityOutboundInterceptor",
+    "ContinueAsNewInput",
+    "ExecuteWorkflowInput",
+    "HandleSignalInput",
+    "HandleQueryInput",
+    "HandleUpdateInput",
+    "SignalChildWorkflowInput",
+    "SignalExternalWorkflowInput",
+    "StartActivityInput",
+    "StartChildWorkflowInput",
+    "StartLocalActivityInput",
+    "WorkflowInboundInterceptor",
+    "WorkflowOutboundInterceptor",
     # High-level Worker API
     "Worker",
     # Single-threaded worker (new execution model)

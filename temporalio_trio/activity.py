@@ -56,15 +56,11 @@ def defn(fn: CallableType) -> CallableType: ...
 
 
 @overload
-def defn(
-    *, name: str | None = None
-) -> Callable[[CallableType], CallableType]: ...
+def defn(*, name: str | None = None) -> Callable[[CallableType], CallableType]: ...
 
 
 @overload
-def defn(
-    *, dynamic: bool = False
-) -> Callable[[CallableType], CallableType]: ...
+def defn(*, dynamic: bool = False) -> Callable[[CallableType], CallableType]: ...
 
 
 def defn(

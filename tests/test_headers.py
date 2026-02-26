@@ -17,16 +17,18 @@ from temporalio_trio.worker._activation import (
     SignalWorkflowJob,
     StartChildWorkflowCommand,
     WorkflowActivation,
+    WorkflowActivationCompletion,
     WorkflowStartedJob,
 )
 from temporalio_trio.worker._bridge_types import (
     bridge_to_poc_activation,
     poc_to_bridge_completion,
 )
-from temporalio_trio.worker._activation import WorkflowActivationCompletion
 
 
-def _make_payload(value: bytes, encoding: str = "binary/plain") -> temporalio.api.common.v1.Payload:
+def _make_payload(
+    value: bytes, encoding: str = "binary/plain"
+) -> temporalio.api.common.v1.Payload:
     """Create a test Payload protobuf."""
     p = temporalio.api.common.v1.Payload()
     p.data = value
@@ -82,7 +84,7 @@ class HeadersDefaultWorkflow:
     @workflow.run
     async def run(self) -> str:
         info = workflow.info()
-        assert isinstance(info.headers, dict) or hasattr(info.headers, '__getitem__')
+        assert isinstance(info.headers, dict) or hasattr(info.headers, "__getitem__")
         return "done"
 
 
@@ -152,9 +154,7 @@ def test_start_child_workflow_default_headers():
 
 def test_signal_external_default_headers():
     """SignalExternalWorkflowCommand defaults to empty headers."""
-    cmd = SignalExternalWorkflowCommand(
-        seq=1, workflow_id="ext-1", signal_name="sig"
-    )
+    cmd = SignalExternalWorkflowCommand(seq=1, workflow_id="ext-1", signal_name="sig")
     assert cmd.headers == {}
 
 
@@ -205,10 +205,12 @@ def test_headers_exposed_via_workflow_info():
     instance = TrioWorkflowInstance(details)
 
     activation = WorkflowActivation(
-        jobs=[WorkflowStartedJob(
-            workflow_type="HeadersDefaultWorkflow",
-            args=(),
-        )],
+        jobs=[
+            WorkflowStartedJob(
+                workflow_type="HeadersDefaultWorkflow",
+                args=(),
+            )
+        ],
         timestamp_ns=1000000,
         run_id="run-1",
         is_replaying=False,
@@ -218,6 +220,7 @@ def test_headers_exposed_via_workflow_info():
 
     # Workflow should complete without error
     from temporalio_trio.worker._activation import CompleteWorkflowCommand
+
     assert any(isinstance(cmd, CompleteWorkflowCommand) for cmd in completion.commands)
 
 
@@ -228,11 +231,13 @@ def test_headers_from_started_job_available_in_info():
 
     h = _make_payload(b"test-trace")
     activation = WorkflowActivation(
-        jobs=[WorkflowStartedJob(
-            workflow_type="HeadersInfoWorkflow",
-            args=(),
-            headers={"x-trace": h},
-        )],
+        jobs=[
+            WorkflowStartedJob(
+                workflow_type="HeadersInfoWorkflow",
+                args=(),
+                headers={"x-trace": h},
+            )
+        ],
         timestamp_ns=1000000,
         run_id="run-1",
         is_replaying=False,
@@ -241,6 +246,7 @@ def test_headers_from_started_job_available_in_info():
     completion = instance.activate(activation)
 
     from temporalio_trio.worker._activation import CompleteWorkflowCommand
+
     assert any(isinstance(cmd, CompleteWorkflowCommand) for cmd in completion.commands)
 
 
@@ -319,6 +325,7 @@ def test_bridge_parse_query_workflow_headers():
 
     assert len(poc_act.jobs) == 1
     from temporalio_trio.worker._activation import QueryWorkflowJob
+
     query_job = poc_act.jobs[0]
     assert isinstance(query_job, QueryWorkflowJob)
     assert "x-query-trace" in query_job.headers
@@ -369,7 +376,10 @@ def test_bridge_apply_headers_start_child_workflow():
     assert len(bridge_comp.successful.commands) == 1
     bridge_cmd = bridge_comp.successful.commands[0]
     assert "x-trace" in bridge_cmd.start_child_workflow_execution.headers
-    assert bridge_cmd.start_child_workflow_execution.headers["x-trace"].data == b"child-trace-data"
+    assert (
+        bridge_cmd.start_child_workflow_execution.headers["x-trace"].data
+        == b"child-trace-data"
+    )
 
 
 def test_bridge_apply_headers_signal_external():
@@ -389,7 +399,10 @@ def test_bridge_apply_headers_signal_external():
     assert len(bridge_comp.successful.commands) == 1
     bridge_cmd = bridge_comp.successful.commands[0]
     assert "x-trace" in bridge_cmd.signal_external_workflow_execution.headers
-    assert bridge_cmd.signal_external_workflow_execution.headers["x-trace"].data == b"signal-ext-trace"
+    assert (
+        bridge_cmd.signal_external_workflow_execution.headers["x-trace"].data
+        == b"signal-ext-trace"
+    )
 
 
 def test_bridge_apply_headers_continue_as_new():
@@ -407,7 +420,10 @@ def test_bridge_apply_headers_continue_as_new():
     assert len(bridge_comp.successful.commands) == 1
     bridge_cmd = bridge_comp.successful.commands[0]
     assert "x-trace" in bridge_cmd.continue_as_new_workflow_execution.headers
-    assert bridge_cmd.continue_as_new_workflow_execution.headers["x-trace"].data == b"can-trace"
+    assert (
+        bridge_cmd.continue_as_new_workflow_execution.headers["x-trace"].data
+        == b"can-trace"
+    )
 
 
 def test_bridge_empty_headers_no_op():
