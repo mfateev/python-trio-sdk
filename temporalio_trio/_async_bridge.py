@@ -1719,6 +1719,8 @@ class TrioBridgeWrapper:
         task_queue: str,
         build_id: Optional[str] = None,
         identity: Optional[str] = None,
+        nondeterminism_as_workflow_fail: bool = False,
+        nondeterminism_as_workflow_fail_for_types: Optional[set[str]] = None,
         timeout: Optional[float] = None,
     ) -> None:
         """Initialize a replay worker in the bridge.
@@ -1728,6 +1730,11 @@ class TrioBridgeWrapper:
             task_queue: Task queue name.
             build_id: Build identifier for worker versioning.
             identity: Worker identity.
+            nondeterminism_as_workflow_fail: If True, treat nondeterminism
+                errors as workflow failures instead of task failures.
+            nondeterminism_as_workflow_fail_for_types: Set of workflow type
+                names for which nondeterminism should be treated as workflow
+                failure.
             timeout: Optional timeout in seconds.
         """
         self._check_running()
@@ -1742,6 +1749,10 @@ class TrioBridgeWrapper:
             config["build_id"] = build_id
         if identity is not None:
             config["identity"] = identity
+        config["nondeterminism_as_workflow_fail"] = nondeterminism_as_workflow_fail
+        config["nondeterminism_as_workflow_fail_for_types"] = list(
+            nondeterminism_as_workflow_fail_for_types or []
+        )
 
         config_bytes = json.dumps(config).encode("utf-8")
 

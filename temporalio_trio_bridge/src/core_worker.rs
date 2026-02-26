@@ -5,7 +5,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use temporalio_client::ClientOptions;
-use temporalio_common::errors::PollError;
+use std::collections::HashSet;
+use temporalio_common::errors::{PollError, WorkflowErrorType};
 use temporalio_common::protos::coresdk::workflow_completion::WorkflowActivationCompletion;
 use temporalio_common::protos::coresdk::{ActivityHeartbeat, ActivityTaskCompletion};
 use temporalio_common::protos::temporal::api::history::v1::History;
@@ -452,6 +453,10 @@ pub struct ReplayWorkerInitConfig {
     pub build_id: Option<String>,
     #[serde(default)]
     pub identity: Option<String>,
+    #[serde(default)]
+    pub nondeterminism_as_workflow_fail: bool,
+    #[serde(default)]
+    pub nondeterminism_as_workflow_fail_for_types: Vec<String>,
 }
 
 /// Wrapper around a Temporal SDK Core replay Worker + HistoryFeeder.
@@ -506,6 +511,22 @@ impl ReplayWorkerHandle {
             .sticky_queue_schedule_to_start_timeout(Duration::from_millis(1000))
             .max_heartbeat_throttle_interval(Duration::from_millis(1000))
             .default_heartbeat_throttle_interval(Duration::from_millis(1000))
+            .workflow_failure_errors(if config.nondeterminism_as_workflow_fail {
+                HashSet::from([WorkflowErrorType::Nondeterminism])
+            } else {
+                HashSet::new()
+            })
+            .workflow_types_to_failure_errors(
+                config.nondeterminism_as_workflow_fail_for_types
+                    .into_iter()
+                    .map(|s| {
+                        (
+                            s,
+                            HashSet::from([WorkflowErrorType::Nondeterminism]),
+                        )
+                    })
+                    .collect::<HashMap<String, HashSet<WorkflowErrorType>>>(),
+            )
             .build()
             .map_err(|e| anyhow!("Failed to build replay worker config: {}", e))?;
 

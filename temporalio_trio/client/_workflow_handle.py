@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Optional
 
+import temporalio.api.history.v1
 import temporalio.api.update.v1
 import temporalio.common
 import temporalio.exceptions
@@ -93,7 +94,7 @@ class WorkflowExecutionDescription:
     """Underlying protobuf description response."""
 
 
-@dataclass
+@dataclass(frozen=True)
 class WorkflowHistory:
     """History for a single workflow execution.
 
@@ -103,7 +104,7 @@ class WorkflowHistory:
     workflow_id: str
     """ID for the workflow."""
 
-    events: list[Any]
+    events: Sequence[temporalio.api.history.v1.HistoryEvent]
     """List of history events (protobuf HistoryEvent objects)."""
 
     @property
