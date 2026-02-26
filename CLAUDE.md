@@ -305,6 +305,15 @@ Trio's nursery-based task management aligns well with Temporal workflows. Use nu
 - Skipped tests are acceptable only for clearly documented unimplemented features
 - If tests fail, fix the underlying code, not the tests
 
+### Zero Warnings Allowed (CRITICAL)
+
+**Tests must produce zero warnings.** Warnings indicate real problems — resource leaks, deprecated API usage, or incorrect code — and must be fixed, not suppressed.
+
+- Run `uv run pytest -W all` to make all warnings visible
+- Fix the root cause: close file descriptors, switch to supported APIs, etc.
+- **NEVER suppress warnings** with `filterwarnings` config, `warnings.filterwarnings("ignore")`, or `@pytest.mark.filterwarnings`. If a warning exists, the code has a bug.
+- The only acceptable warnings are from third-party libraries that we cannot control (not from our code or tests)
+
 ### Test Coverage Requirements
 
 - **Target**: 90%+ coverage on new code
