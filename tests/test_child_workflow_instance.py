@@ -37,7 +37,7 @@ def make_instance(workflow_cls: type) -> TrioWorkflowInstance:
     defn = _Definition.must_from_class(workflow_cls)
     info = Info(
         workflow_id="test-wf-id",
-        workflow_type=defn.name,
+        workflow_type=defn.name or "",
         run_id="test-run-id",
         task_queue="test-queue",
         namespace="default",

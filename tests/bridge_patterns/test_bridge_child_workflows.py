@@ -344,8 +344,12 @@ async def test_pattern_14_child_workflow_start_failed(unique_task_queue: str) ->
         cmd.start_child_workflow_execution.workflow_id = conflicting_workflow_id
         cmd.start_child_workflow_execution.workflow_type = "ChildWorkflow"
         cmd.start_child_workflow_execution.task_queue = unique_task_queue
-        # REJECT_DUPLICATE = 3 means fail if workflow ID already exists
-        cmd.start_child_workflow_execution.workflow_id_reuse_policy = 3
+        # REJECT_DUPLICATE means fail if workflow ID already exists
+        from temporalio.api.enums.v1 import WorkflowIdReusePolicy
+
+        cmd.start_child_workflow_execution.workflow_id_reuse_policy = (
+            WorkflowIdReusePolicy.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE
+        )
 
         completion.successful.commands.append(cmd)
         await bridge.complete_workflow_activation(

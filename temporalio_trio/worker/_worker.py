@@ -208,7 +208,7 @@ class Worker:
         return self._task_queue
 
     @property
-    def client(self) -> temporalio.client.Client:
+    def client(self) -> Client:
         """Client currently set on the worker."""
         return self._client
 

@@ -367,6 +367,71 @@ class TrioBridgeWrapper:
 
         return result_container[0]
 
+    async def signal_with_start_workflow_execution(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        """Signal-with-start a workflow execution.
+
+        Args:
+            request_bytes: Serialized SignalWithStartWorkflowExecutionRequest (protobuf)
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Serialized SignalWithStartWorkflowExecutionResponse (protobuf)
+
+        Raises:
+            RuntimeError: If bridge is not running
+            trio.TooSlowError: If timeout is exceeded
+            Exception: Any error from the Rust bridge
+        """
+        self._check_running()
+
+        event = trio.Event()
+        result_container: list[bytes] = []
+        error_container: list[Exception] = []
+
+        def deliver_result(result) -> None:  # type: ignore[no-untyped-def]
+            """Callback for signal-with-start result."""
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError(
+                                f"signal_with_start_workflow returned success without data. "
+                                f"This indicates a bridge bug (request_id: {result.request_id})"
+                            )
+                        )
+                    else:
+                        result_container.append(bytes(data_bytes))
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "signal_with_start_workflow", request_bytes, deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError(
+                    "signal_with_start_workflow_execution timed out"
+                )
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        return result_container[0]
+
     async def get_workflow_result(
         self,
         workflow_id: str,

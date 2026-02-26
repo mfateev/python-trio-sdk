@@ -137,6 +137,9 @@ class TrioActivityWorker:
                     f"Activity {defn.name} must be async (defined with 'async def'). "
                     f"This Trio-based SDK only supports async activities."
                 )
+            assert defn.name is not None, (
+                "Activity name must not be None for non-dynamic activities"
+            )
             if defn.name in self._activities:
                 raise ValueError(f"Duplicate activity name: {defn.name}")
             self._activities[defn.name] = defn
@@ -368,7 +371,7 @@ class TrioActivityWorker:
                         completion.result.cancelled.failure.message = (
                             "Activity cancelled"
                         )
-                        completion.result.cancelled.failure.cancelled_failure_info.SetInParent()
+                        completion.result.cancelled.failure.canceled_failure_info.SetInParent()
                 elif err is not None:
                     # Activity failed with exception
                     logger.warning(

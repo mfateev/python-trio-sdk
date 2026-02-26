@@ -68,7 +68,7 @@ def _create_details(
     defn = workflow._Definition.must_from_class(workflow_cls)
     info = workflow.Info(
         workflow_id=workflow_id,
-        workflow_type=defn.name,
+        workflow_type=defn.name or "",
         run_id=run_id,
         task_queue=task_queue,
         namespace="default",

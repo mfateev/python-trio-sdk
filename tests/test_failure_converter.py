@@ -5,6 +5,7 @@ Tests the conversion of Temporal Failure protobuf messages to Python exception t
 
 import pytest
 import temporalio.api.common.v1
+import temporalio.api.enums.v1
 import temporalio.api.failure.v1
 import temporalio.converter
 from temporalio.exceptions import (

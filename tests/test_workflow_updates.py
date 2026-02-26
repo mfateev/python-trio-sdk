@@ -181,6 +181,7 @@ class TestUpdateValidator:
         obj = MyWorkflow()
         defn = _Definition.must_from_class(MyWorkflow)
         validator = defn.updates["my_update"].validator
+        assert validator is not None
         bound_validator = validator.__get__(obj, type(obj))
 
         # Should not raise for valid input
@@ -262,7 +263,7 @@ class TestUpdateInfo:
         """Test UpdateInfo is immutable."""
         info = UpdateInfo(id="update-1", name="my_update")
         with pytest.raises(AttributeError):
-            info.id = "changed"
+            setattr(info, "id", "changed")
 
     def test_current_update_info_outside_handler(self) -> None:
         """Test current_update_info returns None outside handler."""

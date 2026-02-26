@@ -757,7 +757,7 @@ async def test_query_on_completed_workflow(unique_task_queue: str) -> None:
                     workflow_id=workflow_id,
                     query_type="get_status",
                     args=[],
-                    timeout=10.0,  # Short timeout
+                    timeout=10,  # Short timeout
                 )
                 print(f"Step 5: CLI query returned: {query_result}")
             except Exception as e:
@@ -971,7 +971,7 @@ async def test_query_on_completed_workflow_eviction_before_query(
                     workflow_id=workflow_id,
                     query_type="get_status",
                     args=[],
-                    timeout=15.0,
+                    timeout=15,
                 )
                 print(f"Step 4: CLI query returned: {query_result}")
             except Exception as e:

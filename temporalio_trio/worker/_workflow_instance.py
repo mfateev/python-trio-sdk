@@ -17,6 +17,7 @@ from typing import Any, Callable, NoReturn, Sequence
 import outcome
 import temporalio.api.common.v1
 import temporalio.common
+import temporalio.converter
 import trio
 import trio.lowlevel
 
@@ -241,6 +242,7 @@ class TrioWorkflowRunner(WorkflowRunner):
                 f"(defined with 'async def')"
             )
 
+        assert defn.name is not None, "Workflow definition must have a name"
         self._prepared.add(defn.name)
 
     def create_instance(self, det: WorkflowInstanceDetails) -> WorkflowInstance:
@@ -369,6 +371,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             | FailWorkflowCommand
             | CancelWorkflowCommand
             | ScheduleActivityCommand
+            | ScheduleLocalActivityCommand
             | QueryResultCommand
             | StartChildWorkflowCommand
             | CancelChildWorkflowCommand
@@ -376,6 +379,8 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             | RequestCancelExternalWorkflowCommand
             | ContinueAsNewCommand
             | SetPatchMarkerCommand
+            | UpsertSearchAttributesCommand
+            | UpdateResponseCommand
         ] = []
         self._start_args: tuple[Any, ...] | None = None
         self._cancel_requested: bool = False
@@ -1273,7 +1278,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             from temporalio_trio.workflow import _Definition
 
             defn = _Definition.from_class(workflow)
-            if defn is not None:
+            if defn is not None and defn.name is not None:
                 workflow_type = defn.name
             else:
                 # Fallback to class name
@@ -1471,13 +1476,13 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         # Determine workflow type
         if workflow is None:
             # Same workflow type as current
-            workflow_type = self._defn.name
+            workflow_type = self._defn.name or self._defn.cls.__name__
         elif isinstance(workflow, str):
             workflow_type = workflow
         else:
             # It's a type - get the workflow definition name
             defn = _Definition.from_class(workflow)
-            if defn is not None:
+            if defn is not None and defn.name is not None:
                 workflow_type = defn.name
             else:
                 # Fallback to class name
