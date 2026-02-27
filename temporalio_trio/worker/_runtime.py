@@ -23,11 +23,13 @@ from typing import TYPE_CHECKING, Any, Callable, NoReturn, cast
 import temporalio.activity
 import temporalio.api.common.v1
 import temporalio.common
+import temporalio.converter
 import trio
+
+from temporalio_trio.workflow import ActivityCancellationType
 
 if TYPE_CHECKING:
     from temporalio_trio.workflow import (
-        ActivityCancellationType,
         ActivityHandle,
         ChildWorkflowHandle,
         ExternalWorkflowHandle,
@@ -359,6 +361,11 @@ class WorkflowRuntime:
     disable_eager_activity_execution: bool = False
     """If true, activities will not be eagerly dispatched to a local worker."""
 
+    payload_converter: "temporalio.converter.PayloadConverter" = field(
+        default_factory=lambda: temporalio.converter.DataConverter.default.payload_converter
+    )
+    """Payload converter for serializing/deserializing workflow data."""
+
     _read_only: bool = False
     """Whether the runtime is in read-only mode (e.g., during query handling)."""
 
@@ -387,6 +394,21 @@ class WorkflowRuntime:
             raise ReadOnlyContextError(
                 f"While in read-only function, action attempted: {action_attempted}"
             )
+
+    def _payload_converter_with_context(
+        self,
+        context: temporalio.converter.SerializationContext,
+    ) -> temporalio.converter.PayloadConverter:
+        """Construct payload converter with the given serialization context.
+
+        This plays a similar role to sdk-python's _payload_converter_with_context.
+        If the converter supports context, returns a context-aware wrapper.
+        Otherwise returns the original converter.
+        """
+        payload_converter = self.payload_converter
+        if isinstance(payload_converter, temporalio.converter.WithSerializationContext):
+            payload_converter = payload_converter.with_context(context)
+        return payload_converter
 
     def workflow_time_ns(self) -> int:
         """Get current workflow time in nanoseconds.
@@ -1401,7 +1423,7 @@ class WorkflowRuntime:
         heartbeat_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
         activity_id: str | None = None,
-        cancellation_type: "ActivityCancellationType | int" = 0,
+        cancellation_type: "ActivityCancellationType" = ActivityCancellationType.TRY_CANCEL,
         versioning_intent: "VersioningIntent | None" = None,
         summary: str | None = None,
         priority: temporalio.common.Priority = temporalio.common.Priority.default,
@@ -1473,6 +1495,28 @@ class WorkflowRuntime:
             input.task_queue if input.task_queue is not None else self.task_queue
         )
 
+        # Create context-aware payload converter (matches sdk-python)
+        activity_id = input.activity_id or None
+        converter = self._payload_converter_with_context(
+            temporalio.converter.ActivitySerializationContext(
+                namespace=self.namespace,
+                workflow_id=self.workflow_id,
+                workflow_type=self.workflow_type,
+                activity_type=input.activity,
+                activity_id=activity_id,
+                activity_task_queue=actual_task_queue,
+                is_local=False,
+            )
+        )
+
+        # Encode arguments before creating command (matches sdk-python)
+        encoded_args = converter.to_payloads(list(input.args)) if input.args else []
+
+        # Encode summary
+        encoded_summary = (
+            converter.to_payload(input.summary) if input.summary else None
+        )
+
         seq = self.next_activity_seq()
 
         # Check if already completed (replay path)
@@ -1490,7 +1534,7 @@ class WorkflowRuntime:
                 seq=seq,
                 activity_id=actual_activity_id,
                 activity_type=input.activity,
-                args=input.args,
+                args=encoded_args,
                 task_queue=actual_task_queue,
                 schedule_to_close_timeout=input.schedule_to_close_timeout,
                 schedule_to_start_timeout=input.schedule_to_start_timeout,
@@ -1503,7 +1547,7 @@ class WorkflowRuntime:
                 versioning_intent=int(input.versioning_intent)
                 if input.versioning_intent is not None
                 else None,
-                summary=input.summary,
+                summary_payload=encoded_summary,
                 priority=input.priority,
             )
         )
@@ -1521,7 +1565,7 @@ class WorkflowRuntime:
         retry_policy: temporalio.common.RetryPolicy | None = None,
         local_retry_threshold: timedelta | None = None,
         activity_id: str | None = None,
-        cancellation_type: int = 0,
+        cancellation_type: "ActivityCancellationType" = ActivityCancellationType.TRY_CANCEL,
         summary: str | None = None,
     ) -> "ActivityHandle[Any]":
         """Start a local activity and return an ActivityHandle without waiting.
@@ -1582,6 +1626,28 @@ class WorkflowRuntime:
                 "Activity must have start_to_close_timeout or schedule_to_close_timeout"
             )
 
+        # Create context-aware payload converter (matches sdk-python)
+        activity_id = input.activity_id or None
+        converter = self._payload_converter_with_context(
+            temporalio.converter.ActivitySerializationContext(
+                namespace=self.namespace,
+                workflow_id=self.workflow_id,
+                workflow_type=self.workflow_type,
+                activity_type=input.activity,
+                activity_id=activity_id,
+                activity_task_queue=self.task_queue,
+                is_local=True,
+            )
+        )
+
+        # Encode arguments before creating command (matches sdk-python)
+        encoded_args = converter.to_payloads(list(input.args)) if input.args else []
+
+        # Encode summary
+        encoded_summary = (
+            converter.to_payload(input.summary) if input.summary else None
+        )
+
         seq = self.next_activity_seq()
 
         # Check if already completed (replay path)
@@ -1599,7 +1665,7 @@ class WorkflowRuntime:
                 seq=seq,
                 activity_id=actual_activity_id,
                 activity_type=input.activity,
-                args=input.args,
+                args=encoded_args,
                 schedule_to_close_timeout=input.schedule_to_close_timeout,
                 schedule_to_start_timeout=input.schedule_to_start_timeout,
                 start_to_close_timeout=input.start_to_close_timeout,
@@ -1607,7 +1673,7 @@ class WorkflowRuntime:
                 local_retry_threshold=input.local_retry_threshold,
                 cancellation_type=int(input.cancellation_type),
                 headers=input.headers or {},
-                summary=input.summary,
+                summary_payload=encoded_summary,
             )
         )
 

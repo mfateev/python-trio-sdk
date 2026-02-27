@@ -194,17 +194,28 @@ class ActivityHandle(Generic[ReturnType]):
         self._seq = seq
         self._is_local = is_local
 
-    def cancel(self) -> bool:
+    def cancel(self, msg: Any | None = None) -> bool:
         """Request cancellation of the activity.
 
+        Args:
+            msg: Optional cancellation message (for API compatibility with
+                sdk-python's asyncio.Task-based ActivityHandle).
+
         Returns:
-            Always True (the cancellation request is always sent).
+            True if the cancellation request was sent.
         """
-        from temporalio_trio.worker._activation import RequestCancelActivityCommand
+        from temporalio_trio.worker._activation import (
+            RequestCancelActivityCommand,
+            RequestCancelLocalActivityCommand,
+        )
 
         runtime = _Runtime.current()
         rt = runtime._workflow_runtime()
-        rt.commands.append(RequestCancelActivityCommand(seq=self._seq))
+        rt._assert_not_read_only("cancel activity handle")
+        if self._is_local:
+            rt.commands.append(RequestCancelLocalActivityCommand(seq=self._seq))
+        else:
+            rt.commands.append(RequestCancelActivityCommand(seq=self._seq))
         return True
 
     def __await__(self) -> Any:

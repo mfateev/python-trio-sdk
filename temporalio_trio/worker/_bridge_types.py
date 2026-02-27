@@ -41,6 +41,7 @@ from temporalio_trio.worker._activation import (
     QueryResultCommand,
     QueryWorkflowJob,
     RequestCancelActivityCommand,
+    RequestCancelLocalActivityCommand,
     RequestCancelExternalWorkflowCommand,
     ScheduleActivityCommand,
     ScheduleLocalActivityCommand,
@@ -740,10 +741,9 @@ def poc_to_bridge_completion(
             if cmd.task_queue:
                 bridge_cmd.schedule_activity.task_queue = cmd.task_queue
 
-            # Encode arguments
-            for arg in cmd.args:  # type: ignore[union-attr]
-                payload = data_converter.payload_converter.to_payload(arg)
-                bridge_cmd.schedule_activity.arguments.append(payload)
+            # Add pre-encoded arguments
+            if cmd.args:
+                bridge_cmd.schedule_activity.arguments.extend(cmd.args)
 
             # Convert timeouts to Duration protobufs
             if cmd.schedule_to_close_timeout:
@@ -792,13 +792,10 @@ def poc_to_bridge_completion(
             if cmd.versioning_intent is not None:
                 bridge_cmd.schedule_activity.versioning_intent = cmd.versioning_intent
 
-            # Add summary as user_metadata if provided
-            if cmd.summary:
-                summary_payload = data_converter.payload_converter.to_payload(
-                    cmd.summary
-                )
+            # Add pre-encoded summary as user_metadata if provided
+            if cmd.summary_payload:
                 bridge_cmd.user_metadata.CopyFrom(
-                    user_metadata_pb.UserMetadata(summary=summary_payload)
+                    user_metadata_pb.UserMetadata(summary=cmd.summary_payload)
                 )
 
             # Set priority
@@ -811,10 +808,9 @@ def poc_to_bridge_completion(
             bridge_cmd.schedule_local_activity.activity_id = cmd.activity_id
             bridge_cmd.schedule_local_activity.activity_type = cmd.activity_type
 
-            # Encode arguments
-            for arg in cmd.args:  # type: ignore[union-attr]
-                payload = data_converter.payload_converter.to_payload(arg)
-                bridge_cmd.schedule_local_activity.arguments.append(payload)
+            # Add pre-encoded arguments
+            if cmd.args:
+                bridge_cmd.schedule_local_activity.arguments.extend(cmd.args)
 
             # Convert timeouts to Duration protobufs
             if cmd.schedule_to_close_timeout:
@@ -856,13 +852,10 @@ def poc_to_bridge_completion(
                 cmd.headers, bridge_cmd.schedule_local_activity.headers
             )
 
-            # Add summary as user_metadata if provided
-            if cmd.summary:
-                summary_payload = data_converter.payload_converter.to_payload(
-                    cmd.summary
-                )
+            # Add pre-encoded summary as user_metadata if provided
+            if cmd.summary_payload:
                 bridge_cmd.user_metadata.CopyFrom(
-                    user_metadata_pb.UserMetadata(summary=summary_payload)
+                    user_metadata_pb.UserMetadata(summary=cmd.summary_payload)
                 )
 
             # Apply backoff info for local activity retries
@@ -876,6 +869,10 @@ def poc_to_bridge_completion(
         elif isinstance(cmd, RequestCancelActivityCommand):
             # Convert RequestCancelActivityCommand to RequestCancelActivity
             bridge_cmd.request_cancel_activity.seq = cmd.seq
+
+        elif isinstance(cmd, RequestCancelLocalActivityCommand):
+            # Convert RequestCancelLocalActivityCommand to RequestCancelLocalActivity
+            bridge_cmd.request_cancel_local_activity.seq = cmd.seq
 
         elif isinstance(cmd, QueryResultCommand):
             # Convert QueryResultCommand to RespondToQuery

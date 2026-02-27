@@ -493,8 +493,8 @@ class ScheduleActivityCommand:
     activity_type: str
     """Name of the activity to execute."""
 
-    args: tuple[Any, ...] = field(default_factory=tuple)
-    """Arguments to pass to the activity."""
+    args: list[temporalio.api.common.v1.Payload] = field(default_factory=list)
+    """Pre-encoded arguments to pass to the activity."""
 
     task_queue: str | None = None
     """Task queue to run activity on (defaults to workflow's)."""
@@ -528,8 +528,8 @@ class ScheduleActivityCommand:
     versioning_intent: int | None = None
     """Versioning intent for the activity (VersioningIntent enum value)."""
 
-    summary: str | None = None
-    """A single-line fixed summary for this activity that may appear in UI/CLI."""
+    summary_payload: temporalio.api.common.v1.Payload | None = None
+    """Pre-encoded summary payload for this activity."""
 
     priority: temporalio.common.Priority = field(
         default_factory=lambda: temporalio.common.Priority.default
@@ -573,8 +573,8 @@ class ScheduleLocalActivityCommand:
     activity_type: str
     """Name of the activity to execute."""
 
-    args: tuple[Any, ...] = field(default_factory=tuple)
-    """Arguments to pass to the activity."""
+    args: list[temporalio.api.common.v1.Payload] = field(default_factory=list)
+    """Pre-encoded arguments to pass to the activity."""
 
     schedule_to_close_timeout: timedelta | None = None
     """Max total time for activity (schedule to completion)."""
@@ -599,8 +599,8 @@ class ScheduleLocalActivityCommand:
     )
     """Headers to attach to the activity (e.g. for tracing/auth interceptors)."""
 
-    summary: str | None = None
-    """A single-line fixed summary for this activity that may appear in UI/CLI."""
+    summary_payload: temporalio.api.common.v1.Payload | None = None
+    """Pre-encoded summary payload for this activity."""
 
     attempt: int | None = None
     """Attempt number for local activity retry (from DoBackoff)."""
@@ -623,6 +623,22 @@ class RequestCancelActivityCommand:
 
     seq: int
     """Sequence number of the activity to cancel."""
+
+
+@dataclass
+class RequestCancelLocalActivityCommand:
+    """Command to request cancellation of a scheduled local activity.
+
+    This command requests cancellation of a previously scheduled local activity.
+    The local activity will receive a cancellation request and should clean up
+    and exit gracefully.
+
+    Attributes:
+        seq: Sequence number of the local activity to cancel.
+    """
+
+    seq: int
+    """Sequence number of the local activity to cancel."""
 
 
 @dataclass
