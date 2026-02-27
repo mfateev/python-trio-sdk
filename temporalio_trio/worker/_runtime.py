@@ -71,6 +71,16 @@ class NotInWorkflowRuntimeError(RuntimeError):
 
 
 @dataclass
+class _ActivityBackoff:
+    """Sentinel stored in completed_activities when a local activity needs to
+    retry after a backoff delay. Contains the DoBackoff proto from sdk-core.
+    """
+
+    backoff: Any
+    """The DoBackoff proto with attempt, backoff_duration, original_schedule_time."""
+
+
+@dataclass
 class QuerySuccessCommand:
     """Command to respond to a query with success.
 
@@ -330,6 +340,12 @@ class WorkflowRuntime:
     patches_memoized: dict[str, bool] = field(default_factory=dict)
     """Memoized results of patched() calls: patch_id -> result."""
 
+    disable_eager_activity_execution: bool = False
+    """If true, activities will not be eagerly dispatched to a local worker."""
+
+    _read_only: bool = False
+    """Whether the runtime is in read-only mode (e.g., during query handling)."""
+
     def notify_condition_waiters(self) -> None:
         """Notify all wait_condition waiters that state may have changed.
 
@@ -339,6 +355,22 @@ class WorkflowRuntime:
         for event in self.condition_waiters:
             event.set()
         self.condition_waiters.clear()
+
+    def _assert_not_read_only(self, action_attempted: str) -> None:
+        """Assert that the runtime is not in read-only mode.
+
+        Args:
+            action_attempted: Description of the action for the error message.
+
+        Raises:
+            ReadOnlyContextError: If the runtime is in read-only mode.
+        """
+        from temporalio_trio.workflow import ReadOnlyContextError
+
+        if self._read_only:
+            raise ReadOnlyContextError(
+                f"While in read-only function, action attempted: {action_attempted}"
+            )
 
     def workflow_time_ns(self) -> int:
         """Get current workflow time in nanoseconds.
@@ -1292,6 +1324,7 @@ class WorkflowRuntime:
         Resolves the activity definition, creates a StartActivityInput, and
         dispatches through the outbound interceptor chain (matching sdk-python).
         """
+        self._assert_not_read_only("start activity")
         from temporalio_trio.worker._interceptor import StartActivityInput
 
         # Get activity definition if it's callable
@@ -1323,7 +1356,7 @@ class WorkflowRuntime:
                 retry_policy=retry_policy,
                 cancellation_type=cancellation_type,
                 headers={},
-                disable_eager_execution=False,
+                disable_eager_execution=self.disable_eager_activity_execution,
                 versioning_intent=versioning_intent,
                 summary=summary,
                 priority=priority,
@@ -1406,6 +1439,7 @@ class WorkflowRuntime:
         Resolves the activity definition, creates a StartLocalActivityInput, and
         dispatches through the outbound interceptor chain (matching sdk-python).
         """
+        self._assert_not_read_only("start local activity")
         from temporalio_trio.worker._interceptor import StartLocalActivityInput
 
         # Get activity definition if it's callable
@@ -1491,6 +1525,7 @@ class WorkflowRuntime:
         """Wait for an activity to complete by sequence number.
 
         This is used by ActivityHandle to wait for its result.
+        Handles local activity backoff by sleeping and rescheduling.
 
         Args:
             seq: The activity sequence number to wait for.
@@ -1503,39 +1538,114 @@ class WorkflowRuntime:
         """
         import trio
 
-        # Check if already completed (replay path or fast completion)
-        if seq in self.completed_activities:
+        while True:
+            # Check if already completed (replay path or fast completion)
+            if seq in self.completed_activities:
+                result = self.completed_activities[seq]
+                if isinstance(result, _ActivityBackoff):
+                    # Local activity needs backoff retry
+                    seq = await self._handle_activity_backoff(seq, result)
+                    continue
+                if isinstance(result, BaseException):
+                    raise result
+                return result
+
+            # Wait for the event
+            event = self.pending_activities.get(seq)
+            if event is None:
+                # Event not yet created - shouldn't happen but handle gracefully
+                event = trio.Event()
+                self.pending_activities[seq] = event
+
+            # Call suspension callback if set (for single-thread worker)
+            if self.on_suspend is not None:
+                self.on_suspend()
+
+            # Suspend until activity completes
+            await event.wait()
+
+            # Get result and clean up
             result = self.completed_activities[seq]
+            if seq in self.pending_activities:
+                del self.pending_activities[seq]
+
+            # Check for cancellation after waking
+            if self.cancel_requested:
+                raise trio.Cancelled._create()
+
+            # Handle backoff (local activity retry)
+            if isinstance(result, _ActivityBackoff):
+                seq = await self._handle_activity_backoff(seq, result)
+                continue
+
             if isinstance(result, BaseException):
                 raise result
             return result
 
-        # Wait for the event
-        event = self.pending_activities.get(seq)
-        if event is None:
-            # Event not yet created - shouldn't happen but handle gracefully
-            event = trio.Event()
-            self.pending_activities[seq] = event
+    async def _handle_activity_backoff(
+        self,
+        old_seq: int,
+        backoff_info: _ActivityBackoff,
+    ) -> int:
+        """Handle a local activity backoff by sleeping and rescheduling.
 
-        # Call suspension callback if set (for single-thread worker)
+        Args:
+            old_seq: The original activity sequence number.
+            backoff_info: The backoff sentinel with DoBackoff proto.
+
+        Returns:
+            The new activity sequence number for the rescheduled activity.
+        """
+        backoff = backoff_info.backoff
+
+        # Sleep for the backoff duration (deterministic timer)
+        backoff_seconds = (
+            backoff.backoff_duration.seconds
+            + backoff.backoff_duration.nanos / 1e9
+        )
+        if backoff_seconds > 0:
+            await self.workflow_sleep(backoff_seconds)
+
+        # Get the original ScheduleLocalActivityCommand to reschedule
+        # We need to find the original input to reuse its parameters
+        original_cmd = None
+        for cmd in self.commands:
+            if isinstance(cmd, ScheduleLocalActivityCommand) and cmd.seq == old_seq:
+                original_cmd = cmd
+                break
+
+        # Allocate new sequence number
+        new_seq = self.next_activity_seq()
+
+        if original_cmd is not None:
+            # Reschedule with backoff info
+            self.commands.append(
+                ScheduleLocalActivityCommand(
+                    seq=new_seq,
+                    activity_id=original_cmd.activity_id,
+                    activity_type=original_cmd.activity_type,
+                    args=original_cmd.args,
+                    schedule_to_close_timeout=original_cmd.schedule_to_close_timeout,
+                    schedule_to_start_timeout=original_cmd.schedule_to_start_timeout,
+                    start_to_close_timeout=original_cmd.start_to_close_timeout,
+                    retry_policy=original_cmd.retry_policy,
+                    local_retry_threshold=original_cmd.local_retry_threshold,
+                    cancellation_type=original_cmd.cancellation_type,
+                    headers=original_cmd.headers,
+                    attempt=backoff.attempt,
+                    original_schedule_time=backoff.original_schedule_time,
+                )
+            )
+
+        # Create pending event for the new seq
+        event = trio.Event()
+        self.pending_activities[new_seq] = event
+
+        # Call suspension callback
         if self.on_suspend is not None:
             self.on_suspend()
 
-        # Suspend until activity completes
-        await event.wait()
-
-        # Get result and clean up
-        result = self.completed_activities[seq]
-        if seq in self.pending_activities:
-            del self.pending_activities[seq]
-
-        # Check for cancellation after waking
-        if self.cancel_requested:
-            raise trio.Cancelled._create()
-
-        if isinstance(result, BaseException):
-            raise result
-        return result
+        return new_seq
 
     def _workflow_runtime(self) -> "WorkflowRuntime":
         """Get the underlying WorkflowRuntime (self)."""
@@ -1546,20 +1656,24 @@ class WorkflowRuntime:
         seq: int,
         result: Any = None,
         error: BaseException | None = None,
+        backoff: Any | None = None,
     ) -> None:
         """Handle an activity resolution job from an activation.
 
         This is called when the activation contains an ActivityResolved job.
-        It stores the result (or error) and wakes up any suspended workflow
-        that was waiting for this activity.
+        It stores the result (or error or backoff) and wakes up any suspended
+        workflow that was waiting for this activity.
 
         Args:
             seq: The activity sequence number that completed.
             result: The activity result (if successful).
             error: The exception (if the activity failed).
+            backoff: DoBackoff proto for local activity retry (if backoff).
         """
-        # Store result or error
-        if error is not None:
+        # Store result, error, or backoff sentinel
+        if backoff is not None:
+            self.completed_activities[seq] = _ActivityBackoff(backoff=backoff)
+        elif error is not None:
             self.completed_activities[seq] = error
         else:
             self.completed_activities[seq] = result

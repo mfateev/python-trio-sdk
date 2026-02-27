@@ -408,9 +408,12 @@ def _convert_resolve_activity(
             data_converter.payload_converter,
         )
     elif status == "backoff":
-        # Activity needs to retry after backoff - treat as transient failure
-        # The SDK core handles retry scheduling, so this shouldn't typically reach here
-        failure = RuntimeError("Activity scheduled for retry (backoff)")
+        # Local activity needs to retry after backoff - preserve the backoff
+        # proto so the SDK can sleep then reschedule with attempt info
+        return ActivityResolvedJob(
+            seq=seq,
+            backoff=resolution.backoff,
+        )
     else:
         failure = RuntimeError(f"Unknown activity resolution status: {status}")
 
@@ -870,6 +873,14 @@ def poc_to_bridge_completion(
             temporalio.common._apply_headers(
                 cmd.headers, bridge_cmd.schedule_local_activity.headers
             )
+
+            # Apply backoff info for local activity retries
+            if cmd.attempt is not None:
+                bridge_cmd.schedule_local_activity.attempt = cmd.attempt
+            if cmd.original_schedule_time is not None:
+                bridge_cmd.schedule_local_activity.original_schedule_time.CopyFrom(
+                    cmd.original_schedule_time
+                )
 
         elif isinstance(cmd, RequestCancelActivityCommand):
             # Convert RequestCancelActivityCommand to RequestCancelActivity

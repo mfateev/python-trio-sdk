@@ -402,15 +402,19 @@ class WorkflowActivationCompletion:
 
 @dataclass
 class ActivityResolvedJob:
-    """Job indicating an activity has completed (success or failure).
+    """Job indicating an activity has completed (success, failure, or backoff).
 
     This job is sent when a previously scheduled activity finishes execution.
-    The workflow can then access the result or handle the failure.
+    The workflow can then access the result, handle the failure, or reschedule
+    with backoff (local activities only).
 
     Attributes:
         seq: Sequence number matching ScheduleActivityCommand.
         result: Activity result value (if successful).
         failure: Exception if activity failed (mutually exclusive with result).
+        backoff: Backoff proto if the local activity needs to be retried after
+            a delay. Contains attempt number, backoff duration, and original
+            schedule time.
     """
 
     seq: int
@@ -421,6 +425,9 @@ class ActivityResolvedJob:
 
     failure: BaseException | None = None
     """Exception if activity failed."""
+
+    backoff: Any | None = None
+    """DoBackoff proto for local activity retry (None if not a backoff)."""
 
 
 @dataclass
@@ -577,6 +584,12 @@ class ScheduleLocalActivityCommand:
         default_factory=dict
     )
     """Headers to attach to the activity (e.g. for tracing/auth interceptors)."""
+
+    attempt: int | None = None
+    """Attempt number for local activity retry (from DoBackoff)."""
+
+    original_schedule_time: Any | None = None
+    """Original schedule time proto for local activity retry (from DoBackoff)."""
 
 
 @dataclass

@@ -89,6 +89,7 @@ class Worker:
         workflow_failure_exception_types: Sequence[type[BaseException]] = [],
         interceptors: Sequence[Interceptor] = [],
         debug_mode: bool = False,
+        disable_eager_activity_execution: bool = False,
     ) -> None:
         """Create a worker to process Trio-based workflows and activities.
 
@@ -196,6 +197,7 @@ class Worker:
         self._workflow_failure_exception_types = list(workflow_failure_exception_types)
         self._interceptors = list(interceptors)
         self._debug_mode = debug_mode
+        self._disable_eager_activity_execution = disable_eager_activity_execution
 
         # Internal state
         self._single_thread_worker: Optional[SingleThreadWorker] = None
@@ -389,6 +391,7 @@ class Worker:
                     interceptors=self._interceptors,
                     data_converter=self._data_converter or temporalio.converter.DataConverter.default,
                     debug_mode=self._debug_mode,
+                    disable_eager_activity_execution=self._disable_eager_activity_execution,
                 )
 
             # Create Trio activity worker if activities provided

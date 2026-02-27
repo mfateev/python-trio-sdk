@@ -22,9 +22,12 @@ from typing import (
     Generic,
     Mapping,
     NoReturn,
+    Optional,
     Sequence,
     TypeVar,
 )
+
+from typing_extensions import TypedDict
 
 import temporalio.api.common.v1
 import temporalio.common
@@ -86,11 +89,13 @@ __all__ = [
     "ChildWorkflowHandle",
     "ExternalWorkflowHandle",
     "ActivityCancellationType",
+    "ActivityConfig",
     "ActivityHandle",
     "ChildWorkflowCancellationType",
     "ParentClosePolicy",
     "HandlerUnfinishedPolicy",
     "VersioningIntent",
+    "LocalActivityConfig",
     "ContinueAsNewError",
     "NondeterminismError",
     "ReadOnlyContextError",
@@ -185,6 +190,36 @@ class ActivityHandle(Generic[ReturnType]):
         """Wait for the activity to complete and return its result."""
         runtime = _Runtime.current()
         return await runtime.workflow_wait_activity(self._seq)
+
+
+class ActivityConfig(TypedDict, total=False):
+    """TypedDict of config that can be used for :py:func:`start_activity` and
+    :py:func:`execute_activity`.
+    """
+
+    task_queue: Optional[str]
+    schedule_to_close_timeout: Optional[timedelta]
+    schedule_to_start_timeout: Optional[timedelta]
+    start_to_close_timeout: Optional[timedelta]
+    heartbeat_timeout: Optional[timedelta]
+    retry_policy: Optional[temporalio.common.RetryPolicy]
+    cancellation_type: ActivityCancellationType
+    activity_id: Optional[str]
+    versioning_intent: Optional[VersioningIntent]
+
+
+class LocalActivityConfig(TypedDict, total=False):
+    """TypedDict of config that can be used for :py:func:`start_local_activity`
+    and :py:func:`execute_local_activity`.
+    """
+
+    schedule_to_close_timeout: Optional[timedelta]
+    schedule_to_start_timeout: Optional[timedelta]
+    start_to_close_timeout: Optional[timedelta]
+    retry_policy: Optional[temporalio.common.RetryPolicy]
+    local_retry_threshold: Optional[timedelta]
+    cancellation_type: ActivityCancellationType
+    activity_id: Optional[str]
 
 
 class ParentClosePolicy(IntEnum):
@@ -468,16 +503,20 @@ class _Runtime(ABC):
 
     def workflow_start_activity(
         self,
-        activity: str | Callable[..., Any],
+        activity: Any,
         *args: Any,
         task_queue: str | None = None,
+        result_type: type | None = None,
         schedule_to_close_timeout: timedelta | None = None,
         schedule_to_start_timeout: timedelta | None = None,
         start_to_close_timeout: timedelta | None = None,
         heartbeat_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
-        activity_id: str | None = None,
         cancellation_type: "ActivityCancellationType" = ActivityCancellationType.TRY_CANCEL,
+        activity_id: str | None = None,
+        versioning_intent: "VersioningIntent | None" = None,
+        summary: str | None = None,
+        priority: temporalio.common.Priority = temporalio.common.Priority.default,
     ) -> "ActivityHandle[Any]":
         """Start an activity and return a handle without waiting for completion.
 
@@ -488,15 +527,16 @@ class _Runtime(ABC):
 
     def workflow_start_local_activity(
         self,
-        activity: str | Callable[..., Any],
+        activity: Any,
         *args: Any,
+        result_type: type | None = None,
         schedule_to_close_timeout: timedelta | None = None,
         schedule_to_start_timeout: timedelta | None = None,
         start_to_close_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
         local_retry_threshold: timedelta | None = None,
-        activity_id: str | None = None,
         cancellation_type: "ActivityCancellationType" = ActivityCancellationType.TRY_CANCEL,
+        activity_id: str | None = None,
     ) -> "ActivityHandle[Any]":
         """Start a local activity and return a handle without waiting for completion.
 
@@ -1719,7 +1759,9 @@ def deprecate_patch(patch_id: str) -> None:
 
 def start_activity(
     activity: str | Callable[..., Any],
-    *args: Any,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
     result_type: type | None = None,
     task_queue: str | None = None,
     schedule_to_close_timeout: timedelta | None = None,
@@ -1740,7 +1782,8 @@ def start_activity(
 
     Args:
         activity: Activity name or function reference.
-        *args: Arguments to pass to the activity.
+        arg: Single argument to the activity.
+        args: Multiple arguments to the activity. Cannot be set if arg is.
         result_type: For string activities, this can set the specific result
             type hint to deserialize into.
         task_queue: Task queue to run the activity on. Defaults to the current
@@ -1759,12 +1802,14 @@ def start_activity(
             retries.
         cancellation_type: How the activity is treated when it is cancelled from
             the workflow.
-        activity_id: Optional unique identifier for the activity.
+        activity_id: Optional unique identifier for the activity. This is an
+            advanced setting that should not be set unless users are sure they
+            need to. Contact Temporal before setting this value.
         versioning_intent: When using the Worker Versioning feature, specifies
             whether this Activity should run on a worker with a compatible
             Build Id or not.
         summary: A single-line fixed summary for this activity that may appear
-            in UI/CLI.
+            in UI/CLI. This can be in single-line Temporal markdown format.
         priority: Priority of the activity.
 
     Returns:
@@ -1772,7 +1817,7 @@ def start_activity(
     """
     return _Runtime.current().workflow_start_activity(
         activity,
-        *args,
+        *temporalio.common._arg_or_args(arg, args),
         task_queue=task_queue,
         result_type=result_type,
         schedule_to_close_timeout=schedule_to_close_timeout,
@@ -1790,7 +1835,9 @@ def start_activity(
 
 async def execute_activity(
     activity: str | Callable[..., Any],
-    *args: Any,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
     result_type: type | None = None,
     task_queue: str | None = None,
     schedule_to_close_timeout: timedelta | None = None,
@@ -1808,11 +1855,13 @@ async def execute_activity(
 
     This is a shortcut for ``await`` :py:meth:`start_activity`.
     """
-    return await start_activity(
+    # We call the runtime directly instead of top-level start_activity to ensure
+    # we don't miss new parameters
+    return await _Runtime.current().workflow_start_activity(
         activity,
-        *args,
-        result_type=result_type,
+        *temporalio.common._arg_or_args(arg, args),
         task_queue=task_queue,
+        result_type=result_type,
         schedule_to_close_timeout=schedule_to_close_timeout,
         schedule_to_start_timeout=schedule_to_start_timeout,
         start_to_close_timeout=start_to_close_timeout,
@@ -1828,7 +1877,9 @@ async def execute_activity(
 
 def start_local_activity(
     activity: str | Callable[..., Any],
-    *args: Any,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
     result_type: type | None = None,
     schedule_to_close_timeout: timedelta | None = None,
     schedule_to_start_timeout: timedelta | None = None,
@@ -1845,19 +1896,25 @@ def start_local_activity(
 
     Args:
         activity: Activity name or function reference.
-        *args: Arguments to pass to the activity.
+        arg: Single argument to the activity.
+        args: Multiple arguments to the activity. Cannot be set if arg is.
         result_type: For string activities, this can set the specific result
             type hint to deserialize into.
         schedule_to_close_timeout: Max amount of time the activity can take from
-            first being scheduled to being completed.
+            first being scheduled to being completed before it times out. This
+            is inclusive of all retries.
         schedule_to_start_timeout: Max amount of time the activity can take to
             be started from first being scheduled.
         start_to_close_timeout: Max amount of time a single activity run can
-            take from when it starts to when it completes.
-        retry_policy: How an activity is retried on failure.
+            take from when it starts to when it completes. This is per retry.
+        retry_policy: How an activity is retried on failure. If unset, an
+            SDK-defined default is used. Set maximum attempts to 1 to disable
+            retries.
         local_retry_threshold: Duration after which retries happen on the server
             instead of locally.
-        activity_id: Optional unique identifier for the activity.
+        activity_id: Optional unique identifier for the activity. This is an
+            advanced setting that should not be set unless users are sure they
+            need to. Contact Temporal before setting this value.
         cancellation_type: How the activity is treated when it is cancelled from
             the workflow.
 
@@ -1866,7 +1923,7 @@ def start_local_activity(
     """
     return _Runtime.current().workflow_start_local_activity(
         activity,
-        *args,
+        *temporalio.common._arg_or_args(arg, args),
         result_type=result_type,
         schedule_to_close_timeout=schedule_to_close_timeout,
         schedule_to_start_timeout=schedule_to_start_timeout,
@@ -1880,7 +1937,9 @@ def start_local_activity(
 
 async def execute_local_activity(
     activity: str | Callable[..., Any],
-    *args: Any,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
     result_type: type | None = None,
     schedule_to_close_timeout: timedelta | None = None,
     schedule_to_start_timeout: timedelta | None = None,
@@ -1894,9 +1953,11 @@ async def execute_local_activity(
 
     This is a shortcut for ``await`` :py:meth:`start_local_activity`.
     """
-    return await start_local_activity(
+    # We call the runtime directly instead of top-level start_local_activity to
+    # ensure we don't miss new parameters
+    return await _Runtime.current().workflow_start_local_activity(
         activity,
-        *args,
+        *temporalio.common._arg_or_args(arg, args),
         result_type=result_type,
         schedule_to_close_timeout=schedule_to_close_timeout,
         schedule_to_start_timeout=schedule_to_start_timeout,
