@@ -344,7 +344,7 @@ def test_bridge_apply_headers_schedule_activity():
         seq=1,
         activity_id="1",
         activity_type="TestActivity",
-        args=(),
+        args=[],
         start_to_close_timeout=__import__("datetime").timedelta(seconds=30),
         headers={"x-trace": h},
     )
@@ -432,7 +432,7 @@ def test_bridge_empty_headers_no_op():
         seq=1,
         activity_id="1",
         activity_type="TestActivity",
-        args=(),
+        args=[],
         start_to_close_timeout=__import__("datetime").timedelta(seconds=30),
         headers={},
     )

@@ -22,6 +22,7 @@ import random
 from datetime import timedelta
 
 import pytest
+import temporalio.converter
 import trio
 
 from temporalio_trio.worker._runtime import (
@@ -1384,17 +1385,19 @@ class TestScheduleActivityCommand:
 
     def test_schedule_activity_command_creation(self) -> None:
         """Test ScheduleActivityCommand can be created with required fields."""
+        converter = temporalio.converter.DataConverter.default.payload_converter
+        encoded_args = converter.to_payloads(["arg1", "arg2"])
         cmd = ScheduleActivityCommand(
             seq=1,
             activity_id="act-1",
             activity_type="my_activity",
-            args=("arg1", "arg2"),
+            args=encoded_args,
         )
 
         assert cmd.seq == 1
         assert cmd.activity_id == "act-1"
         assert cmd.activity_type == "my_activity"
-        assert cmd.args == ("arg1", "arg2")
+        assert len(cmd.args) == 2
         assert cmd.task_queue is None
         assert cmd.schedule_to_close_timeout is None
         assert cmd.schedule_to_start_timeout is None
@@ -1408,11 +1411,13 @@ class TestScheduleActivityCommand:
 
         from temporalio.common import RetryPolicy
 
+        converter = temporalio.converter.DataConverter.default.payload_converter
+        encoded_args = converter.to_payloads(["a", "b", "c"])
         cmd = ScheduleActivityCommand(
             seq=42,
             activity_id="custom-id",
             activity_type="complex_activity",
-            args=("a", "b", "c"),
+            args=encoded_args,
             task_queue="custom-queue",
             schedule_to_close_timeout=timedelta(minutes=5),
             schedule_to_start_timeout=timedelta(seconds=60),
@@ -1424,7 +1429,7 @@ class TestScheduleActivityCommand:
         assert cmd.seq == 42
         assert cmd.activity_id == "custom-id"
         assert cmd.activity_type == "complex_activity"
-        assert cmd.args == ("a", "b", "c")
+        assert len(cmd.args) == 3
         assert cmd.task_queue == "custom-queue"
         assert cmd.schedule_to_close_timeout == timedelta(minutes=5)
         assert cmd.schedule_to_start_timeout == timedelta(seconds=60)
@@ -1435,17 +1440,19 @@ class TestScheduleActivityCommand:
 
     def test_schedule_activity_command_equality(self) -> None:
         """Test ScheduleActivityCommand equality comparison."""
+        converter = temporalio.converter.DataConverter.default.payload_converter
+        encoded_arg = converter.to_payloads(["arg"])
         cmd1 = ScheduleActivityCommand(
-            seq=1, activity_id="1", activity_type="test", args=("arg",)
+            seq=1, activity_id="1", activity_type="test", args=list(encoded_arg)
         )
         cmd2 = ScheduleActivityCommand(
-            seq=1, activity_id="1", activity_type="test", args=("arg",)
+            seq=1, activity_id="1", activity_type="test", args=list(encoded_arg)
         )
         cmd3 = ScheduleActivityCommand(
-            seq=2, activity_id="2", activity_type="test", args=("arg",)
+            seq=2, activity_id="2", activity_type="test", args=list(encoded_arg)
         )
         cmd4 = ScheduleActivityCommand(
-            seq=1, activity_id="1", activity_type="other", args=("arg",)
+            seq=1, activity_id="1", activity_type="other", args=list(encoded_arg)
         )
 
         assert cmd1 == cmd2

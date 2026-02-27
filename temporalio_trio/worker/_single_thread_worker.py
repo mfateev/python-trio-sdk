@@ -501,6 +501,7 @@ class SingleThreadWorker:
             workflow_start_time_ns=started_job.workflow_start_time_ns,
             on_suspend=state.signal_commands_ready,
             disable_eager_activity_execution=self._disable_eager_activity_execution,
+            payload_converter=self._data_converter.payload_converter,
         )
         state.runtime = runtime
 
