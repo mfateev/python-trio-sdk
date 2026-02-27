@@ -14,11 +14,11 @@ from typing import (
     Optional,
     Type,
 )
-from typing_extensions import TypedDict
 
 import temporalio.api.history.v1
 import temporalio.converter
 import trio
+from typing_extensions import TypedDict
 
 from temporalio_trio._async_bridge import TrioBridgeWrapper
 from temporalio_trio.client._workflow_handle import WorkflowHistory
@@ -116,9 +116,7 @@ class Replayer:
         async def history_iterator() -> AsyncIterator[WorkflowHistory]:
             yield history
 
-        async with self.workflow_replay_iterator(
-            history_iterator()
-        ) as replay_iterator:
+        async with self.workflow_replay_iterator(history_iterator()) as replay_iterator:
             async for result in replay_iterator:
                 if raise_on_replay_failure and result.replay_failure:
                     raise result.replay_failure
@@ -141,17 +139,13 @@ class Replayer:
         Returns:
             Aggregated results.
         """
-        async with self.workflow_replay_iterator(
-            histories
-        ) as replay_iterator:
+        async with self.workflow_replay_iterator(histories) as replay_iterator:
             replay_failures: dict[str, Exception] = {}
             async for result in replay_iterator:
                 if result.replay_failure:
                     if raise_on_replay_failure:
                         raise result.replay_failure
-                    replay_failures[result.history.run_id] = (
-                        result.replay_failure
-                    )
+                    replay_failures[result.history.run_id] = result.replay_failure
             return WorkflowReplayResults(replay_failures=replay_failures)
 
     @asynccontextmanager
@@ -190,9 +184,7 @@ class Replayer:
                 reason != _EVICTION_REASON_CACHE_FULL
                 and reason != _EVICTION_REASON_LANG_REQUESTED
             ):
-                last_replay_failure = RuntimeError(
-                    f"{reason}: {message}"
-                )
+                last_replay_failure = RuntimeError(f"{reason}: {message}")
             else:
                 last_replay_failure = None
             last_replay_complete.set()
@@ -200,9 +192,7 @@ class Replayer:
         task_queue = f"replay-{self._config.get('build_id')}"
 
         # Compute nondeterminism-as-workflow-fail flags
-        wf_fail_types = self._config.get(
-            "workflow_failure_exception_types", []
-        )
+        wf_fail_types = self._config.get("workflow_failure_exception_types", [])
         nondeterminism_as_wf_fail = any(
             issubclass(NondeterminismError, typ) for typ in wf_fail_types
         )
@@ -262,9 +252,7 @@ class Replayer:
 
                 nursery.start_soon(run_worker)
 
-                async def replay_iterator() -> (
-                    AsyncIterator[WorkflowReplayResult]
-                ):
+                async def replay_iterator() -> AsyncIterator[WorkflowReplayResult]:
                     nonlocal last_replay_failure, last_replay_complete
                     async for history in histories:
                         # Clear last complete and push history
@@ -334,17 +322,13 @@ class Replayer:
                 await bridge.initiate_replay_shutdown()
                 await bridge.finalize_replay_shutdown()
             except Exception:
-                logger.debug(
-                    "Failed to shutdown replay bridge", exc_info=True
-                )
+                logger.debug("Failed to shutdown replay bridge", exc_info=True)
 
             # Shutdown the bridge itself
             try:
                 await bridge.shutdown()
             except Exception:
-                logger.debug(
-                    "Failed to shutdown bridge", exc_info=True
-                )
+                logger.debug("Failed to shutdown bridge", exc_info=True)
 
 
 class ReplayerConfig(TypedDict, total=False):

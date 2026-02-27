@@ -1803,9 +1803,7 @@ class TrioBridgeWrapper:
         # workflow_id bytes + history protobuf bytes
         wf_id_bytes = workflow_id.encode("utf-8")
         data = (
-            len(wf_id_bytes).to_bytes(4, byteorder="big")
-            + wf_id_bytes
-            + history_bytes
+            len(wf_id_bytes).to_bytes(4, byteorder="big") + wf_id_bytes + history_bytes
         )
 
         event = trio.Event()
@@ -1821,9 +1819,7 @@ class TrioBridgeWrapper:
             finally:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        self._rust_bridge.send_request(
-            "push_replay_history", data, deliver_result
-        )
+        self._rust_bridge.send_request("push_replay_history", data, deliver_result)
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
@@ -1836,9 +1832,7 @@ class TrioBridgeWrapper:
         if error_container:
             raise error_container[0]
 
-    async def close_replay_pusher(
-        self, timeout: Optional[float] = None
-    ) -> None:
+    async def close_replay_pusher(self, timeout: Optional[float] = None) -> None:
         """Close the replay history pusher (no more histories will be pushed).
 
         Args:
@@ -1859,9 +1853,7 @@ class TrioBridgeWrapper:
             finally:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        self._rust_bridge.send_request(
-            "close_replay_pusher", b"", deliver_result
-        )
+        self._rust_bridge.send_request("close_replay_pusher", b"", deliver_result)
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
@@ -1874,9 +1866,7 @@ class TrioBridgeWrapper:
         if error_container:
             raise error_container[0]
 
-    async def poll_replay_activation(
-        self, timeout: Optional[float] = None
-    ) -> bytes:
+    async def poll_replay_activation(self, timeout: Optional[float] = None) -> bytes:
         """Poll for a workflow activation from the replay worker.
 
         Args:
@@ -1911,9 +1901,7 @@ class TrioBridgeWrapper:
             finally:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        self._rust_bridge.send_request(
-            "poll_replay_activation", b"", deliver_result
-        )
+        self._rust_bridge.send_request("poll_replay_activation", b"", deliver_result)
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
@@ -1967,9 +1955,7 @@ class TrioBridgeWrapper:
         if error_container:
             raise error_container[0]
 
-    async def initiate_replay_shutdown(
-        self, timeout: Optional[float] = None
-    ) -> None:
+    async def initiate_replay_shutdown(self, timeout: Optional[float] = None) -> None:
         """Initiate graceful shutdown of the replay worker.
 
         Args:
@@ -2009,9 +1995,7 @@ class TrioBridgeWrapper:
         if error_container:
             raise error_container[0]
 
-    async def finalize_replay_shutdown(
-        self, timeout: Optional[float] = None
-    ) -> None:
+    async def finalize_replay_shutdown(self, timeout: Optional[float] = None) -> None:
         """Finalize shutdown of the replay worker.
 
         Args:

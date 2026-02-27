@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any
+from typing import Any, Optional, Union
 
 import temporalio.api.common.v1
 import temporalio.common
@@ -147,6 +147,20 @@ class WorkflowStartedJob:
         default_factory=lambda: temporalio.common.Priority.default
     )
     """Priority for this workflow."""
+
+    first_execution_run_id: str = ""
+    """Run ID of the very first execution in the continue-as-new chain."""
+
+    search_attributes: temporalio.common.SearchAttributes = field(default_factory=dict)
+    """Search attributes (deprecated dict form)."""
+
+    typed_search_attributes: temporalio.common.TypedSearchAttributes = field(
+        default_factory=lambda: temporalio.common.TypedSearchAttributes([])
+    )
+    """Typed search attributes."""
+
+    workflow_start_time_ns: int = 0
+    """When the workflow was first started (not this run), in nanoseconds since epoch."""
 
 
 @dataclass
@@ -585,6 +599,9 @@ class ScheduleLocalActivityCommand:
     )
     """Headers to attach to the activity (e.g. for tracing/auth interceptors)."""
 
+    summary: str | None = None
+    """A single-line fixed summary for this activity that may appear in UI/CLI."""
+
     attempt: int | None = None
     """Attempt number for local activity retry (from DoBackoff)."""
 
@@ -796,13 +813,31 @@ class StartChildWorkflowCommand:
     memo: Mapping[str, Any] | None = None
     """Memo key-value pairs to attach to the child workflow."""
 
-    search_attributes: temporalio.common.SearchAttributes | None = None
+    search_attributes: Optional[
+        Union[
+            temporalio.common.SearchAttributes, temporalio.common.TypedSearchAttributes
+        ]
+    ] = None
     """Search attributes to attach to the child workflow."""
 
     headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
         default_factory=dict
     )
     """Headers to attach to the child workflow (e.g. for tracing/auth interceptors)."""
+
+    versioning_intent: Optional[int] = None
+    """Versioning intent for Worker Versioning."""
+
+    static_summary: Optional[str] = None
+    """Static summary for the child workflow."""
+
+    static_details: Optional[str] = None
+    """Static details for the child workflow."""
+
+    priority: temporalio.common.Priority = field(
+        default_factory=lambda: temporalio.common.Priority.default
+    )
+    """Priority for the child workflow."""
 
 
 @dataclass
@@ -1003,13 +1038,20 @@ class ContinueAsNewCommand:
     memo: Mapping[str, Any] | None = None
     """Memo key-value pairs to attach to the new execution."""
 
-    search_attributes: temporalio.common.SearchAttributes | None = None
+    search_attributes: Optional[
+        Union[
+            temporalio.common.SearchAttributes, temporalio.common.TypedSearchAttributes
+        ]
+    ] = None
     """Search attributes to attach to the new execution."""
 
     headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
         default_factory=dict
     )
     """Headers to attach to the new execution (e.g. for tracing/auth interceptors)."""
+
+    versioning_intent: Optional[int] = None
+    """Versioning intent for Worker Versioning."""
 
 
 # =============================================================================

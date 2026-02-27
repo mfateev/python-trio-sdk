@@ -121,7 +121,9 @@ class _ContinueAsNewError(ContinueAsNewError):
         task_timeout: timedelta | None,
         retry_policy: temporalio.common.RetryPolicy | None,
         memo: Mapping[str, Any] | None = None,
-        search_attributes: temporalio.common.SearchAttributes | None = None,
+        search_attributes: temporalio.common.SearchAttributes
+        | temporalio.common.TypedSearchAttributes
+        | None = None,
     ) -> None:
         """Initialize _ContinueAsNewError.
 
@@ -1249,7 +1251,13 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         retry_policy: temporalio.common.RetryPolicy | None,
         cron_schedule: str = "",
         memo: Mapping[str, Any] | None = None,
-        search_attributes: temporalio.common.SearchAttributes | None = None,
+        search_attributes: temporalio.common.SearchAttributes
+        | temporalio.common.TypedSearchAttributes
+        | None = None,
+        versioning_intent: Any = None,
+        static_summary: str | None = None,
+        static_details: str | None = None,
+        priority: temporalio.common.Priority = temporalio.common.Priority.default,
     ) -> ChildWorkflowHandle[Any, Any]:
         """Start a child workflow and return a handle.
 
@@ -1462,7 +1470,10 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         task_timeout: timedelta | None,
         retry_policy: temporalio.common.RetryPolicy | None,
         memo: Mapping[str, Any] | None = None,
-        search_attributes: temporalio.common.SearchAttributes | None = None,
+        search_attributes: temporalio.common.SearchAttributes
+        | temporalio.common.TypedSearchAttributes
+        | None = None,
+        versioning_intent: Any = None,
     ) -> NoReturn:
         """Continue the workflow as a new execution.
 

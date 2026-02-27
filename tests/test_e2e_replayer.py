@@ -103,9 +103,7 @@ class SayHelloParams:
 @pytest.mark.trio
 async def test_replayer_workflow_complete_json() -> None:
     """Test replaying a complete workflow from a JSON history fixture."""
-    with Path(__file__).with_name(
-        "test_replayer_complete_history.json"
-    ).open("r") as f:
+    with Path(__file__).with_name("test_replayer_complete_history.json").open("r") as f:
         history_json = f.read()
     await Replayer(workflows=[SayHelloWorkflow]).replay_workflow(
         WorkflowHistory.from_json("fake", history_json)
@@ -132,9 +130,11 @@ class SayHelloWorkflowNonDet:
 @pytest.mark.trio
 async def test_replayer_workflow_nondeterministic_json() -> None:
     """Test replaying with a modified workflow that causes nondeterminism."""
-    with Path(__file__).with_name(
-        "test_replayer_nondeterministic_history.json"
-    ).open("r") as f:
+    with (
+        Path(__file__)
+        .with_name("test_replayer_nondeterministic_history.json")
+        .open("r") as f
+    ):
         history_json = f.read()
     with pytest.raises(workflow.NondeterminismError):
         await Replayer(workflows=[SayHelloWorkflowNonDet]).replay_workflow(
@@ -149,13 +149,13 @@ async def test_replayer_multiple_histories_fail_fast() -> None:
     Uses SayHelloWorkflowNonDet which adds an extra timer, causing nondeterminism
     with the standard history.
     """
-    with Path(__file__).with_name(
-        "test_replayer_nondeterministic_history.json"
-    ).open("r") as f:
+    with (
+        Path(__file__)
+        .with_name("test_replayer_nondeterministic_history.json")
+        .open("r") as f
+    ):
         history_json_bad = f.read()
-    with Path(__file__).with_name(
-        "test_replayer_complete_history.json"
-    ).open("r") as f:
+    with Path(__file__).with_name("test_replayer_complete_history.json").open("r") as f:
         history_json = f.read()
 
     callcount = 0
@@ -170,9 +170,7 @@ async def test_replayer_multiple_histories_fail_fast() -> None:
         yield WorkflowHistory.from_json("fake", history_json)
 
     with pytest.raises(workflow.NondeterminismError):
-        await Replayer(
-            workflows=[SayHelloWorkflowNonDet]
-        ).replay_workflows(histories())
+        await Replayer(workflows=[SayHelloWorkflowNonDet]).replay_workflows(histories())
 
     # We should only have replayed the first history since we fail fast
     assert callcount == 1
@@ -186,13 +184,13 @@ async def test_replayer_multiple_histories_fail_slow() -> None:
     and the normal SayHelloWorkflow definition is also registered but with
     the nondet version to test that the replayer catches the error and continues.
     """
-    with Path(__file__).with_name(
-        "test_replayer_nondeterministic_history.json"
-    ).open("r") as f:
+    with (
+        Path(__file__)
+        .with_name("test_replayer_nondeterministic_history.json")
+        .open("r") as f
+    ):
         history_json_bad = f.read()
-    with Path(__file__).with_name(
-        "test_replayer_complete_history.json"
-    ).open("r") as f:
+    with Path(__file__).with_name("test_replayer_complete_history.json").open("r") as f:
         history_json = f.read()
 
     bad_hist = WorkflowHistory.from_json("fake_bad", history_json_bad)
@@ -213,20 +211,16 @@ async def test_replayer_multiple_histories_fail_slow() -> None:
         # Give a new run id so replay continues
         h3.events[
             0
-        ].workflow_execution_started_event_attributes.original_execution_run_id = (
-            "r3"
-        )
+        ].workflow_execution_started_event_attributes.original_execution_run_id = "r3"
         h3.events[
             0
-        ].workflow_execution_started_event_attributes.first_execution_run_id = (
-            "r3"
-        )
+        ].workflow_execution_started_event_attributes.first_execution_run_id = "r3"
         yield h3
         callcount += 1
 
-    results = await Replayer(
-        workflows=[SayHelloWorkflowNonDet]
-    ).replay_workflows(histories(), raise_on_replay_failure=False)
+    results = await Replayer(workflows=[SayHelloWorkflowNonDet]).replay_workflows(
+        histories(), raise_on_replay_failure=False
+    )
 
     assert callcount == 4
     assert results.replay_failures
@@ -260,9 +254,7 @@ def test_replayer_config() -> None:
 
 def test_workflow_history_from_json() -> None:
     """Test WorkflowHistory.from_json parses correctly."""
-    with Path(__file__).with_name(
-        "test_replayer_complete_history.json"
-    ).open("r") as f:
+    with Path(__file__).with_name("test_replayer_complete_history.json").open("r") as f:
         history_json = f.read()
 
     history = WorkflowHistory.from_json("test-wf-id", history_json)
@@ -276,9 +268,7 @@ def test_workflow_history_from_json() -> None:
 
 def test_workflow_history_to_json() -> None:
     """Test WorkflowHistory round-trip through JSON."""
-    with Path(__file__).with_name(
-        "test_replayer_complete_history.json"
-    ).open("r") as f:
+    with Path(__file__).with_name("test_replayer_complete_history.json").open("r") as f:
         history_json = f.read()
 
     history = WorkflowHistory.from_json("test-wf-id", history_json)
@@ -293,9 +283,7 @@ def test_workflow_history_to_json() -> None:
 
 def test_workflow_history_to_json_dict() -> None:
     """Test WorkflowHistory.to_json_dict returns a dict."""
-    with Path(__file__).with_name(
-        "test_replayer_complete_history.json"
-    ).open("r") as f:
+    with Path(__file__).with_name("test_replayer_complete_history.json").open("r") as f:
         history_json = f.read()
 
     history = WorkflowHistory.from_json("test-wf-id", history_json)
@@ -411,6 +399,4 @@ async def test_replayer_e2e_nondeterminism(
     # Fetch history and replay with modified workflow -> nondeterminism
     history = await handle.fetch_history()
     with pytest.raises(workflow.NondeterminismError):
-        await Replayer(
-            workflows=[SimpleE2EWorkflowModified]
-        ).replay_workflow(history)
+        await Replayer(workflows=[SimpleE2EWorkflowModified]).replay_workflow(history)

@@ -389,7 +389,8 @@ class Worker:
                     else None,
                     workflow_failure_exception_types=self._workflow_failure_exception_types,
                     interceptors=self._interceptors,
-                    data_converter=self._data_converter or temporalio.converter.DataConverter.default,
+                    data_converter=self._data_converter
+                    or temporalio.converter.DataConverter.default,
                     debug_mode=self._debug_mode,
                     disable_eager_activity_execution=self._disable_eager_activity_execution,
                 )
