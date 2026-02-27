@@ -1770,44 +1770,11 @@ def start_activity(
     Returns:
         An activity handle that can be awaited for the result.
     """
-    runtime = _Runtime.current()
-    outbound = getattr(runtime, "outbound_interceptor", None)
-    if outbound is not None:
-        # Get activity name
-        if isinstance(activity, str):
-            activity_name = activity
-        else:
-            defn_attr = getattr(activity, "__temporal_activity_definition", None)
-            activity_name = (
-                defn_attr.name
-                if defn_attr
-                else getattr(activity, "__name__", str(activity))
-            )
-        return outbound.start_activity(
-            _interceptor_mod().StartActivityInput(
-                activity=activity_name,
-                args=args,
-                activity_id=activity_id,
-                task_queue=task_queue,
-                schedule_to_close_timeout=schedule_to_close_timeout,
-                schedule_to_start_timeout=schedule_to_start_timeout,
-                start_to_close_timeout=start_to_close_timeout,
-                heartbeat_timeout=heartbeat_timeout,
-                retry_policy=retry_policy,
-                cancellation_type=cancellation_type,
-                headers={},
-                disable_eager_execution=False,
-                versioning_intent=versioning_intent,
-                summary=summary,
-                priority=priority,
-                arg_types=None,
-                ret_type=None,
-            )
-        )
-    return runtime.workflow_start_activity(
+    return _Runtime.current().workflow_start_activity(
         activity,
         *args,
         task_queue=task_queue,
+        result_type=result_type,
         schedule_to_close_timeout=schedule_to_close_timeout,
         schedule_to_start_timeout=schedule_to_start_timeout,
         start_to_close_timeout=start_to_close_timeout,
@@ -1815,6 +1782,9 @@ def start_activity(
         retry_policy=retry_policy,
         activity_id=activity_id,
         cancellation_type=cancellation_type,
+        versioning_intent=versioning_intent,
+        summary=summary,
+        priority=priority,
     )
 
 
@@ -1894,38 +1864,10 @@ def start_local_activity(
     Returns:
         An activity handle that can be awaited for the result.
     """
-    runtime = _Runtime.current()
-    outbound = getattr(runtime, "outbound_interceptor", None)
-    if outbound is not None:
-        # Get activity name
-        if isinstance(activity, str):
-            activity_name = activity
-        else:
-            defn_attr = getattr(activity, "__temporal_activity_definition", None)
-            activity_name = (
-                defn_attr.name
-                if defn_attr
-                else getattr(activity, "__name__", str(activity))
-            )
-        return outbound.start_local_activity(
-            _interceptor_mod().StartLocalActivityInput(
-                activity=activity_name,
-                args=args,
-                activity_id=activity_id,
-                schedule_to_close_timeout=schedule_to_close_timeout,
-                schedule_to_start_timeout=schedule_to_start_timeout,
-                start_to_close_timeout=start_to_close_timeout,
-                retry_policy=retry_policy,
-                local_retry_threshold=local_retry_threshold,
-                cancellation_type=cancellation_type,
-                headers={},
-                arg_types=None,
-                ret_type=None,
-            )
-        )
-    return runtime.workflow_start_local_activity(
+    return _Runtime.current().workflow_start_local_activity(
         activity,
         *args,
+        result_type=result_type,
         schedule_to_close_timeout=schedule_to_close_timeout,
         schedule_to_start_timeout=schedule_to_start_timeout,
         start_to_close_timeout=start_to_close_timeout,

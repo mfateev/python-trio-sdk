@@ -1447,18 +1447,7 @@ class _WorkflowOutboundImpl(WorkflowOutboundInterceptor):
         )
 
     def start_activity(self, input: StartActivityInput) -> Any:
-        return self._runtime.workflow_start_activity(
-            input.activity,
-            *input.args,
-            task_queue=input.task_queue,
-            schedule_to_close_timeout=input.schedule_to_close_timeout,
-            schedule_to_start_timeout=input.schedule_to_start_timeout,
-            start_to_close_timeout=input.start_to_close_timeout,
-            heartbeat_timeout=input.heartbeat_timeout,
-            retry_policy=input.retry_policy,
-            activity_id=input.activity_id,
-            cancellation_type=int(input.cancellation_type),
-        )
+        return self._runtime._outbound_schedule_activity(input)
 
     async def start_child_workflow(self, input: StartChildWorkflowInput) -> Any:
         from temporalio_trio.workflow import (
@@ -1484,14 +1473,4 @@ class _WorkflowOutboundImpl(WorkflowOutboundInterceptor):
         )
 
     def start_local_activity(self, input: StartLocalActivityInput) -> Any:
-        return self._runtime.workflow_start_local_activity(
-            input.activity,
-            *input.args,
-            schedule_to_close_timeout=input.schedule_to_close_timeout,
-            schedule_to_start_timeout=input.schedule_to_start_timeout,
-            start_to_close_timeout=input.start_to_close_timeout,
-            retry_policy=input.retry_policy,
-            local_retry_threshold=input.local_retry_threshold,
-            activity_id=input.activity_id,
-            cancellation_type=int(input.cancellation_type),
-        )
+        return self._runtime._outbound_schedule_local_activity(input)
