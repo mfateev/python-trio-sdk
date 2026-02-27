@@ -26,6 +26,7 @@ import trio
 
 if TYPE_CHECKING:
     from temporalio_trio.workflow import (
+        ActivityHandle,
         ChildWorkflowHandle,
         ExternalWorkflowHandle,
         Info,
@@ -445,6 +446,7 @@ class WorkflowRuntime:
             start_to_close_timeout=start_to_close_timeout,
             heartbeat_timeout=heartbeat_timeout,
             retry_policy=retry_policy,
+            cancellation_type=cancellation_type,
         )
 
     async def workflow_execute_local_activity(
@@ -488,6 +490,7 @@ class WorkflowRuntime:
             start_to_close_timeout=start_to_close_timeout,
             retry_policy=retry_policy,
             local_retry_threshold=local_retry_threshold,
+            cancellation_type=cancellation_type,
         )
 
     async def workflow_start_child_workflow(
@@ -1090,6 +1093,7 @@ class WorkflowRuntime:
         start_to_close_timeout: timedelta | None = None,
         heartbeat_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
+        cancellation_type: int = 0,
     ) -> Any:
         """Execute an activity using event-based suspension.
 
@@ -1151,6 +1155,7 @@ class WorkflowRuntime:
                 start_to_close_timeout=start_to_close_timeout,
                 heartbeat_timeout=heartbeat_timeout,
                 retry_policy=retry_policy,
+                cancellation_type=cancellation_type,
             )
         )
 
@@ -1184,6 +1189,7 @@ class WorkflowRuntime:
         start_to_close_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
         local_retry_threshold: timedelta | None = None,
+        cancellation_type: int = 0,
     ) -> Any:
         """Execute a local activity using event-based suspension.
 
@@ -1238,6 +1244,7 @@ class WorkflowRuntime:
                 start_to_close_timeout=start_to_close_timeout,
                 retry_policy=retry_policy,
                 local_retry_threshold=local_retry_threshold,
+                cancellation_type=cancellation_type,
             )
         )
 
@@ -1259,6 +1266,167 @@ class WorkflowRuntime:
         if isinstance(result, BaseException):
             raise result
         return result
+
+    def workflow_start_activity(
+        self,
+        activity: str | Callable[..., Any],
+        *args: Any,
+        task_queue: str | None = None,
+        schedule_to_close_timeout: timedelta | None = None,
+        schedule_to_start_timeout: timedelta | None = None,
+        start_to_close_timeout: timedelta | None = None,
+        heartbeat_timeout: timedelta | None = None,
+        retry_policy: temporalio.common.RetryPolicy | None = None,
+        activity_id: str | None = None,
+        cancellation_type: int = 0,
+    ) -> "ActivityHandle[Any]":
+        """Start an activity and return an ActivityHandle without waiting.
+
+        This is a sync method that emits the ScheduleActivityCommand and
+        returns an ActivityHandle that can be awaited for the result.
+        """
+        from temporalio_trio.workflow import ActivityHandle
+
+        # Extract activity name if a callable was passed
+        activity_name = activity if isinstance(activity, str) else activity.__name__
+
+        # Default task_queue to workflow's task queue if not specified
+        actual_task_queue = task_queue if task_queue is not None else self.task_queue
+
+        seq = self.next_activity_seq()
+
+        # Check if already completed (replay path)
+        if seq not in self.completed_activities:
+            # Create suspension event
+            event = trio.Event()
+            self.pending_activities[seq] = event
+
+        # Generate activity_id if not provided
+        actual_activity_id = activity_id if activity_id else str(seq)
+
+        # Emit command
+        self.commands.append(
+            ScheduleActivityCommand(
+                seq=seq,
+                activity_id=actual_activity_id,
+                activity_type=activity_name,
+                args=args,
+                task_queue=actual_task_queue,
+                schedule_to_close_timeout=schedule_to_close_timeout,
+                schedule_to_start_timeout=schedule_to_start_timeout,
+                start_to_close_timeout=start_to_close_timeout,
+                heartbeat_timeout=heartbeat_timeout,
+                retry_policy=retry_policy,
+                cancellation_type=cancellation_type,
+            )
+        )
+
+        return ActivityHandle(seq=seq, is_local=False)
+
+    def workflow_start_local_activity(
+        self,
+        activity: str | Callable[..., Any],
+        *args: Any,
+        schedule_to_close_timeout: timedelta | None = None,
+        schedule_to_start_timeout: timedelta | None = None,
+        start_to_close_timeout: timedelta | None = None,
+        retry_policy: temporalio.common.RetryPolicy | None = None,
+        local_retry_threshold: timedelta | None = None,
+        activity_id: str | None = None,
+        cancellation_type: int = 0,
+    ) -> "ActivityHandle[Any]":
+        """Start a local activity and return an ActivityHandle without waiting.
+
+        This is a sync method that emits the ScheduleLocalActivityCommand and
+        returns an ActivityHandle that can be awaited for the result.
+        """
+        from temporalio_trio.workflow import ActivityHandle
+
+        # Extract activity name if a callable was passed
+        activity_name = activity if isinstance(activity, str) else activity.__name__
+
+        seq = self.next_activity_seq()
+
+        # Check if already completed (replay path)
+        if seq not in self.completed_activities:
+            # Create suspension event
+            event = trio.Event()
+            self.pending_activities[seq] = event
+
+        # Generate activity_id if not provided
+        actual_activity_id = activity_id if activity_id else str(seq)
+
+        # Emit command
+        self.commands.append(
+            ScheduleLocalActivityCommand(
+                seq=seq,
+                activity_id=actual_activity_id,
+                activity_type=activity_name,
+                args=args,
+                schedule_to_close_timeout=schedule_to_close_timeout,
+                schedule_to_start_timeout=schedule_to_start_timeout,
+                start_to_close_timeout=start_to_close_timeout,
+                retry_policy=retry_policy,
+                local_retry_threshold=local_retry_threshold,
+                cancellation_type=cancellation_type,
+            )
+        )
+
+        return ActivityHandle(seq=seq, is_local=True)
+
+    async def workflow_wait_activity(self, seq: int) -> Any:
+        """Wait for an activity to complete by sequence number.
+
+        This is used by ActivityHandle to wait for its result.
+
+        Args:
+            seq: The activity sequence number to wait for.
+
+        Returns:
+            The activity result.
+
+        Raises:
+            Exception: If the activity failed.
+        """
+        import trio
+
+        # Check if already completed (replay path or fast completion)
+        if seq in self.completed_activities:
+            result = self.completed_activities[seq]
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+        # Wait for the event
+        event = self.pending_activities.get(seq)
+        if event is None:
+            # Event not yet created - shouldn't happen but handle gracefully
+            event = trio.Event()
+            self.pending_activities[seq] = event
+
+        # Call suspension callback if set (for single-thread worker)
+        if self.on_suspend is not None:
+            self.on_suspend()
+
+        # Suspend until activity completes
+        await event.wait()
+
+        # Get result and clean up
+        result = self.completed_activities[seq]
+        if seq in self.pending_activities:
+            del self.pending_activities[seq]
+
+        # Check for cancellation after waking
+        if self.cancel_requested:
+            raise trio.Cancelled._create()
+
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    def _workflow_runtime(self) -> "WorkflowRuntime":
+        """Get the underlying WorkflowRuntime (self)."""
+        return self
 
     def apply_activity_resolved(
         self,

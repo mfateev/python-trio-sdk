@@ -387,9 +387,13 @@ class WorkflowOutboundInterceptor:
         """
         return await self.next.signal_external_workflow(input)
 
-    async def start_activity(self, input: StartActivityInput) -> Any:
-        """Called for every :py:func:`temporalio_trio.workflow.execute_activity` call."""
-        return await self.next.start_activity(input)
+    def start_activity(
+        self, input: StartActivityInput
+    ) -> temporalio_trio.workflow.ActivityHandle:
+        """Called for every :py:func:`temporalio_trio.workflow.start_activity` and
+        :py:func:`temporalio_trio.workflow.execute_activity` call.
+        """
+        return self.next.start_activity(input)
 
     async def start_child_workflow(
         self, input: StartChildWorkflowInput
@@ -399,6 +403,10 @@ class WorkflowOutboundInterceptor:
         """
         return await self.next.start_child_workflow(input)
 
-    async def start_local_activity(self, input: StartLocalActivityInput) -> Any:
-        """Called for every :py:func:`temporalio_trio.workflow.execute_local_activity` call."""
-        return await self.next.start_local_activity(input)
+    def start_local_activity(
+        self, input: StartLocalActivityInput
+    ) -> temporalio_trio.workflow.ActivityHandle:
+        """Called for every :py:func:`temporalio_trio.workflow.start_local_activity`
+        and :py:func:`temporalio_trio.workflow.execute_local_activity` call.
+        """
+        return self.next.start_local_activity(input)
