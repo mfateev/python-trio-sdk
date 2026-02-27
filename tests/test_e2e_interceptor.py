@@ -117,9 +117,9 @@ class TracingWorkflowOutboundInterceptor(WorkflowOutboundInterceptor):
         interceptor_traces.append(("workflow.signal_external_workflow", input))
         await super().signal_external_workflow(input)
 
-    async def start_activity(self, input: StartActivityInput) -> Any:
+    def start_activity(self, input: StartActivityInput) -> Any:
         interceptor_traces.append(("workflow.start_activity", input))
-        return await super().start_activity(input)
+        return super().start_activity(input)
 
     async def start_child_workflow(
         self, input: StartChildWorkflowInput
@@ -127,9 +127,9 @@ class TracingWorkflowOutboundInterceptor(WorkflowOutboundInterceptor):
         interceptor_traces.append(("workflow.start_child_workflow", input))
         return await super().start_child_workflow(input)
 
-    async def start_local_activity(self, input: StartLocalActivityInput) -> Any:
+    def start_local_activity(self, input: StartLocalActivityInput) -> Any:
         interceptor_traces.append(("workflow.start_local_activity", input))
-        return await super().start_local_activity(input)
+        return super().start_local_activity(input)
 
 
 @activity.defn

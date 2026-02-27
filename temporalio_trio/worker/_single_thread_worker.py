@@ -1446,8 +1446,8 @@ class _WorkflowOutboundImpl(WorkflowOutboundInterceptor):
             run_id=input.workflow_run_id,
         )
 
-    async def start_activity(self, input: StartActivityInput) -> Any:
-        return await self._runtime.workflow_execute_activity(
+    def start_activity(self, input: StartActivityInput) -> Any:
+        return self._runtime.workflow_start_activity(
             input.activity,
             *input.args,
             task_queue=input.task_queue,
@@ -1483,8 +1483,8 @@ class _WorkflowOutboundImpl(WorkflowOutboundInterceptor):
             search_attributes=input.search_attributes,  # type: ignore[arg-type]
         )
 
-    async def start_local_activity(self, input: StartLocalActivityInput) -> Any:
-        return await self._runtime.workflow_execute_local_activity(
+    def start_local_activity(self, input: StartLocalActivityInput) -> Any:
+        return self._runtime.workflow_start_local_activity(
             input.activity,
             *input.args,
             schedule_to_close_timeout=input.schedule_to_close_timeout,
