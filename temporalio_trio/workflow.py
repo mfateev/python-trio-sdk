@@ -27,12 +27,11 @@ from typing import (
     TypeVar,
 )
 
-from typing_extensions import TypedDict
-
 import temporalio.api.common.v1
 import temporalio.common
 import temporalio.converter
 import temporalio.exceptions
+from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
     pass
@@ -66,6 +65,10 @@ __all__ = [
     "get_current_history_length",
     "get_current_history_size",
     "is_continue_as_new_suggested",
+    "has_last_completion_result",
+    "get_last_completion_result",
+    "get_last_failure",
+    "metric_meter",
     "random",
     "uuid4",
     "patched",
@@ -74,6 +77,14 @@ __all__ = [
     "execute_activity",
     "start_local_activity",
     "execute_local_activity",
+    "start_activity_class",
+    "execute_activity_class",
+    "start_activity_method",
+    "execute_activity_method",
+    "start_local_activity_class",
+    "execute_local_activity_class",
+    "start_local_activity_method",
+    "execute_local_activity_method",
     "wait_condition",
     "start_child_workflow",
     "execute_child_workflow",
@@ -96,9 +107,22 @@ __all__ = [
     "HandlerUnfinishedPolicy",
     "VersioningIntent",
     "LocalActivityConfig",
+    "ChildWorkflowConfig",
     "ContinueAsNewError",
     "NondeterminismError",
     "ReadOnlyContextError",
+    "get_signal_handler",
+    "set_signal_handler",
+    "get_dynamic_signal_handler",
+    "set_dynamic_signal_handler",
+    "get_query_handler",
+    "set_query_handler",
+    "get_dynamic_query_handler",
+    "set_dynamic_query_handler",
+    "get_update_handler",
+    "set_update_handler",
+    "get_dynamic_update_handler",
+    "set_dynamic_update_handler",
     "all_handlers_finished",
     "update",
     "UpdateInfo",
@@ -222,6 +246,32 @@ class LocalActivityConfig(TypedDict, total=False):
     local_retry_threshold: Optional[timedelta]
     cancellation_type: ActivityCancellationType
     activity_id: Optional[str]
+    summary: Optional[str]
+
+
+class ChildWorkflowConfig(TypedDict, total=False):
+    """TypedDict of config that can be used for :py:func:`start_child_workflow`
+    and :py:func:`execute_child_workflow`.
+    """
+
+    id: Optional[str]
+    task_queue: Optional[str]
+    cancellation_type: "ChildWorkflowCancellationType"
+    parent_close_policy: "ParentClosePolicy"
+    execution_timeout: Optional[timedelta]
+    run_timeout: Optional[timedelta]
+    task_timeout: Optional[timedelta]
+    id_reuse_policy: temporalio.common.WorkflowIDReusePolicy
+    retry_policy: Optional[temporalio.common.RetryPolicy]
+    cron_schedule: str
+    memo: Optional[Mapping[str, Any]]
+    search_attributes: Optional[
+        temporalio.common.SearchAttributes | temporalio.common.TypedSearchAttributes
+    ]
+    versioning_intent: Optional["VersioningIntent"]
+    static_summary: Optional[str]
+    static_details: Optional[str]
+    priority: temporalio.common.Priority
 
 
 class ParentClosePolicy(IntEnum):
@@ -539,6 +589,7 @@ class _Runtime(ABC):
         local_retry_threshold: timedelta | None = None,
         cancellation_type: "ActivityCancellationType" = ActivityCancellationType.TRY_CANCEL,
         activity_id: str | None = None,
+        summary: str | None = None,
     ) -> "ActivityHandle[Any]":
         """Start a local activity and return a handle without waiting for completion.
 
@@ -579,7 +630,13 @@ class _Runtime(ABC):
         retry_policy: temporalio.common.RetryPolicy | None,
         cron_schedule: str = "",
         memo: Mapping[str, Any] | None = None,
-        search_attributes: temporalio.common.SearchAttributes | None = None,
+        search_attributes: temporalio.common.SearchAttributes
+        | temporalio.common.TypedSearchAttributes
+        | None = None,
+        versioning_intent: "VersioningIntent | None" = None,
+        static_summary: str | None = None,
+        static_details: str | None = None,
+        priority: temporalio.common.Priority = temporalio.common.Priority.default,
     ) -> "ChildWorkflowHandle[Any, Any]":
         """Start a child workflow and return a handle.
 
@@ -643,7 +700,10 @@ class _Runtime(ABC):
         task_timeout: timedelta | None,
         retry_policy: temporalio.common.RetryPolicy | None,
         memo: Mapping[str, Any] | None = None,
-        search_attributes: temporalio.common.SearchAttributes | None = None,
+        search_attributes: temporalio.common.SearchAttributes
+        | temporalio.common.TypedSearchAttributes
+        | None = None,
+        versioning_intent: "VersioningIntent | None" = None,
     ) -> NoReturn:
         """Continue the workflow as a new execution.
 
@@ -849,6 +909,40 @@ class _Runtime(ABC):
         """
         ...
 
+    def workflow_get_signal_handler(self, name: str | None) -> Callable | None:
+        """Get the current signal handler for the given name."""
+        raise NotImplementedError
+
+    def workflow_set_signal_handler(
+        self, name: str | None, handler: Callable | None
+    ) -> None:
+        """Set the signal handler for the given name."""
+        raise NotImplementedError
+
+    def workflow_get_query_handler(self, name: str | None) -> Callable | None:
+        """Get the current query handler for the given name."""
+        raise NotImplementedError
+
+    def workflow_set_query_handler(
+        self, name: str | None, handler: Callable | None
+    ) -> None:
+        """Set the query handler for the given name."""
+        raise NotImplementedError
+
+    def workflow_get_update_handler(self, name: str | None) -> Callable | None:
+        """Get the current update handler for the given name."""
+        raise NotImplementedError
+
+    def workflow_set_update_handler(
+        self,
+        name: str | None,
+        handler: Callable | None,
+        *,
+        validator: Callable | None = None,
+    ) -> None:
+        """Set the update handler for the given name."""
+        raise NotImplementedError
+
     @abstractmethod
     def workflow_all_handlers_finished(self) -> bool:
         """Whether all update and signal handlers have finished executing.
@@ -857,6 +951,43 @@ class _Runtime(ABC):
             True if there are no in-progress update or signal handler executions.
         """
         ...
+
+    def workflow_has_last_completion_result(self) -> bool:
+        """Whether there is a last completion result.
+
+        Returns:
+            True if a last completion result is present.
+        """
+        raise NotImplementedError
+
+    def workflow_last_completion_result(
+        self, type_hint: type | None = None
+    ) -> Any | None:
+        """Get the last completion result if any.
+
+        Args:
+            type_hint: Optional type hint for deserialization.
+
+        Returns:
+            The last completion result, or None.
+        """
+        raise NotImplementedError
+
+    def workflow_last_failure(self) -> BaseException | None:
+        """Get the last failure if any.
+
+        Returns:
+            The last failure, or None.
+        """
+        raise NotImplementedError
+
+    def workflow_metric_meter(self) -> temporalio.common.MetricMeter:
+        """Get the metric meter for this workflow.
+
+        Returns:
+            The metric meter.
+        """
+        raise NotImplementedError
 
     @property
     def is_replaying(self) -> bool:
@@ -993,6 +1124,9 @@ class _Definition:
 
     ret_type: type | None = None
     """Return type extracted from the run method's return type annotation."""
+
+    versioning_behavior: temporalio.common.VersioningBehavior | None = None
+    """Versioning behavior for this workflow definition."""
 
     _ATTR_NAME: str = "__temporal_workflow_definition"
 
@@ -1316,6 +1450,7 @@ def defn(
     sandboxed: bool = True,
     dynamic: bool = False,
     failure_exception_types: Sequence[type[BaseException]] = [],
+    versioning_behavior: temporalio.common.VersioningBehavior = temporalio.common.VersioningBehavior.UNSPECIFIED,
 ) -> Any:
     """Decorator for workflow classes.
 
@@ -1432,6 +1567,7 @@ def defn(
             dynamic=dynamic,
             failure_exception_types=list(failure_exception_types),
             init_fn=init_fn,
+            versioning_behavior=versioning_behavior,
         )
         setattr(cls, _Definition._ATTR_NAME, definition)
         # Also attach definition to the run method for from_run_fn() lookup
@@ -1598,7 +1734,7 @@ def get_current_details() -> str:
     return _Runtime.current().workflow_get_current_details()
 
 
-def set_current_details(details: str) -> None:
+def set_current_details(description: str) -> None:
     """Set the current details of the workflow which may appear in the UI/CLI.
 
     Unlike static details set at start, this value can be updated throughout
@@ -1606,12 +1742,71 @@ def set_current_details(details: str) -> None:
     This can be in Temporal markdown format and can span multiple lines.
 
     Args:
-        details: The details string to set.
+        description: The details string to set.
 
     Raises:
         _NotInWorkflowContextError: If not in a workflow context.
     """
-    _Runtime.current().workflow_set_current_details(details)
+    _Runtime.current().workflow_set_current_details(description)
+
+
+def has_last_completion_result() -> bool:
+    """Whether there is a last completion result.
+
+    This is typically used in cron-like workflows to check if the previous
+    run completed successfully.
+
+    Returns:
+        True if there is a last completion result.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    return _Runtime.current().workflow_has_last_completion_result()
+
+
+def get_last_completion_result(type_hint: type | None = None) -> Any | None:
+    """Get the last completion result if any.
+
+    This is typically used in cron-like workflows to carry state from the
+    previous run.
+
+    Args:
+        type_hint: Optional type hint for deserialization.
+
+    Returns:
+        The last completion result, or None.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    return _Runtime.current().workflow_last_completion_result(type_hint)
+
+
+def get_last_failure() -> BaseException | None:
+    """Get the failure from the previous run if any.
+
+    This is typically used in cron-like workflows to handle previous failures.
+
+    Returns:
+        The last failure, or None.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    return _Runtime.current().workflow_last_failure()
+
+
+def metric_meter() -> temporalio.common.MetricMeter:
+    """Get the metric meter for this workflow.
+
+    Returns:
+        The metric meter.
+
+    Raises:
+        _NotInWorkflowContextError: If not in a workflow context.
+    """
+    return _Runtime.current().workflow_metric_meter()
 
 
 def random() -> _random_module.Random:
@@ -1890,6 +2085,7 @@ def start_local_activity(
     local_retry_threshold: timedelta | None = None,
     activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    summary: str | None = None,
 ) -> ActivityHandle[Any]:
     """Start a local activity and return its handle.
 
@@ -1934,6 +2130,7 @@ def start_local_activity(
         local_retry_threshold=local_retry_threshold,
         activity_id=activity_id,
         cancellation_type=cancellation_type,
+        summary=summary,
     )
 
 
@@ -1950,6 +2147,7 @@ async def execute_local_activity(
     local_retry_threshold: timedelta | None = None,
     activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    summary: str | None = None,
 ) -> Any:
     """Start a local activity and wait for completion.
 
@@ -1968,6 +2166,315 @@ async def execute_local_activity(
         local_retry_threshold=local_retry_threshold,
         activity_id=activity_id,
         cancellation_type=cancellation_type,
+        summary=summary,
+    )
+
+
+# Activity class/method variants - delegate to start_activity/start_local_activity
+# These match the sdk-python API exactly
+
+
+def start_activity_class(
+    activity: type,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    result_type: type | None = None,
+    task_queue: str | None = None,
+    schedule_to_close_timeout: timedelta | None = None,
+    schedule_to_start_timeout: timedelta | None = None,
+    start_to_close_timeout: timedelta | None = None,
+    heartbeat_timeout: timedelta | None = None,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    activity_id: str | None = None,
+    cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    versioning_intent: VersioningIntent | None = None,
+    summary: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
+) -> ActivityHandle[Any]:
+    """Start a class-based activity and return its handle.
+
+    This is the same as :py:func:`start_activity` but typed for class-based activities.
+    """
+    return start_activity(
+        activity,
+        arg,
+        args=args,
+        result_type=result_type,
+        task_queue=task_queue,
+        schedule_to_close_timeout=schedule_to_close_timeout,
+        schedule_to_start_timeout=schedule_to_start_timeout,
+        start_to_close_timeout=start_to_close_timeout,
+        heartbeat_timeout=heartbeat_timeout,
+        retry_policy=retry_policy,
+        activity_id=activity_id,
+        cancellation_type=cancellation_type,
+        versioning_intent=versioning_intent,
+        summary=summary,
+        priority=priority,
+    )
+
+
+async def execute_activity_class(
+    activity: type,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    result_type: type | None = None,
+    task_queue: str | None = None,
+    schedule_to_close_timeout: timedelta | None = None,
+    schedule_to_start_timeout: timedelta | None = None,
+    start_to_close_timeout: timedelta | None = None,
+    heartbeat_timeout: timedelta | None = None,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    activity_id: str | None = None,
+    cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    versioning_intent: VersioningIntent | None = None,
+    summary: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
+) -> Any:
+    """Start a class-based activity and wait for completion.
+
+    This is the same as :py:func:`execute_activity` but typed for class-based activities.
+    """
+    return await execute_activity(
+        activity,
+        arg,
+        args=args,
+        result_type=result_type,
+        task_queue=task_queue,
+        schedule_to_close_timeout=schedule_to_close_timeout,
+        schedule_to_start_timeout=schedule_to_start_timeout,
+        start_to_close_timeout=start_to_close_timeout,
+        heartbeat_timeout=heartbeat_timeout,
+        retry_policy=retry_policy,
+        activity_id=activity_id,
+        cancellation_type=cancellation_type,
+        versioning_intent=versioning_intent,
+        summary=summary,
+        priority=priority,
+    )
+
+
+def start_activity_method(
+    activity: Callable,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    result_type: type | None = None,
+    task_queue: str | None = None,
+    schedule_to_close_timeout: timedelta | None = None,
+    schedule_to_start_timeout: timedelta | None = None,
+    start_to_close_timeout: timedelta | None = None,
+    heartbeat_timeout: timedelta | None = None,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    activity_id: str | None = None,
+    cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    versioning_intent: VersioningIntent | None = None,
+    summary: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
+) -> ActivityHandle[Any]:
+    """Start a method-based activity and return its handle.
+
+    This is the same as :py:func:`start_activity` but typed for method-based activities.
+    """
+    return start_activity(
+        activity,
+        arg,
+        args=args,
+        result_type=result_type,
+        task_queue=task_queue,
+        schedule_to_close_timeout=schedule_to_close_timeout,
+        schedule_to_start_timeout=schedule_to_start_timeout,
+        start_to_close_timeout=start_to_close_timeout,
+        heartbeat_timeout=heartbeat_timeout,
+        retry_policy=retry_policy,
+        activity_id=activity_id,
+        cancellation_type=cancellation_type,
+        versioning_intent=versioning_intent,
+        summary=summary,
+        priority=priority,
+    )
+
+
+async def execute_activity_method(
+    activity: Callable,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    result_type: type | None = None,
+    task_queue: str | None = None,
+    schedule_to_close_timeout: timedelta | None = None,
+    schedule_to_start_timeout: timedelta | None = None,
+    start_to_close_timeout: timedelta | None = None,
+    heartbeat_timeout: timedelta | None = None,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    activity_id: str | None = None,
+    cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    versioning_intent: VersioningIntent | None = None,
+    summary: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
+) -> Any:
+    """Start a method-based activity and wait for completion.
+
+    This is the same as :py:func:`execute_activity` but typed for method-based activities.
+    """
+    return await execute_activity(
+        activity,
+        arg,
+        args=args,
+        result_type=result_type,
+        task_queue=task_queue,
+        schedule_to_close_timeout=schedule_to_close_timeout,
+        schedule_to_start_timeout=schedule_to_start_timeout,
+        start_to_close_timeout=start_to_close_timeout,
+        heartbeat_timeout=heartbeat_timeout,
+        retry_policy=retry_policy,
+        activity_id=activity_id,
+        cancellation_type=cancellation_type,
+        versioning_intent=versioning_intent,
+        summary=summary,
+        priority=priority,
+    )
+
+
+def start_local_activity_class(
+    activity: type,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    result_type: type | None = None,
+    schedule_to_close_timeout: timedelta | None = None,
+    schedule_to_start_timeout: timedelta | None = None,
+    start_to_close_timeout: timedelta | None = None,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    local_retry_threshold: timedelta | None = None,
+    activity_id: str | None = None,
+    cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    summary: str | None = None,
+) -> ActivityHandle[Any]:
+    """Start a class-based local activity and return its handle.
+
+    This is the same as :py:func:`start_local_activity` but typed for class-based activities.
+    """
+    return start_local_activity(
+        activity,
+        arg,
+        args=args,
+        result_type=result_type,
+        schedule_to_close_timeout=schedule_to_close_timeout,
+        schedule_to_start_timeout=schedule_to_start_timeout,
+        start_to_close_timeout=start_to_close_timeout,
+        retry_policy=retry_policy,
+        local_retry_threshold=local_retry_threshold,
+        activity_id=activity_id,
+        cancellation_type=cancellation_type,
+        summary=summary,
+    )
+
+
+async def execute_local_activity_class(
+    activity: type,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    result_type: type | None = None,
+    schedule_to_close_timeout: timedelta | None = None,
+    schedule_to_start_timeout: timedelta | None = None,
+    start_to_close_timeout: timedelta | None = None,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    local_retry_threshold: timedelta | None = None,
+    activity_id: str | None = None,
+    cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    summary: str | None = None,
+) -> Any:
+    """Start a class-based local activity and wait for completion.
+
+    This is the same as :py:func:`execute_local_activity` but typed for class-based activities.
+    """
+    return await execute_local_activity(
+        activity,
+        arg,
+        args=args,
+        result_type=result_type,
+        schedule_to_close_timeout=schedule_to_close_timeout,
+        schedule_to_start_timeout=schedule_to_start_timeout,
+        start_to_close_timeout=start_to_close_timeout,
+        retry_policy=retry_policy,
+        local_retry_threshold=local_retry_threshold,
+        activity_id=activity_id,
+        cancellation_type=cancellation_type,
+        summary=summary,
+    )
+
+
+def start_local_activity_method(
+    activity: Callable,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    result_type: type | None = None,
+    schedule_to_close_timeout: timedelta | None = None,
+    schedule_to_start_timeout: timedelta | None = None,
+    start_to_close_timeout: timedelta | None = None,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    local_retry_threshold: timedelta | None = None,
+    activity_id: str | None = None,
+    cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    summary: str | None = None,
+) -> ActivityHandle[Any]:
+    """Start a method-based local activity and return its handle.
+
+    This is the same as :py:func:`start_local_activity` but typed for method-based activities.
+    """
+    return start_local_activity(
+        activity,
+        arg,
+        args=args,
+        result_type=result_type,
+        schedule_to_close_timeout=schedule_to_close_timeout,
+        schedule_to_start_timeout=schedule_to_start_timeout,
+        start_to_close_timeout=start_to_close_timeout,
+        retry_policy=retry_policy,
+        local_retry_threshold=local_retry_threshold,
+        activity_id=activity_id,
+        cancellation_type=cancellation_type,
+        summary=summary,
+    )
+
+
+async def execute_local_activity_method(
+    activity: Callable,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    result_type: type | None = None,
+    schedule_to_close_timeout: timedelta | None = None,
+    schedule_to_start_timeout: timedelta | None = None,
+    start_to_close_timeout: timedelta | None = None,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    local_retry_threshold: timedelta | None = None,
+    activity_id: str | None = None,
+    cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    summary: str | None = None,
+) -> Any:
+    """Start a method-based local activity and wait for completion.
+
+    This is the same as :py:func:`execute_local_activity` but typed for method-based activities.
+    """
+    return await execute_local_activity(
+        activity,
+        arg,
+        args=args,
+        result_type=result_type,
+        schedule_to_close_timeout=schedule_to_close_timeout,
+        schedule_to_start_timeout=schedule_to_start_timeout,
+        start_to_close_timeout=start_to_close_timeout,
+        retry_policy=retry_policy,
+        local_retry_threshold=local_retry_threshold,
+        activity_id=activity_id,
+        cancellation_type=cancellation_type,
+        summary=summary,
     )
 
 
@@ -2070,29 +2577,23 @@ class Info:
     start_time: datetime
     """When the workflow execution started."""
 
-    # Optional fields with defaults
-    headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
-        default_factory=dict
-    )
-    """Headers from the workflow start (e.g. for tracing/auth interceptors)."""
-
-    execution_timeout: timedelta | None = None
-    """Total workflow execution timeout including retries and continue as new."""
-
-    run_timeout: timedelta | None = None
-    """Timeout of a single workflow run."""
-
-    task_timeout: timedelta | None = None
-    """Timeout of a single workflow task."""
-
-    retry_policy: temporalio.common.RetryPolicy | None = None
-    """Retry policy for this workflow."""
-
+    # Fields with defaults (order matches sdk-python semantics)
     continued_run_id: str | None = None
     """Run ID of the previous workflow which continued-as-new into this one."""
 
     cron_schedule: str | None = None
     """Cron schedule if this workflow runs on a cron."""
+
+    execution_timeout: timedelta | None = None
+    """Total workflow execution timeout including retries and continue as new."""
+
+    first_execution_run_id: str = ""
+    """Run ID of the very first execution in the continue-as-new chain."""
+
+    headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
+        default_factory=dict
+    )
+    """Headers from the workflow start (e.g. for tracing/auth interceptors)."""
 
     parent: ParentInfo | None = None
     """Information about the parent workflow, if this is a child."""
@@ -2100,15 +2601,37 @@ class Info:
     root: RootInfo | None = None
     """Information about the root workflow."""
 
+    priority: temporalio.common.Priority = field(
+        default_factory=lambda: temporalio.common.Priority.default
+    )
+    """Priority for this workflow."""
+
     raw_memo: Mapping[str, temporalio.api.common.v1.Payload] = field(
         default_factory=dict
     )
     """Raw memo payloads from the workflow start."""
 
-    priority: temporalio.common.Priority = field(
-        default_factory=lambda: temporalio.common.Priority.default
+    retry_policy: temporalio.common.RetryPolicy | None = None
+    """Retry policy for this workflow."""
+
+    run_timeout: timedelta | None = None
+    """Timeout of a single workflow run."""
+
+    search_attributes: temporalio.common.SearchAttributes = field(default_factory=dict)
+    """Search attributes for this workflow (deprecated, use typed_search_attributes)."""
+
+    task_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=10))
+    """Timeout of a single workflow task."""
+
+    typed_search_attributes: temporalio.common.TypedSearchAttributes = field(
+        default_factory=lambda: temporalio.common.TypedSearchAttributes([])
     )
-    """Priority for this workflow."""
+    """Typed search attributes for this workflow."""
+
+    workflow_start_time: datetime = field(
+        default_factory=lambda: datetime(1970, 1, 1, tzinfo=timezone.utc)
+    )
+    """When the workflow was first started (not this run)."""
 
 
 # =============================================================================
@@ -2492,6 +3015,7 @@ async def start_child_workflow(
     args: Sequence[Any] = [],
     id: str | None = None,
     task_queue: str | None = None,
+    result_type: type | None = None,
     cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
     parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
     execution_timeout: timedelta | None = None,
@@ -2501,7 +3025,13 @@ async def start_child_workflow(
     retry_policy: temporalio.common.RetryPolicy | None = None,
     cron_schedule: str = "",
     memo: Mapping[str, Any] | None = None,
-    search_attributes: temporalio.common.SearchAttributes | None = None,
+    search_attributes: temporalio.common.SearchAttributes
+    | temporalio.common.TypedSearchAttributes
+    | None = None,
+    versioning_intent: VersioningIntent | None = None,
+    static_summary: str | None = None,
+    static_details: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
 ) -> ChildWorkflowHandle[Any, Any]:
     """Start a child workflow and return a handle.
 
@@ -2591,12 +3121,12 @@ async def start_child_workflow(
                 memo=memo,
                 search_attributes=search_attributes,
                 headers={},
-                versioning_intent=None,
-                static_summary=None,
-                static_details=None,
-                priority=temporalio.common.Priority.default,
+                versioning_intent=versioning_intent,
+                static_summary=static_summary,
+                static_details=static_details,
+                priority=priority,
                 arg_types=None,
-                ret_type=None,
+                ret_type=result_type,
             )
         )
     return await runtime.workflow_start_child_workflow(
@@ -2624,6 +3154,7 @@ async def execute_child_workflow(
     args: Sequence[Any] = [],
     id: str | None = None,
     task_queue: str | None = None,
+    result_type: type | None = None,
     cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
     parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
     execution_timeout: timedelta | None = None,
@@ -2633,7 +3164,13 @@ async def execute_child_workflow(
     retry_policy: temporalio.common.RetryPolicy | None = None,
     cron_schedule: str = "",
     memo: Mapping[str, Any] | None = None,
-    search_attributes: temporalio.common.SearchAttributes | None = None,
+    search_attributes: temporalio.common.SearchAttributes
+    | temporalio.common.TypedSearchAttributes
+    | None = None,
+    versioning_intent: VersioningIntent | None = None,
+    static_summary: str | None = None,
+    static_details: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
 ) -> Any:
     """Start a child workflow and wait for its result.
 
@@ -2681,6 +3218,7 @@ async def execute_child_workflow(
         args=args,
         id=id,
         task_queue=task_queue,
+        result_type=result_type,
         cancellation_type=cancellation_type,
         parent_close_policy=parent_close_policy,
         execution_timeout=execution_timeout,
@@ -2691,6 +3229,10 @@ async def execute_child_workflow(
         cron_schedule=cron_schedule,
         memo=memo,
         search_attributes=search_attributes,
+        versioning_intent=versioning_intent,
+        static_summary=static_summary,
+        static_details=static_details,
+        priority=priority,
     )
     return await handle.result()
 
@@ -2705,7 +3247,10 @@ def continue_as_new(
     task_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
     memo: Mapping[str, Any] | None = None,
-    search_attributes: temporalio.common.SearchAttributes | None = None,
+    search_attributes: temporalio.common.SearchAttributes
+    | temporalio.common.TypedSearchAttributes
+    | None = None,
+    versioning_intent: VersioningIntent | None = None,
 ) -> NoReturn:
     """Stop the workflow immediately and continue as a new execution.
 
@@ -2772,7 +3317,7 @@ def continue_as_new(
                 memo=memo,
                 search_attributes=search_attributes,
                 headers={},
-                versioning_intent=None,
+                versioning_intent=versioning_intent,
                 arg_types=None,
             )
         )
@@ -2785,6 +3330,7 @@ def continue_as_new(
         retry_policy=retry_policy,
         memo=memo,
         search_attributes=search_attributes,
+        versioning_intent=versioning_intent,
     )
 
 
@@ -2840,6 +3386,132 @@ def upsert_search_attributes(
     if not attributes:
         return
     _Runtime.current().workflow_upsert_search_attributes(attributes)
+
+
+def get_signal_handler(name: str) -> Callable | None:
+    """Get the current signal handler for the given name.
+
+    Args:
+        name: The signal name.
+
+    Returns:
+        The handler or None if not set.
+    """
+    return _Runtime.current().workflow_get_signal_handler(name)
+
+
+def set_signal_handler(name: str, handler: Callable | None) -> None:
+    """Set or remove the signal handler for the given name.
+
+    Args:
+        name: The signal name.
+        handler: The handler to set, or None to remove.
+    """
+    _Runtime.current().workflow_set_signal_handler(name, handler)
+
+
+def get_dynamic_signal_handler() -> Callable | None:
+    """Get the current dynamic signal handler.
+
+    Returns:
+        The dynamic handler or None if not set.
+    """
+    return _Runtime.current().workflow_get_signal_handler(None)
+
+
+def set_dynamic_signal_handler(handler: Callable | None) -> None:
+    """Set or remove the dynamic signal handler.
+
+    Args:
+        handler: The handler to set, or None to remove.
+    """
+    _Runtime.current().workflow_set_signal_handler(None, handler)
+
+
+def get_query_handler(name: str) -> Callable | None:
+    """Get the current query handler for the given name.
+
+    Args:
+        name: The query name.
+
+    Returns:
+        The handler or None if not set.
+    """
+    return _Runtime.current().workflow_get_query_handler(name)
+
+
+def set_query_handler(name: str, handler: Callable | None) -> None:
+    """Set or remove the query handler for the given name.
+
+    Args:
+        name: The query name.
+        handler: The handler to set, or None to remove.
+    """
+    _Runtime.current().workflow_set_query_handler(name, handler)
+
+
+def get_dynamic_query_handler() -> Callable | None:
+    """Get the current dynamic query handler.
+
+    Returns:
+        The dynamic handler or None if not set.
+    """
+    return _Runtime.current().workflow_get_query_handler(None)
+
+
+def set_dynamic_query_handler(handler: Callable | None) -> None:
+    """Set or remove the dynamic query handler.
+
+    Args:
+        handler: The handler to set, or None to remove.
+    """
+    _Runtime.current().workflow_set_query_handler(None, handler)
+
+
+def get_update_handler(name: str) -> Callable | None:
+    """Get the current update handler for the given name.
+
+    Args:
+        name: The update name.
+
+    Returns:
+        The handler or None if not set.
+    """
+    return _Runtime.current().workflow_get_update_handler(name)
+
+
+def set_update_handler(
+    name: str, handler: Callable | None, *, validator: Callable | None = None
+) -> None:
+    """Set or remove the update handler for the given name.
+
+    Args:
+        name: The update name.
+        handler: The handler to set, or None to remove.
+        validator: Optional validator function.
+    """
+    _Runtime.current().workflow_set_update_handler(name, handler, validator=validator)
+
+
+def get_dynamic_update_handler() -> Callable | None:
+    """Get the current dynamic update handler.
+
+    Returns:
+        The dynamic handler or None if not set.
+    """
+    return _Runtime.current().workflow_get_update_handler(None)
+
+
+def set_dynamic_update_handler(
+    handler: Callable | None, *, validator: Callable | None = None
+) -> None:
+    """Set or remove the dynamic update handler.
+
+    Args:
+        handler: The handler to set, or None to remove.
+        validator: Optional validator function.
+    """
+    _Runtime.current().workflow_set_update_handler(None, handler, validator=validator)
 
 
 def all_handlers_finished() -> bool:

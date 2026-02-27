@@ -112,15 +112,11 @@ class WorkflowHistory:
         """Run ID extracted from the first event."""
         if not self.events:
             raise RuntimeError("No events")
-        if not self.events[0].HasField(
-            "workflow_execution_started_event_attributes"
-        ):
+        if not self.events[0].HasField("workflow_execution_started_event_attributes"):
             raise RuntimeError("First event is not workflow start")
-        return (
-            self.events[0]
-            .workflow_execution_started_event_attributes
-            .original_execution_run_id
-        )
+        return self.events[
+            0
+        ].workflow_execution_started_event_attributes.original_execution_run_id
 
     @staticmethod
     def from_json(
@@ -1074,9 +1070,7 @@ def _history_from_json(
 
     pascal_case_match = re.compile("([A-Z]+)")
 
-    def fix_history_enum(
-        prefix: str, parent: dict[str, Any], *attrs: str
-    ) -> None:
+    def fix_history_enum(prefix: str, parent: dict[str, Any], *attrs: str) -> None:
         if attrs[0] == "*":
             for child in parent.values():
                 if isinstance(child, dict):
@@ -1086,8 +1080,7 @@ def _history_from_json(
             if isinstance(child, str) and len(attrs) == 1:
                 if not parent[attrs[0]].startswith(prefix):
                     parent[attrs[0]] = (
-                        prefix
-                        + pascal_case_match.sub(r"_\1", child).upper()
+                        prefix + pascal_case_match.sub(r"_\1", child).upper()
                     )
             elif isinstance(child, dict) and len(attrs) > 1:
                 fix_history_enum(prefix, child, *attrs[1:])
@@ -1096,9 +1089,7 @@ def _history_from_json(
                     if isinstance(child_item, dict):
                         fix_history_enum(prefix, child_item, *attrs[1:])
 
-    def fix_history_failure(
-        parent: dict[str, Any], *attrs: str
-    ) -> None:
+    def fix_history_failure(parent: dict[str, Any], *attrs: str) -> None:
         fix_history_enum(
             "TIMEOUT_TYPE",
             parent,
@@ -1134,9 +1125,7 @@ def _history_from_json(
             "requestCancelExternalWorkflowExecutionFailedEventAttributes",
             "cause",
         )
-        fix_history_enum(
-            "CONTINUE_AS_NEW_INITIATOR", event, "*", "initiator"
-        )
+        fix_history_enum("CONTINUE_AS_NEW_INITIATOR", event, "*", "initiator")
         fix_history_enum("EVENT_TYPE", event, "eventType")
         fix_history_enum(
             "PARENT_CLOSE_POLICY",
@@ -1157,9 +1146,7 @@ def _history_from_json(
             "startChildWorkflowExecutionFailedEventAttributes",
             "cause",
         )
-        fix_history_enum(
-            "TASK_QUEUE_KIND", event, "*", "taskQueue", "kind"
-        )
+        fix_history_enum("TASK_QUEUE_KIND", event, "*", "taskQueue", "kind")
         fix_history_enum(
             "TIMEOUT_TYPE",
             event,
@@ -1179,9 +1166,7 @@ def _history_from_json(
             "cause",
         )
         fix_history_failure(event, "*", "failure")
-        fix_history_failure(
-            event, "activityTaskStartedEventAttributes", "lastFailure"
-        )
+        fix_history_failure(event, "activityTaskStartedEventAttributes", "lastFailure")
         fix_history_failure(
             event,
             "workflowExecutionStartedEventAttributes",

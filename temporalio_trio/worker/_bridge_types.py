@@ -270,6 +270,24 @@ def _convert_initialize_workflow(
     if init.HasField("priority"):
         priority = temporalio.common.Priority._from_proto(init.priority)
 
+    # Extract search attributes
+    search_attributes: temporalio.common.SearchAttributes = {}
+    typed_search_attributes = temporalio.common.TypedSearchAttributes([])
+    if init.search_attributes:
+        search_attributes = temporalio.converter.decode_search_attributes(
+            init.search_attributes
+        )
+        typed_search_attributes = temporalio.converter.decode_typed_search_attributes(
+            init.search_attributes
+        )
+
+    # Extract workflow start time (the time the workflow was first started)
+    workflow_start_time_ns = start_time_ns  # Default to start_time
+    if init.HasField("start_time"):
+        workflow_start_time_ns = (
+            init.start_time.seconds * 1_000_000_000 + init.start_time.nanos
+        )
+
     return WorkflowStartedJob(
         workflow_type=init.workflow_type,
         workflow_id=init.workflow_id,
@@ -291,6 +309,10 @@ def _convert_initialize_workflow(
         root_run_id=root_run_id,
         raw_memo=raw_memo,
         priority=priority,
+        first_execution_run_id=init.first_execution_run_id or "",
+        search_attributes=search_attributes,
+        typed_search_attributes=typed_search_attributes,
+        workflow_start_time_ns=workflow_start_time_ns,
     )
 
 
@@ -768,9 +790,7 @@ def poc_to_bridge_completion(
 
             # Set versioning intent
             if cmd.versioning_intent is not None:
-                bridge_cmd.schedule_activity.versioning_intent = (
-                    cmd.versioning_intent
-                )
+                bridge_cmd.schedule_activity.versioning_intent = cmd.versioning_intent
 
             # Add summary as user_metadata if provided
             if cmd.summary:
@@ -783,9 +803,7 @@ def poc_to_bridge_completion(
 
             # Set priority
             if cmd.priority:
-                bridge_cmd.schedule_activity.priority.CopyFrom(
-                    cmd.priority._to_proto()
-                )
+                bridge_cmd.schedule_activity.priority.CopyFrom(cmd.priority._to_proto())
 
         elif isinstance(cmd, ScheduleLocalActivityCommand):
             # Convert ScheduleLocalActivityCommand to ScheduleLocalActivity
@@ -837,6 +855,15 @@ def poc_to_bridge_completion(
             temporalio.common._apply_headers(
                 cmd.headers, bridge_cmd.schedule_local_activity.headers
             )
+
+            # Add summary as user_metadata if provided
+            if cmd.summary:
+                summary_payload = data_converter.payload_converter.to_payload(
+                    cmd.summary
+                )
+                bridge_cmd.user_metadata.CopyFrom(
+                    user_metadata_pb.UserMetadata(summary=summary_payload)
+                )
 
             # Apply backoff info for local activity retries
             if cmd.attempt is not None:
@@ -943,6 +970,31 @@ def poc_to_bridge_completion(
                 cmd.headers, bridge_cmd.start_child_workflow_execution.headers
             )
 
+            # Set versioning intent
+            if cmd.versioning_intent is not None:
+                bridge_cmd.start_child_workflow_execution.versioning_intent = (
+                    cmd.versioning_intent  # type: ignore[assignment]
+                )
+
+            # Add static summary/details as user_metadata
+            if cmd.static_summary or cmd.static_details:
+                meta = user_metadata_pb.UserMetadata()
+                if cmd.static_summary:
+                    meta.summary.CopyFrom(
+                        data_converter.payload_converter.to_payload(cmd.static_summary)
+                    )
+                if cmd.static_details:
+                    meta.details.CopyFrom(
+                        data_converter.payload_converter.to_payload(cmd.static_details)
+                    )
+                bridge_cmd.user_metadata.CopyFrom(meta)
+
+            # Set priority
+            if cmd.priority:
+                bridge_cmd.start_child_workflow_execution.priority.CopyFrom(
+                    cmd.priority._to_proto()
+                )
+
         elif isinstance(cmd, CancelChildWorkflowCommand):
             # Convert CancelChildWorkflowCommand to CancelChildWorkflowExecution
             bridge_cmd.cancel_child_workflow_execution.child_workflow_seq = cmd.seq
@@ -1042,6 +1094,12 @@ def poc_to_bridge_completion(
                 cmd.headers,
                 bridge_cmd.continue_as_new_workflow_execution.headers,
             )
+
+            # Set versioning intent
+            if cmd.versioning_intent is not None:
+                bridge_cmd.continue_as_new_workflow_execution.versioning_intent = (
+                    cmd.versioning_intent  # type: ignore[assignment]
+                )
 
         elif isinstance(cmd, SetPatchMarkerCommand):
             # Convert SetPatchMarkerCommand to SetPatchMarker

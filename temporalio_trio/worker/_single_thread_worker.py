@@ -118,8 +118,7 @@ class SingleThreadWorker:
         workflow_failure_exception_types: Sequence[type[BaseException]] = [],
         interceptors: Sequence[Interceptor] = [],
         replay_mode: bool = False,
-        on_eviction_hook: Callable[[str, int | None, str | None], None]
-        | None = None,
+        on_eviction_hook: Callable[[str, int | None, str | None], None] | None = None,
         data_converter: temporalio.converter.DataConverter = temporalio.converter.DataConverter.default,
         debug_mode: bool = False,
         disable_eager_activity_execution: bool = False,
@@ -496,6 +495,10 @@ class SingleThreadWorker:
             root_run_id=started_job.root_run_id,
             raw_memo=started_job.raw_memo,
             priority=started_job.priority,
+            first_execution_run_id=started_job.first_execution_run_id,
+            search_attributes_data=started_job.search_attributes,
+            typed_search_attributes_data=started_job.typed_search_attributes,
+            workflow_start_time_ns=started_job.workflow_start_time_ns,
             on_suspend=state.signal_commands_ready,
             disable_eager_activity_execution=self._disable_eager_activity_execution,
         )
@@ -1439,6 +1442,7 @@ class _WorkflowOutboundImpl(WorkflowOutboundInterceptor):
             retry_policy=input.retry_policy,
             memo=input.memo,
             search_attributes=input.search_attributes,  # type: ignore[arg-type]
+            versioning_intent=input.versioning_intent,
         )
 
     def info(self) -> Any:
@@ -1486,6 +1490,10 @@ class _WorkflowOutboundImpl(WorkflowOutboundInterceptor):
             cron_schedule=input.cron_schedule,
             memo=input.memo,
             search_attributes=input.search_attributes,  # type: ignore[arg-type]
+            versioning_intent=input.versioning_intent,
+            static_summary=input.static_summary,
+            static_details=input.static_details,
+            priority=input.priority,
         )
 
     def start_local_activity(self, input: StartLocalActivityInput) -> Any:

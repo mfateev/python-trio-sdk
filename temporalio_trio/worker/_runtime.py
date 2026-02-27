@@ -223,6 +223,22 @@ class WorkflowRuntime:
     )
     """Priority for this workflow."""
 
+    first_execution_run_id: str = ""
+    """Run ID of the very first execution in the continue-as-new chain."""
+
+    search_attributes_data: temporalio.common.SearchAttributes = field(
+        default_factory=dict
+    )
+    """Search attributes (deprecated dict form)."""
+
+    typed_search_attributes_data: temporalio.common.TypedSearchAttributes = field(
+        default_factory=lambda: temporalio.common.TypedSearchAttributes([])
+    )
+    """Typed search attributes."""
+
+    workflow_start_time_ns: int = 0
+    """When the workflow was first started (not this run), in nanoseconds since epoch."""
+
     # Sequence counters
     timer_seq: int = 0
     """Sequence counter for timer IDs."""
@@ -406,32 +422,38 @@ class WorkflowRuntime:
             )
 
         return Info(
-            workflow_id=self.workflow_id,
-            workflow_type=self.workflow_type,
-            run_id=self.run_id,
-            task_queue=self.task_queue,
-            namespace=self.namespace,
             attempt=self.attempt,
-            start_time=datetime.fromtimestamp(
-                self.start_time_ns / 1e9, tz=timezone.utc
-            ),
-            headers=self.headers,
+            continued_run_id=self.continued_run_id,
+            cron_schedule=self.cron_schedule,
             execution_timeout=timedelta(milliseconds=self.execution_timeout_ms)
             if self.execution_timeout_ms is not None
             else None,
+            first_execution_run_id=self.first_execution_run_id or self.run_id,
+            headers=self.headers,
+            namespace=self.namespace,
+            parent=parent,
+            root=root,
+            priority=self.priority,
+            raw_memo=self.raw_memo,
+            retry_policy=self.retry_policy_obj,
+            run_id=self.run_id,
             run_timeout=timedelta(milliseconds=self.run_timeout_ms)
             if self.run_timeout_ms is not None
             else None,
+            search_attributes=self.search_attributes_data,
+            start_time=datetime.fromtimestamp(
+                self.start_time_ns / 1e9, tz=timezone.utc
+            ),
+            task_queue=self.task_queue,
             task_timeout=timedelta(milliseconds=self.task_timeout_ms)
             if self.task_timeout_ms is not None
-            else None,
-            retry_policy=self.retry_policy_obj,
-            continued_run_id=self.continued_run_id,
-            cron_schedule=self.cron_schedule,
-            parent=parent,
-            root=root,
-            raw_memo=self.raw_memo,
-            priority=self.priority,
+            else timedelta(seconds=10),
+            typed_search_attributes=self.typed_search_attributes_data,
+            workflow_id=self.workflow_id,
+            workflow_start_time=datetime.fromtimestamp(
+                self.workflow_start_time_ns / 1e9, tz=timezone.utc
+            ),
+            workflow_type=self.workflow_type,
         )
 
     async def workflow_execute_activity(
@@ -543,7 +565,13 @@ class WorkflowRuntime:
         retry_policy: Any = None,
         cron_schedule: str = "",
         memo: Mapping[str, Any] | None = None,
-        search_attributes: temporalio.common.SearchAttributes | None = None,
+        search_attributes: temporalio.common.SearchAttributes
+        | temporalio.common.TypedSearchAttributes
+        | None = None,
+        versioning_intent: Any = None,
+        static_summary: str | None = None,
+        static_details: str | None = None,
+        priority: temporalio.common.Priority = temporalio.common.Priority.default,
     ) -> "ChildWorkflowHandle":
         """Start a child workflow and return a handle.
 
@@ -637,6 +665,12 @@ class WorkflowRuntime:
                 cron_schedule=cron_schedule,
                 memo=memo,
                 search_attributes=search_attributes,
+                versioning_intent=int(versioning_intent)
+                if versioning_intent is not None
+                else None,
+                static_summary=static_summary,
+                static_details=static_details,
+                priority=priority,
             )
         )
 
@@ -759,7 +793,10 @@ class WorkflowRuntime:
         task_timeout: timedelta | None,
         retry_policy: temporalio.common.RetryPolicy | None,
         memo: Mapping[str, Any] | None = None,
-        search_attributes: temporalio.common.SearchAttributes | None = None,
+        search_attributes: temporalio.common.SearchAttributes
+        | temporalio.common.TypedSearchAttributes
+        | None = None,
+        versioning_intent: Any = None,
     ) -> NoReturn:
         """Continue the workflow as a new execution.
 
@@ -809,6 +846,7 @@ class WorkflowRuntime:
                 self._retry_policy = retry_policy
                 self._memo = memo
                 self._search_attributes = search_attributes
+                self._versioning_intent = versioning_intent
 
             def _apply_command(self, commands: list) -> None:
                 """Add ContinueAsNewCommand to commands list."""
@@ -822,6 +860,9 @@ class WorkflowRuntime:
                         retry_policy=self._retry_policy,
                         memo=self._memo,
                         search_attributes=self._search_attributes,
+                        versioning_intent=int(self._versioning_intent)
+                        if self._versioning_intent is not None
+                        else None,
                     )
                 )
 
@@ -1015,6 +1056,52 @@ class WorkflowRuntime:
             The workflow object.
         """
         return self.workflow_object
+
+    def workflow_get_signal_handler(self, name: str | None) -> Callable | None:
+        """Get signal handler for the given name (None for dynamic)."""
+        return self.signal_handlers.get(name)  # type: ignore[arg-type]
+
+    def workflow_set_signal_handler(
+        self, name: str | None, handler: Callable | None
+    ) -> None:
+        """Set signal handler for the given name (None for dynamic)."""
+        if handler is None:
+            self.signal_handlers.pop(name, None)  # type: ignore[arg-type]
+        else:
+            self.signal_handlers[name] = handler  # type: ignore[index]
+
+    def workflow_get_query_handler(self, name: str | None) -> Callable | None:
+        """Get query handler for the given name (None for dynamic)."""
+        return self.query_handlers.get(name)  # type: ignore[arg-type]
+
+    def workflow_set_query_handler(
+        self, name: str | None, handler: Callable | None
+    ) -> None:
+        """Set query handler for the given name (None for dynamic)."""
+        if handler is None:
+            self.query_handlers.pop(name, None)  # type: ignore[arg-type]
+        else:
+            self.query_handlers[name] = handler  # type: ignore[index]
+
+    def workflow_get_update_handler(self, name: str | None) -> Callable | None:
+        """Get update handler for the given name (None for dynamic)."""
+        return self.update_handlers.get(name)
+
+    def workflow_set_update_handler(
+        self,
+        name: str | None,
+        handler: Callable | None,
+        *,
+        validator: Callable | None = None,
+    ) -> None:
+        """Set update handler for the given name (None for dynamic)."""
+        if handler is None:
+            self.update_handlers.pop(name, None)
+            self.update_validators.pop(name, None)
+        else:
+            self.update_handlers[name] = handler
+            if validator is not None:
+                self.update_validators[name] = validator
 
     def workflow_all_handlers_finished(self) -> bool:
         """Whether all update and signal handlers have finished executing.
@@ -1413,7 +1500,9 @@ class WorkflowRuntime:
                 cancellation_type=int(input.cancellation_type),
                 headers=input.headers or {},
                 do_not_eagerly_execute=input.disable_eager_execution,
-                versioning_intent=int(input.versioning_intent) if input.versioning_intent is not None else None,
+                versioning_intent=int(input.versioning_intent)
+                if input.versioning_intent is not None
+                else None,
                 summary=input.summary,
                 priority=input.priority,
             )
@@ -1433,6 +1522,7 @@ class WorkflowRuntime:
         local_retry_threshold: timedelta | None = None,
         activity_id: str | None = None,
         cancellation_type: int = 0,
+        summary: str | None = None,
     ) -> "ActivityHandle[Any]":
         """Start a local activity and return an ActivityHandle without waiting.
 
@@ -1470,6 +1560,7 @@ class WorkflowRuntime:
                 local_retry_threshold=local_retry_threshold,
                 cancellation_type=cancellation_type,
                 headers={},
+                summary=summary,
                 arg_types=arg_types,
                 ret_type=ret_type,
             )
@@ -1516,6 +1607,7 @@ class WorkflowRuntime:
                 local_retry_threshold=input.local_retry_threshold,
                 cancellation_type=int(input.cancellation_type),
                 headers=input.headers or {},
+                summary=input.summary,
             )
         )
 
@@ -1600,8 +1692,7 @@ class WorkflowRuntime:
 
         # Sleep for the backoff duration (deterministic timer)
         backoff_seconds = (
-            backoff.backoff_duration.seconds
-            + backoff.backoff_duration.nanos / 1e9
+            backoff.backoff_duration.seconds + backoff.backoff_duration.nanos / 1e9
         )
         if backoff_seconds > 0:
             await self.workflow_sleep(backoff_seconds)
