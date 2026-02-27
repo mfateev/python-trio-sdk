@@ -501,6 +501,20 @@ class ScheduleActivityCommand:
     )
     """Headers to attach to the activity (e.g. for tracing/auth interceptors)."""
 
+    do_not_eagerly_execute: bool = False
+    """If true, the activity will not be eagerly dispatched to a local worker."""
+
+    versioning_intent: int | None = None
+    """Versioning intent for the activity (VersioningIntent enum value)."""
+
+    summary: str | None = None
+    """A single-line fixed summary for this activity that may appear in UI/CLI."""
+
+    priority: temporalio.common.Priority = field(
+        default_factory=lambda: temporalio.common.Priority.default
+    )
+    """Priority of the activity."""
+
 
 @dataclass
 class ScheduleLocalActivityCommand:

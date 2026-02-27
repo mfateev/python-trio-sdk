@@ -777,6 +777,32 @@ def poc_to_bridge_completion(
                 cmd.headers, bridge_cmd.schedule_activity.headers
             )
 
+            # Set eager execution flag
+            bridge_cmd.schedule_activity.do_not_eagerly_execute = (
+                cmd.do_not_eagerly_execute
+            )
+
+            # Set versioning intent
+            if cmd.versioning_intent is not None:
+                bridge_cmd.schedule_activity.versioning_intent = (
+                    cmd.versioning_intent
+                )
+
+            # Add summary as user_metadata if provided
+            if cmd.summary:
+                summary_payload = data_converter.payload_converter.to_payload(
+                    cmd.summary
+                )
+                bridge_cmd.user_metadata.CopyFrom(
+                    user_metadata_pb.UserMetadata(summary=summary_payload)
+                )
+
+            # Set priority
+            if cmd.priority:
+                bridge_cmd.schedule_activity.priority.CopyFrom(
+                    cmd.priority._to_proto()
+                )
+
         elif isinstance(cmd, ScheduleLocalActivityCommand):
             # Convert ScheduleLocalActivityCommand to ScheduleLocalActivity
             bridge_cmd.schedule_local_activity.seq = cmd.seq

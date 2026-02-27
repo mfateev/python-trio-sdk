@@ -20,16 +20,19 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Callable, NoReturn, cast
 
+import temporalio.activity
 import temporalio.api.common.v1
 import temporalio.common
 import trio
 
 if TYPE_CHECKING:
     from temporalio_trio.workflow import (
+        ActivityCancellationType,
         ActivityHandle,
         ChildWorkflowHandle,
         ExternalWorkflowHandle,
         Info,
+        VersioningIntent,
     )
 
 from temporalio_trio.worker._activation import (
@@ -1272,26 +1275,83 @@ class WorkflowRuntime:
         activity: str | Callable[..., Any],
         *args: Any,
         task_queue: str | None = None,
+        result_type: type | None = None,
         schedule_to_close_timeout: timedelta | None = None,
         schedule_to_start_timeout: timedelta | None = None,
         start_to_close_timeout: timedelta | None = None,
         heartbeat_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
         activity_id: str | None = None,
-        cancellation_type: int = 0,
+        cancellation_type: "ActivityCancellationType | int" = 0,
+        versioning_intent: "VersioningIntent | None" = None,
+        summary: str | None = None,
+        priority: temporalio.common.Priority = temporalio.common.Priority.default,
     ) -> "ActivityHandle[Any]":
         """Start an activity and return an ActivityHandle without waiting.
 
-        This is a sync method that emits the ScheduleActivityCommand and
-        returns an ActivityHandle that can be awaited for the result.
+        Resolves the activity definition, creates a StartActivityInput, and
+        dispatches through the outbound interceptor chain (matching sdk-python).
+        """
+        from temporalio_trio.worker._interceptor import StartActivityInput
+
+        # Get activity definition if it's callable
+        name: str
+        arg_types: list[type] | None = None
+        ret_type = result_type
+        if isinstance(activity, str):
+            name = activity
+        elif callable(activity):
+            defn = temporalio.activity._Definition.must_from_callable(activity)
+            if not defn.name:
+                raise ValueError("Cannot invoke dynamic activity explicitly")
+            name = defn.name
+            arg_types = defn.arg_types
+            ret_type = defn.ret_type
+        else:
+            raise TypeError("Activity must be a string or callable")
+
+        return self.outbound_interceptor.start_activity(
+            StartActivityInput(
+                activity=name,
+                args=args,
+                activity_id=activity_id,
+                task_queue=task_queue,
+                schedule_to_close_timeout=schedule_to_close_timeout,
+                schedule_to_start_timeout=schedule_to_start_timeout,
+                start_to_close_timeout=start_to_close_timeout,
+                heartbeat_timeout=heartbeat_timeout,
+                retry_policy=retry_policy,
+                cancellation_type=cancellation_type,
+                headers={},
+                disable_eager_execution=False,
+                versioning_intent=versioning_intent,
+                summary=summary,
+                priority=priority,
+                arg_types=arg_types,
+                ret_type=ret_type,
+            )
+        )
+
+    def _outbound_schedule_activity(
+        self,
+        input: Any,
+    ) -> "ActivityHandle[Any]":
+        """Create the ScheduleActivityCommand from a StartActivityInput.
+
+        Called by the terminal outbound interceptor (_WorkflowOutboundImpl).
         """
         from temporalio_trio.workflow import ActivityHandle
 
-        # Extract activity name if a callable was passed
-        activity_name = activity if isinstance(activity, str) else activity.__name__
+        # Validate timeouts
+        if not input.start_to_close_timeout and not input.schedule_to_close_timeout:
+            raise ValueError(
+                "Activity must have start_to_close_timeout or schedule_to_close_timeout"
+            )
 
         # Default task_queue to workflow's task queue if not specified
-        actual_task_queue = task_queue if task_queue is not None else self.task_queue
+        actual_task_queue = (
+            input.task_queue if input.task_queue is not None else self.task_queue
+        )
 
         seq = self.next_activity_seq()
 
@@ -1302,22 +1362,27 @@ class WorkflowRuntime:
             self.pending_activities[seq] = event
 
         # Generate activity_id if not provided
-        actual_activity_id = activity_id if activity_id else str(seq)
+        actual_activity_id = input.activity_id if input.activity_id else str(seq)
 
         # Emit command
         self.commands.append(
             ScheduleActivityCommand(
                 seq=seq,
                 activity_id=actual_activity_id,
-                activity_type=activity_name,
-                args=args,
+                activity_type=input.activity,
+                args=input.args,
                 task_queue=actual_task_queue,
-                schedule_to_close_timeout=schedule_to_close_timeout,
-                schedule_to_start_timeout=schedule_to_start_timeout,
-                start_to_close_timeout=start_to_close_timeout,
-                heartbeat_timeout=heartbeat_timeout,
-                retry_policy=retry_policy,
-                cancellation_type=cancellation_type,
+                schedule_to_close_timeout=input.schedule_to_close_timeout,
+                schedule_to_start_timeout=input.schedule_to_start_timeout,
+                start_to_close_timeout=input.start_to_close_timeout,
+                heartbeat_timeout=input.heartbeat_timeout,
+                retry_policy=input.retry_policy,
+                cancellation_type=int(input.cancellation_type),
+                headers=input.headers or {},
+                do_not_eagerly_execute=input.disable_eager_execution,
+                versioning_intent=int(input.versioning_intent) if input.versioning_intent is not None else None,
+                summary=input.summary,
+                priority=input.priority,
             )
         )
 
@@ -1327,6 +1392,7 @@ class WorkflowRuntime:
         self,
         activity: str | Callable[..., Any],
         *args: Any,
+        result_type: type | None = None,
         schedule_to_close_timeout: timedelta | None = None,
         schedule_to_start_timeout: timedelta | None = None,
         start_to_close_timeout: timedelta | None = None,
@@ -1337,13 +1403,59 @@ class WorkflowRuntime:
     ) -> "ActivityHandle[Any]":
         """Start a local activity and return an ActivityHandle without waiting.
 
-        This is a sync method that emits the ScheduleLocalActivityCommand and
-        returns an ActivityHandle that can be awaited for the result.
+        Resolves the activity definition, creates a StartLocalActivityInput, and
+        dispatches through the outbound interceptor chain (matching sdk-python).
+        """
+        from temporalio_trio.worker._interceptor import StartLocalActivityInput
+
+        # Get activity definition if it's callable
+        name: str
+        arg_types: list[type] | None = None
+        ret_type = result_type
+        if isinstance(activity, str):
+            name = activity
+        elif callable(activity):
+            defn = temporalio.activity._Definition.must_from_callable(activity)
+            if not defn.name:
+                raise ValueError("Cannot invoke dynamic activity explicitly")
+            name = defn.name
+            arg_types = defn.arg_types
+            ret_type = defn.ret_type
+        else:
+            raise TypeError("Activity must be a string or callable")
+
+        return self.outbound_interceptor.start_local_activity(
+            StartLocalActivityInput(
+                activity=name,
+                args=args,
+                activity_id=activity_id,
+                schedule_to_close_timeout=schedule_to_close_timeout,
+                schedule_to_start_timeout=schedule_to_start_timeout,
+                start_to_close_timeout=start_to_close_timeout,
+                retry_policy=retry_policy,
+                local_retry_threshold=local_retry_threshold,
+                cancellation_type=cancellation_type,
+                headers={},
+                arg_types=arg_types,
+                ret_type=ret_type,
+            )
+        )
+
+    def _outbound_schedule_local_activity(
+        self,
+        input: Any,
+    ) -> "ActivityHandle[Any]":
+        """Create the ScheduleLocalActivityCommand from a StartLocalActivityInput.
+
+        Called by the terminal outbound interceptor (_WorkflowOutboundImpl).
         """
         from temporalio_trio.workflow import ActivityHandle
 
-        # Extract activity name if a callable was passed
-        activity_name = activity if isinstance(activity, str) else activity.__name__
+        # Validate timeouts
+        if not input.start_to_close_timeout and not input.schedule_to_close_timeout:
+            raise ValueError(
+                "Activity must have start_to_close_timeout or schedule_to_close_timeout"
+            )
 
         seq = self.next_activity_seq()
 
@@ -1354,21 +1466,22 @@ class WorkflowRuntime:
             self.pending_activities[seq] = event
 
         # Generate activity_id if not provided
-        actual_activity_id = activity_id if activity_id else str(seq)
+        actual_activity_id = input.activity_id if input.activity_id else str(seq)
 
         # Emit command
         self.commands.append(
             ScheduleLocalActivityCommand(
                 seq=seq,
                 activity_id=actual_activity_id,
-                activity_type=activity_name,
-                args=args,
-                schedule_to_close_timeout=schedule_to_close_timeout,
-                schedule_to_start_timeout=schedule_to_start_timeout,
-                start_to_close_timeout=start_to_close_timeout,
-                retry_policy=retry_policy,
-                local_retry_threshold=local_retry_threshold,
-                cancellation_type=cancellation_type,
+                activity_type=input.activity,
+                args=input.args,
+                schedule_to_close_timeout=input.schedule_to_close_timeout,
+                schedule_to_start_timeout=input.schedule_to_start_timeout,
+                start_to_close_timeout=input.start_to_close_timeout,
+                retry_policy=input.retry_policy,
+                local_retry_threshold=input.local_retry_threshold,
+                cancellation_type=int(input.cancellation_type),
+                headers=input.headers or {},
             )
         )
 
