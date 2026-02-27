@@ -206,6 +206,8 @@ class ActivityConfig(TypedDict, total=False):
     cancellation_type: ActivityCancellationType
     activity_id: Optional[str]
     versioning_intent: Optional[VersioningIntent]
+    summary: Optional[str]
+    priority: temporalio.common.Priority
 
 
 class LocalActivityConfig(TypedDict, total=False):

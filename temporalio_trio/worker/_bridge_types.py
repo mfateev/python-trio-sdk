@@ -747,28 +747,9 @@ def poc_to_bridge_completion(
 
             # Convert retry policy if present
             if cmd.retry_policy:
-                if cmd.retry_policy.initial_interval:
-                    _set_duration(
-                        bridge_cmd.schedule_activity.retry_policy.initial_interval,
-                        cmd.retry_policy.initial_interval,
-                    )
-                if cmd.retry_policy.maximum_interval:
-                    _set_duration(
-                        bridge_cmd.schedule_activity.retry_policy.maximum_interval,
-                        cmd.retry_policy.maximum_interval,
-                    )
-                if cmd.retry_policy.backoff_coefficient:
-                    bridge_cmd.schedule_activity.retry_policy.backoff_coefficient = (
-                        cmd.retry_policy.backoff_coefficient
-                    )
-                if cmd.retry_policy.maximum_attempts:
-                    bridge_cmd.schedule_activity.retry_policy.maximum_attempts = (
-                        cmd.retry_policy.maximum_attempts
-                    )
-                for exc_type in cmd.retry_policy.non_retryable_error_types or []:  # type: ignore[union-attr]
-                    bridge_cmd.schedule_activity.retry_policy.non_retryable_error_types.append(
-                        exc_type
-                    )
+                cmd.retry_policy.apply_to_proto(
+                    bridge_cmd.schedule_activity.retry_policy
+                )
 
             # Set cancellation type
             bridge_cmd.schedule_activity.cancellation_type = (
@@ -843,26 +824,9 @@ def poc_to_bridge_completion(
 
             # Convert retry policy if present
             if cmd.retry_policy:
-                if cmd.retry_policy.initial_interval:
-                    _set_duration(
-                        bridge_cmd.schedule_local_activity.retry_policy.initial_interval,
-                        cmd.retry_policy.initial_interval,
-                    )
-                if cmd.retry_policy.maximum_interval:
-                    _set_duration(
-                        bridge_cmd.schedule_local_activity.retry_policy.maximum_interval,
-                        cmd.retry_policy.maximum_interval,
-                    )
-                if cmd.retry_policy.backoff_coefficient:
-                    bridge_cmd.schedule_local_activity.retry_policy.backoff_coefficient = cmd.retry_policy.backoff_coefficient
-                if cmd.retry_policy.maximum_attempts:
-                    bridge_cmd.schedule_local_activity.retry_policy.maximum_attempts = (
-                        cmd.retry_policy.maximum_attempts
-                    )
-                for exc_type in cmd.retry_policy.non_retryable_error_types or []:  # type: ignore[union-attr]
-                    bridge_cmd.schedule_local_activity.retry_policy.non_retryable_error_types.append(
-                        exc_type
-                    )
+                cmd.retry_policy.apply_to_proto(
+                    bridge_cmd.schedule_local_activity.retry_policy
+                )
 
             # Set cancellation type
             bridge_cmd.schedule_local_activity.cancellation_type = (
@@ -950,24 +914,9 @@ def poc_to_bridge_completion(
 
             # Convert retry policy if present
             if cmd.retry_policy:
-                if cmd.retry_policy.initial_interval:
-                    _set_duration(
-                        bridge_cmd.start_child_workflow_execution.retry_policy.initial_interval,
-                        cmd.retry_policy.initial_interval,
-                    )
-                if cmd.retry_policy.maximum_interval:
-                    _set_duration(
-                        bridge_cmd.start_child_workflow_execution.retry_policy.maximum_interval,
-                        cmd.retry_policy.maximum_interval,
-                    )
-                if cmd.retry_policy.backoff_coefficient:
-                    bridge_cmd.start_child_workflow_execution.retry_policy.backoff_coefficient = cmd.retry_policy.backoff_coefficient
-                if cmd.retry_policy.maximum_attempts:
-                    bridge_cmd.start_child_workflow_execution.retry_policy.maximum_attempts = cmd.retry_policy.maximum_attempts
-                for exc_type in cmd.retry_policy.non_retryable_error_types or []:
-                    bridge_cmd.start_child_workflow_execution.retry_policy.non_retryable_error_types.append(
-                        exc_type
-                    )
+                cmd.retry_policy.apply_to_proto(
+                    bridge_cmd.start_child_workflow_execution.retry_policy
+                )
 
             # Set cron schedule
             if cmd.cron_schedule:
@@ -1070,24 +1019,9 @@ def poc_to_bridge_completion(
 
             # Convert retry policy if present
             if cmd.retry_policy:
-                if cmd.retry_policy.initial_interval:
-                    _set_duration(
-                        bridge_cmd.continue_as_new_workflow_execution.retry_policy.initial_interval,
-                        cmd.retry_policy.initial_interval,
-                    )
-                if cmd.retry_policy.maximum_interval:
-                    _set_duration(
-                        bridge_cmd.continue_as_new_workflow_execution.retry_policy.maximum_interval,
-                        cmd.retry_policy.maximum_interval,
-                    )
-                if cmd.retry_policy.backoff_coefficient:
-                    bridge_cmd.continue_as_new_workflow_execution.retry_policy.backoff_coefficient = cmd.retry_policy.backoff_coefficient
-                if cmd.retry_policy.maximum_attempts:
-                    bridge_cmd.continue_as_new_workflow_execution.retry_policy.maximum_attempts = cmd.retry_policy.maximum_attempts
-                for exc_type in cmd.retry_policy.non_retryable_error_types or []:
-                    bridge_cmd.continue_as_new_workflow_execution.retry_policy.non_retryable_error_types.append(
-                        exc_type
-                    )
+                cmd.retry_policy.apply_to_proto(
+                    bridge_cmd.continue_as_new_workflow_execution.retry_policy
+                )
 
             # Encode memo
             if cmd.memo:
