@@ -519,7 +519,16 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                     self._timer_events[job.timer_id].set()
             elif isinstance(job, ActivityResolvedJob):
                 # Store activity result for replay
-                self._resolved_activities[job.seq] = (job.result, job.failure)
+                # Note: backoff is stored as a RuntimeError here for the legacy
+                # code path; the primary path (SingleThreadWorker) handles
+                # backoff properly via _ActivityBackoff sentinel.
+                if job.backoff is not None:
+                    self._resolved_activities[job.seq] = (
+                        None,
+                        RuntimeError("Activity scheduled for retry (backoff)"),
+                    )
+                else:
+                    self._resolved_activities[job.seq] = (job.result, job.failure)
                 if self._pending_activity_seq == job.seq:
                     self._pending_activity_seq = None
                 # Set event to wake workflow (guest mode)

@@ -122,6 +122,7 @@ class SingleThreadWorker:
         | None = None,
         data_converter: temporalio.converter.DataConverter = temporalio.converter.DataConverter.default,
         debug_mode: bool = False,
+        disable_eager_activity_execution: bool = False,
     ) -> None:
         """Initialize the single-thread worker.
 
@@ -140,6 +141,10 @@ class SingleThreadWorker:
                 Called as ``on_eviction_hook(run_id, reason, message)``.
             data_converter: Data converter for payload serialization.
             debug_mode: If True, enable debug mode.
+            disable_eager_activity_execution: If true, will disable eager
+                activity execution. Eager activity execution is an optimization
+                on some servers that sends activities back to the same worker as
+                the calling workflow if they can run there.
         """
         self._bridge = bridge
         self._task_queue = task_queue
@@ -149,6 +154,7 @@ class SingleThreadWorker:
         self._replay_mode = replay_mode
         self._data_converter = data_converter
         self._debug_mode = debug_mode
+        self._disable_eager_activity_execution = disable_eager_activity_execution
         self._on_eviction_hook = on_eviction_hook
         self._shutdown_event = trio.Event()
 
@@ -491,6 +497,7 @@ class SingleThreadWorker:
             raw_memo=started_job.raw_memo,
             priority=started_job.priority,
             on_suspend=state.signal_commands_ready,
+            disable_eager_activity_execution=self._disable_eager_activity_execution,
         )
         state.runtime = runtime
 
@@ -829,6 +836,7 @@ class SingleThreadWorker:
                     seq=job.seq,
                     result=job.result,
                     error=job.failure,
+                    backoff=job.backoff,
                 )
             elif isinstance(job, SignalWorkflowJob):
                 self._apply_signal(runtime, job)
@@ -1248,6 +1256,8 @@ class SingleThreadWorker:
             )
             return
 
+        prev_read_only = runtime._read_only
+        runtime._read_only = True
         try:
             result = handler(*query_job.args)
             runtime.commands.append(
@@ -1263,6 +1273,8 @@ class SingleThreadWorker:
                     error=e,
                 )
             )
+        finally:
+            runtime._read_only = prev_read_only
 
     async def _apply_query_async(
         self, runtime: WorkflowRuntime, query_job: QueryWorkflowJob
@@ -1285,6 +1297,8 @@ class SingleThreadWorker:
             )
             return
 
+        prev_read_only = runtime._read_only
+        runtime._read_only = True
         try:
             result = await runtime.inbound_interceptor.handle_query(
                 HandleQueryInput(
@@ -1307,6 +1321,8 @@ class SingleThreadWorker:
                     error=e,
                 )
             )
+        finally:
+            runtime._read_only = prev_read_only
 
     async def _send_completion(self, run_id: str, commands: list[Any]) -> None:
         """Send a completion with commands to the bridge.
