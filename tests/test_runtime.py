@@ -1770,7 +1770,7 @@ class TestExecuteChildWorkflow:
         assert cmd.seq == 1
         assert cmd.workflow_type == "ChildWorkflow"
         assert cmd.workflow_id == "child-wf-1"
-        assert cmd.args == ("arg1", "arg2")
+        assert len(cmd.args) == 2  # Pre-encoded payloads
 
     @pytest.mark.trio
     async def test_execute_child_workflow_suspends_on_event(self) -> None:
@@ -2179,17 +2179,21 @@ class TestStartChildWorkflowCommand:
 
     def test_start_child_workflow_command_creation(self) -> None:
         """Test StartChildWorkflowCommand can be created with required fields."""
+        import temporalio.converter
+
+        converter = temporalio.converter.DataConverter.default.payload_converter
+        encoded_args = converter.to_payloads(["arg1", "arg2"])
         cmd = StartChildWorkflowCommand(
             seq=1,
             workflow_type="ChildWorkflow",
             workflow_id="child-wf-1",
-            args=("arg1", "arg2"),
+            args=encoded_args,
         )
 
         assert cmd.seq == 1
         assert cmd.workflow_type == "ChildWorkflow"
         assert cmd.workflow_id == "child-wf-1"
-        assert cmd.args == ("arg1", "arg2")
+        assert len(cmd.args) == 2
         assert cmd.task_queue is None
         assert cmd.execution_timeout is None
         assert cmd.run_timeout is None
@@ -2199,11 +2203,15 @@ class TestStartChildWorkflowCommand:
         """Test StartChildWorkflowCommand with all optional fields."""
         from datetime import timedelta
 
+        import temporalio.converter
+
+        converter = temporalio.converter.DataConverter.default.payload_converter
+        encoded_args = converter.to_payloads(["a", "b", "c"])
         cmd = StartChildWorkflowCommand(
             seq=42,
             workflow_type="ComplexChild",
             workflow_id="child-42",
-            args=("a", "b", "c"),
+            args=encoded_args,
             task_queue="child-queue",
             execution_timeout=timedelta(minutes=10),
             run_timeout=timedelta(minutes=5),
@@ -2213,7 +2221,7 @@ class TestStartChildWorkflowCommand:
         assert cmd.seq == 42
         assert cmd.workflow_type == "ComplexChild"
         assert cmd.workflow_id == "child-42"
-        assert cmd.args == ("a", "b", "c")
+        assert len(cmd.args) == 3
         assert cmd.task_queue == "child-queue"
         assert cmd.execution_timeout == timedelta(minutes=10)
         assert cmd.run_timeout == timedelta(minutes=5)
@@ -2221,17 +2229,21 @@ class TestStartChildWorkflowCommand:
 
     def test_start_child_workflow_command_equality(self) -> None:
         """Test StartChildWorkflowCommand equality comparison."""
+        import temporalio.converter
+
+        converter = temporalio.converter.DataConverter.default.payload_converter
+        encoded_arg = converter.to_payloads(["arg"])
         cmd1 = StartChildWorkflowCommand(
-            seq=1, workflow_type="test", workflow_id="wf-1", args=("arg",)
+            seq=1, workflow_type="test", workflow_id="wf-1", args=list(encoded_arg)
         )
         cmd2 = StartChildWorkflowCommand(
-            seq=1, workflow_type="test", workflow_id="wf-1", args=("arg",)
+            seq=1, workflow_type="test", workflow_id="wf-1", args=list(encoded_arg)
         )
         cmd3 = StartChildWorkflowCommand(
-            seq=2, workflow_type="test", workflow_id="wf-1", args=("arg",)
+            seq=2, workflow_type="test", workflow_id="wf-1", args=list(encoded_arg)
         )
         cmd4 = StartChildWorkflowCommand(
-            seq=1, workflow_type="other", workflow_id="wf-1", args=("arg",)
+            seq=1, workflow_type="other", workflow_id="wf-1", args=list(encoded_arg)
         )
 
         assert cmd1 == cmd2

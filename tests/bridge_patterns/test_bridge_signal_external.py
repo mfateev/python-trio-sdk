@@ -121,11 +121,12 @@ async def test_signal_external_workflow_success(unique_task_queue: str) -> None:
         )
 
         def build_signal_external(rid: str) -> bytes:
+            encoded_args = dc.payload_converter.to_payloads(["signal_data_from_external"])
             signal_cmd = SignalExternalWorkflowCommand(
                 seq=1,
                 workflow_id=target_workflow_id,
                 signal_name="external_signal",
-                args=("signal_data_from_external",),
+                args=encoded_args,
             )
             poc_completion = WorkflowActivationCompletion(commands=[signal_cmd])
             bridge_comp = poc_to_bridge_completion(rid, poc_completion, dc)
@@ -341,12 +342,13 @@ async def test_signal_external_workflow_with_run_id(unique_task_queue: str) -> N
         )
 
         def build_signal_with_runid(rid: str) -> bytes:
+            encoded_args = dc.payload_converter.to_payloads(["data_for_specific_run"])
             signal_cmd = SignalExternalWorkflowCommand(
                 seq=1,
                 workflow_id=target_workflow_id,
                 run_id=target_run_id,
                 signal_name="specific_run_signal",
-                args=("data_for_specific_run",),
+                args=encoded_args,
             )
             poc_completion = WorkflowActivationCompletion(commands=[signal_cmd])
             bridge_comp = poc_to_bridge_completion(rid, poc_completion, dc)
@@ -564,19 +566,23 @@ async def test_signal_external_workflow_nonexistent_target(
 
 def test_signal_external_command_dataclass() -> None:
     """Test SignalExternalWorkflowCommand dataclass structure."""
+    import temporalio.converter
+
+    converter = temporalio.converter.DataConverter.default.payload_converter
+    encoded_args = converter.to_payloads(["arg1", 42, {"key": "value"}])
     cmd = SignalExternalWorkflowCommand(
         seq=1,
         workflow_id="target-workflow",
         signal_name="my_signal",
         run_id="specific-run-id",
-        args=("arg1", 42, {"key": "value"}),
+        args=encoded_args,
     )
 
     assert cmd.seq == 1
     assert cmd.workflow_id == "target-workflow"
     assert cmd.signal_name == "my_signal"
     assert cmd.run_id == "specific-run-id"
-    assert cmd.args == ("arg1", 42, {"key": "value"})
+    assert len(cmd.args) == 3
 
 
 def test_signal_external_command_defaults() -> None:
@@ -588,7 +594,7 @@ def test_signal_external_command_defaults() -> None:
     )
 
     assert cmd.run_id is None
-    assert cmd.args == ()
+    assert cmd.args == []
 
 
 def test_signal_external_resolved_job_success() -> None:

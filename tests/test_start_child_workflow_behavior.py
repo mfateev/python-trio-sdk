@@ -18,6 +18,13 @@ import trio
 from temporalio_trio.worker._runtime import WorkflowRuntime
 
 
+def _setup_outbound(runtime: WorkflowRuntime) -> None:
+    """Set up a minimal terminal outbound interceptor on the runtime."""
+    from temporalio_trio.worker._single_thread_worker import _WorkflowOutboundImpl
+
+    runtime.outbound_interceptor = _WorkflowOutboundImpl(runtime)
+
+
 class TestStartChildWorkflowBehavior:
     """Tests for start_child_workflow returning immediately after start."""
 
@@ -34,12 +41,14 @@ class TestStartChildWorkflowBehavior:
             random=random_module.Random(42),
             time_ns=0,
         )
+        _setup_outbound(runtime)
 
         async def parent():
             handle = await runtime.workflow_start_child_workflow(
                 "Child",
                 id="child-1",
                 task_queue="queue",
+                result_type=None,
                 cancellation_type=None,
                 parent_close_policy=None,
                 execution_timeout=None,
@@ -78,6 +87,7 @@ class TestStartChildWorkflowBehavior:
             random=random_module.Random(42),
             time_ns=0,
         )
+        _setup_outbound(runtime)
 
         # Simulate replay: child already started and completed
         runtime.started_children[1] = "child-run-replay"
@@ -87,6 +97,7 @@ class TestStartChildWorkflowBehavior:
             "Child",
             id="child-1",
             task_queue="queue",
+            result_type=None,
             cancellation_type=None,
             parent_close_policy=None,
             execution_timeout=None,
@@ -112,6 +123,7 @@ class TestStartChildWorkflowBehavior:
             random=random_module.Random(42),
             time_ns=0,
         )
+        _setup_outbound(runtime)
 
         async def parent():
             # Start child should create a start event
@@ -119,6 +131,7 @@ class TestStartChildWorkflowBehavior:
                 "Child",
                 id="child-1",
                 task_queue="queue",
+                result_type=None,
                 cancellation_type=None,
                 parent_close_policy=None,
                 execution_timeout=None,

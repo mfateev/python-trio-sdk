@@ -578,6 +578,7 @@ class WorkflowRuntime:
         *args: Any,
         id: str,
         task_queue: str | None = None,
+        result_type: type | None = None,
         cancellation_type: Any = None,
         parent_close_policy: Any = None,
         execution_timeout: timedelta | None = None,
@@ -597,13 +598,15 @@ class WorkflowRuntime:
     ) -> "ChildWorkflowHandle":
         """Start a child workflow and return a handle.
 
-        This is a wrapper that matches the _Runtime interface.
+        Resolves workflow name, creates StartChildWorkflowInput, and dispatches
+        through the outbound interceptor chain (matching sdk-python pattern).
 
         Args:
             workflow: Workflow class or type name.
             *args: Arguments to pass to the workflow.
             id: Unique workflow ID.
             task_queue: Task queue (defaults to parent's).
+            result_type: Expected result type.
             cancellation_type: How child reacts to parent cancellation.
             parent_close_policy: What happens when parent closes.
             execution_timeout: Total timeout including retries.
@@ -618,35 +621,103 @@ class WorkflowRuntime:
         Returns:
             A handle to the started child workflow.
         """
-        from temporalio_trio.workflow import ChildWorkflowHandle, _Definition
+        from temporalio_trio.worker._interceptor import StartChildWorkflowInput
+        from temporalio_trio.workflow import _Definition
 
-        # Extract workflow type name
+        self._assert_not_read_only("start child workflow")
+
+        # Resolve name (match sdk-python)
+        name: str
+        arg_types: list[type] | None = None
+        ret_type = result_type
         if isinstance(workflow, str):
-            workflow_type = workflow
-        elif isinstance(workflow, type):
-            # It's a class
-            defn = _Definition.from_class(workflow)
-            workflow_type = (defn.name if defn else None) or workflow.__name__
-        elif hasattr(workflow, "__temporal_workflow_run"):
-            # It's a method decorated with @workflow.run
-            # Extract class name from __qualname__ (e.g., "MyWorkflow.run" -> "MyWorkflow")
-            qualname = getattr(workflow, "__qualname__", "")
-            if "." in qualname:
-                workflow_type = qualname.rsplit(".", 1)[0]
-            else:
-                workflow_type = getattr(workflow, "__name__", str(workflow))
+            name = workflow
+        elif callable(workflow):
+            defn = _Definition.must_from_run_fn(workflow)
+            if not defn.name:
+                raise TypeError("Cannot invoke dynamic workflow explicitly")
+            name = defn.name
+            arg_types = defn.arg_types
+            if ret_type is None:
+                ret_type = defn.ret_type
         else:
-            # Fallback - try to get the name
-            workflow_type = getattr(workflow, "__name__", str(workflow))
+            raise TypeError("Workflow must be a string or callable")
+
+        return await self.outbound_interceptor.start_child_workflow(
+            StartChildWorkflowInput(
+                workflow=name,
+                args=args,
+                id=id,
+                task_queue=task_queue,
+                cancellation_type=cancellation_type,
+                parent_close_policy=parent_close_policy,
+                execution_timeout=execution_timeout,
+                run_timeout=run_timeout,
+                task_timeout=task_timeout,
+                id_reuse_policy=id_reuse_policy,
+                retry_policy=retry_policy,
+                cron_schedule=cron_schedule,
+                memo=memo,
+                search_attributes=search_attributes,
+                headers={},
+                arg_types=arg_types,
+                ret_type=ret_type,
+                versioning_intent=versioning_intent,
+                static_summary=static_summary,
+                static_details=static_details,
+                priority=priority,
+            )
+        )
+
+    async def _outbound_start_child_workflow(
+        self, input: Any
+    ) -> "ChildWorkflowHandle":
+        """Create the StartChildWorkflowCommand from a StartChildWorkflowInput.
+
+        Called by the terminal outbound interceptor (_WorkflowOutboundImpl).
+        This contains the actual command creation logic.
+        """
+        from temporalio_trio.workflow import ChildWorkflowHandle
 
         # Get seq for this child workflow
         seq = self.next_child_workflow_seq()
 
+        # Default task_queue to workflow's task queue if not specified
+        actual_task_queue = (
+            input.task_queue if input.task_queue is not None else self.task_queue
+        )
+
+        # Create context-aware payload converter (matches sdk-python)
+        converter = self._payload_converter_with_context(
+            temporalio.converter.WorkflowSerializationContext(
+                namespace=self.namespace,
+                workflow_id=input.id,
+            )
+        )
+
+        # Pre-encode args
+        encoded_args = converter.to_payloads(list(input.args)) if input.args else []
+
+        # Pre-encode memo
+        encoded_memo = None
+        if input.memo:
+            encoded_memo = {
+                k: converter.to_payloads([v])[0] for k, v in input.memo.items()
+            }
+
+        # Pre-encode static_summary and static_details
+        encoded_summary = (
+            converter.to_payload(input.static_summary) if input.static_summary else None
+        )
+        encoded_details = (
+            converter.to_payload(input.static_details) if input.static_details else None
+        )
+
         # Create the handle
         handle: ChildWorkflowHandle = ChildWorkflowHandle(
             seq=seq,
-            id=id,
-            workflow_type=workflow_type,
+            id=input.id,
+            workflow_type=input.workflow,
         )
 
         # Check if already started (replay path)
@@ -670,29 +741,37 @@ class WorkflowRuntime:
         completion_event = trio.Event()
         self.pending_children[seq] = completion_event
 
-        # Default task_queue to workflow's task queue if not specified
-        actual_task_queue = task_queue if task_queue is not None else self.task_queue
-
         # Emit command
         self.commands.append(
             StartChildWorkflowCommand(
                 seq=seq,
-                workflow_type=workflow_type,
-                workflow_id=id,
-                args=args,
+                workflow_type=input.workflow,
+                workflow_id=input.id,
+                args=encoded_args,
                 task_queue=actual_task_queue,
-                execution_timeout=execution_timeout,
-                run_timeout=run_timeout,
-                task_timeout=task_timeout,
-                cron_schedule=cron_schedule,
-                memo=memo,
-                search_attributes=search_attributes,
-                versioning_intent=int(versioning_intent)
-                if versioning_intent is not None
+                execution_timeout=input.execution_timeout,
+                run_timeout=input.run_timeout,
+                task_timeout=input.task_timeout,
+                parent_close_policy=int(input.parent_close_policy)
+                if input.parent_close_policy is not None
+                else 1,
+                cancellation_type=int(input.cancellation_type)
+                if input.cancellation_type is not None
+                else 2,
+                id_reuse_policy=int(input.id_reuse_policy)
+                if input.id_reuse_policy is not None
+                else 1,
+                retry_policy=input.retry_policy,
+                cron_schedule=input.cron_schedule,
+                encoded_memo=encoded_memo,
+                search_attributes=input.search_attributes,
+                headers=input.headers or {},
+                versioning_intent=int(input.versioning_intent)
+                if input.versioning_intent is not None
                 else None,
-                static_summary=static_summary,
-                static_details=static_details,
-                priority=priority,
+                static_summary_payload=encoded_summary,
+                static_details_payload=encoded_details,
+                priority=input.priority,
             )
         )
 
@@ -931,6 +1010,15 @@ class WorkflowRuntime:
         Raises:
             RuntimeError: If the signal fails (e.g., workflow not found).
         """
+        # Create context-aware payload converter
+        converter = self._payload_converter_with_context(
+            temporalio.converter.WorkflowSerializationContext(
+                namespace=self.namespace,
+                workflow_id=workflow_id,
+            )
+        )
+        encoded_args = converter.to_payloads(list(args)) if args else []
+
         # Increment sequence number
         self.signal_external_seq += 1
         seq = self.signal_external_seq
@@ -953,7 +1041,7 @@ class WorkflowRuntime:
                 workflow_id=workflow_id,
                 signal_name=signal_name,
                 run_id=run_id,
-                args=tuple(args),
+                args=encoded_args,
             )
         )
 
@@ -1905,13 +1993,16 @@ class WorkflowRuntime:
         # Default task_queue to workflow's task queue if not specified
         actual_task_queue = task_queue if task_queue is not None else self.task_queue
 
+        # Pre-encode args using the payload converter
+        encoded_args = self.payload_converter.to_payloads(list(args)) if args else []
+
         # Emit command
         self.commands.append(
             StartChildWorkflowCommand(
                 seq=seq,
                 workflow_type=workflow,
                 workflow_id=workflow_id,
-                args=args,
+                args=encoded_args,
                 task_queue=actual_task_queue,
                 execution_timeout=execution_timeout,
                 run_timeout=run_timeout,

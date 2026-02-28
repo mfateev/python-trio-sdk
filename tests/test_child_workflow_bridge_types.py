@@ -194,14 +194,18 @@ class TestPocToBridgeCompletionChildWorkflow:
         assert start_cmd.workflow_type == "ChildWorkflow"
 
     def test_start_child_workflow_with_args(self):
-        """Test converting StartChildWorkflowCommand with arguments."""
+        """Test converting StartChildWorkflowCommand with pre-encoded arguments."""
         data_converter = temporalio.converter.DataConverter()
 
+        # Pre-encode args (matching the new pattern)
+        encoded_args = data_converter.payload_converter.to_payloads(
+            ["arg1", 42, {"key": "value"}]
+        )
         cmd = StartChildWorkflowCommand(
             seq=1,
             workflow_id="child-1",
             workflow_type="ChildWorkflow",
-            args=("arg1", 42, {"key": "value"}),
+            args=encoded_args,
         )
         completion = WorkflowActivationCompletion(commands=[cmd])
 

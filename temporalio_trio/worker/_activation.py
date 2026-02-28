@@ -796,8 +796,8 @@ class StartChildWorkflowCommand:
     workflow_type: str
     """Name of the workflow type to execute."""
 
-    args: tuple[Any, ...] = field(default_factory=tuple)
-    """Arguments to pass to the child workflow."""
+    args: list[temporalio.api.common.v1.Payload] = field(default_factory=list)
+    """Pre-encoded arguments to pass to the child workflow."""
 
     task_queue: str | None = None
     """Task queue to run child on (defaults to parent's)."""
@@ -826,8 +826,8 @@ class StartChildWorkflowCommand:
     cron_schedule: str = ""
     """Cron schedule string for the child workflow."""
 
-    memo: Mapping[str, Any] | None = None
-    """Memo key-value pairs to attach to the child workflow."""
+    encoded_memo: Mapping[str, temporalio.api.common.v1.Payload] | None = None
+    """Pre-encoded memo payloads to attach to the child workflow."""
 
     search_attributes: Optional[
         Union[
@@ -844,11 +844,11 @@ class StartChildWorkflowCommand:
     versioning_intent: Optional[int] = None
     """Versioning intent for Worker Versioning."""
 
-    static_summary: Optional[str] = None
-    """Static summary for the child workflow."""
+    static_summary_payload: temporalio.api.common.v1.Payload | None = None
+    """Pre-encoded static summary payload for the child workflow."""
 
-    static_details: Optional[str] = None
-    """Static details for the child workflow."""
+    static_details_payload: temporalio.api.common.v1.Payload | None = None
+    """Pre-encoded static details payload for the child workflow."""
 
     priority: temporalio.common.Priority = field(
         default_factory=lambda: temporalio.common.Priority.default
@@ -904,13 +904,16 @@ class SignalExternalWorkflowCommand:
     run_id: str | None = None
     """Optional specific run ID (None/empty = current run)."""
 
-    args: tuple[Any, ...] = field(default_factory=tuple)
-    """Arguments to pass with the signal."""
+    args: list[temporalio.api.common.v1.Payload] = field(default_factory=list)
+    """Pre-encoded arguments to pass with the signal."""
 
     headers: Mapping[str, temporalio.api.common.v1.Payload] = field(
         default_factory=dict
     )
     """Headers to attach to the signal (e.g. for tracing/auth interceptors)."""
+
+    child_workflow_id: str | None = None
+    """If set, this signal targets a child workflow (uses child_workflow_id proto field)."""
 
 
 @dataclass
