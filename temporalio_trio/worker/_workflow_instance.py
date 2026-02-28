@@ -1242,13 +1242,14 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         *args: Any,
         id: str,
         task_queue: str | None,
-        cancellation_type: ChildWorkflowCancellationType,
-        parent_close_policy: ParentClosePolicy,
-        execution_timeout: timedelta | None,
-        run_timeout: timedelta | None,
-        task_timeout: timedelta | None,
-        id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
-        retry_policy: temporalio.common.RetryPolicy | None,
+        result_type: type | None = None,
+        cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+        parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
+        execution_timeout: timedelta | None = None,
+        run_timeout: timedelta | None = None,
+        task_timeout: timedelta | None = None,
+        id_reuse_policy: temporalio.common.WorkflowIDReusePolicy = temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+        retry_policy: temporalio.common.RetryPolicy | None = None,
         cron_schedule: str = "",
         memo: Mapping[str, Any] | None = None,
         search_attributes: temporalio.common.SearchAttributes
@@ -1344,13 +1345,30 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         if self._cancel_requested:
             raise _WorkflowCancelled()
 
+        # Pre-encode args, memo, summary, details using default converter
+        import temporalio.converter
+
+        converter = temporalio.converter.DataConverter.default.payload_converter
+        encoded_args = converter.to_payloads(list(args)) if args else []
+        encoded_memo = None
+        if memo:
+            encoded_memo = {
+                k: converter.to_payloads([v])[0] for k, v in memo.items()
+            }
+        encoded_summary = (
+            converter.to_payload(static_summary) if static_summary else None
+        )
+        encoded_details = (
+            converter.to_payload(static_details) if static_details else None
+        )
+
         # Child workflow hasn't started yet - create command and yield
         self._commands.append(
             StartChildWorkflowCommand(
                 seq=seq,
                 workflow_id=id,
                 workflow_type=workflow_type,
-                args=tuple(args),
+                args=encoded_args,
                 task_queue=task_queue,
                 execution_timeout=execution_timeout,
                 run_timeout=run_timeout,
@@ -1360,8 +1378,11 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 retry_policy=retry_policy,
                 id_reuse_policy=id_reuse_policy.value,
                 cron_schedule=cron_schedule,
-                memo=memo,
+                encoded_memo=encoded_memo,
                 search_attributes=search_attributes,
+                static_summary_payload=encoded_summary,
+                static_details_payload=encoded_details,
+                priority=priority,
             )
         )
         self._pending_child_seq = seq
@@ -1574,13 +1595,19 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 raise failure
             return
 
+        # Pre-encode signal args
+        import temporalio.converter
+
+        converter = temporalio.converter.DataConverter.default.payload_converter
+        encoded_args = converter.to_payloads(list(args)) if args else []
+
         # Add the command to signal the external workflow
         cmd = SignalExternalWorkflowCommand(
             seq=seq,
             workflow_id=workflow_id,
             signal_name=signal_name,
             run_id=run_id,
-            args=tuple(args),
+            args=encoded_args,
         )
         self._commands.append(cmd)
 

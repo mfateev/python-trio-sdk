@@ -1450,12 +1450,53 @@ class _WorkflowOutboundImpl(WorkflowOutboundInterceptor):
         return self._runtime.workflow_info()
 
     async def signal_child_workflow(self, input: SignalChildWorkflowInput) -> None:
-        await self._runtime.workflow_signal_external_workflow(
-            input.child_workflow_id,
-            input.signal,
-            input.args,
-            run_id=None,
+        import temporalio.converter
+
+        from temporalio_trio.worker._activation import SignalExternalWorkflowCommand
+
+        # Create context-aware converter for encoding signal args
+        converter = self._runtime._payload_converter_with_context(
+            temporalio.converter.WorkflowSerializationContext(
+                namespace=self._runtime.namespace,
+                workflow_id=input.child_workflow_id,
+            )
         )
+        encoded_args = converter.to_payloads(list(input.args)) if input.args else []
+
+        seq = self._runtime.next_signal_external_seq()
+
+        # Check replay
+        if seq in self._runtime.completed_external_signals:
+            error = self._runtime.completed_external_signals[seq]
+            if error is not None:
+                raise error
+            return
+
+        # Create suspension event
+        event = trio.Event()
+        self._runtime.pending_external_signals[seq] = event
+
+        # Emit command with child_workflow_id (not workflow_execution)
+        self._runtime.commands.append(
+            SignalExternalWorkflowCommand(
+                seq=seq,
+                workflow_id=input.child_workflow_id,
+                signal_name=input.signal,
+                child_workflow_id=input.child_workflow_id,
+                args=encoded_args,
+                headers=input.headers or {},
+            )
+        )
+
+        if self._runtime.on_suspend is not None:
+            self._runtime.on_suspend()
+
+        await event.wait()
+
+        if seq in self._runtime.completed_external_signals:
+            error = self._runtime.completed_external_signals[seq]
+            if error is not None:
+                raise error
 
     async def signal_external_workflow(
         self, input: SignalExternalWorkflowInput
@@ -1471,31 +1512,7 @@ class _WorkflowOutboundImpl(WorkflowOutboundInterceptor):
         return self._runtime._outbound_schedule_activity(input)
 
     async def start_child_workflow(self, input: StartChildWorkflowInput) -> Any:
-        from temporalio_trio.workflow import (
-            ChildWorkflowCancellationType,
-            ParentClosePolicy,
-        )
-
-        return await self._runtime.workflow_start_child_workflow(
-            input.workflow,
-            *input.args,
-            id=input.id,
-            task_queue=input.task_queue,
-            cancellation_type=ChildWorkflowCancellationType(input.cancellation_type),
-            parent_close_policy=ParentClosePolicy(input.parent_close_policy),
-            execution_timeout=input.execution_timeout,
-            run_timeout=input.run_timeout,
-            task_timeout=input.task_timeout,
-            id_reuse_policy=input.id_reuse_policy,
-            retry_policy=input.retry_policy,
-            cron_schedule=input.cron_schedule,
-            memo=input.memo,
-            search_attributes=input.search_attributes,  # type: ignore[arg-type]
-            versioning_intent=input.versioning_intent,
-            static_summary=input.static_summary,
-            static_details=input.static_details,
-            priority=input.priority,
-        )
+        return await self._runtime._outbound_start_child_workflow(input)
 
     def start_local_activity(self, input: StartLocalActivityInput) -> Any:
         return self._runtime._outbound_schedule_local_activity(input)

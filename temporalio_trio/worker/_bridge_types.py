@@ -903,10 +903,9 @@ def poc_to_bridge_completion(
             if cmd.task_queue:
                 bridge_cmd.start_child_workflow_execution.task_queue = cmd.task_queue
 
-            # Encode arguments
-            for arg in cmd.args:
-                payload = data_converter.payload_converter.to_payload(arg)
-                bridge_cmd.start_child_workflow_execution.input.append(payload)
+            # Extend with pre-encoded arguments
+            if cmd.args:
+                bridge_cmd.start_child_workflow_execution.input.extend(cmd.args)
 
             # Convert timeouts to Duration protobufs
             if cmd.execution_timeout:
@@ -948,12 +947,10 @@ def poc_to_bridge_completion(
                     cmd.cron_schedule
                 )
 
-            # Encode memo
-            if cmd.memo:
-                for k, val in cmd.memo.items():
-                    bridge_cmd.start_child_workflow_execution.memo[k].CopyFrom(
-                        data_converter.payload_converter.to_payloads([val])[0]
-                    )
+            # Apply pre-encoded memo
+            if cmd.encoded_memo:
+                for k, payload in cmd.encoded_memo.items():
+                    bridge_cmd.start_child_workflow_execution.memo[k].CopyFrom(payload)
 
             # Encode search attributes
             if cmd.search_attributes:
@@ -974,16 +971,12 @@ def poc_to_bridge_completion(
                 )
 
             # Add static summary/details as user_metadata
-            if cmd.static_summary or cmd.static_details:
+            if cmd.static_summary_payload or cmd.static_details_payload:
                 meta = user_metadata_pb.UserMetadata()
-                if cmd.static_summary:
-                    meta.summary.CopyFrom(
-                        data_converter.payload_converter.to_payload(cmd.static_summary)
-                    )
-                if cmd.static_details:
-                    meta.details.CopyFrom(
-                        data_converter.payload_converter.to_payload(cmd.static_details)
-                    )
+                if cmd.static_summary_payload:
+                    meta.summary.CopyFrom(cmd.static_summary_payload)
+                if cmd.static_details_payload:
+                    meta.details.CopyFrom(cmd.static_details_payload)
                 bridge_cmd.user_metadata.CopyFrom(meta)
 
             # Set priority
@@ -999,16 +992,20 @@ def poc_to_bridge_completion(
         elif isinstance(cmd, SignalExternalWorkflowCommand):
             # Convert SignalExternalWorkflowCommand to SignalExternalWorkflowExecution
             bridge_cmd.signal_external_workflow_execution.seq = cmd.seq
-            bridge_cmd.signal_external_workflow_execution.workflow_execution.workflow_id = cmd.workflow_id
-            # Set run_id only if provided (empty = signal current run)
-            if cmd.run_id:
-                bridge_cmd.signal_external_workflow_execution.workflow_execution.run_id = cmd.run_id
+            if cmd.child_workflow_id:
+                # Child workflow signal uses child_workflow_id
+                bridge_cmd.signal_external_workflow_execution.child_workflow_id = cmd.child_workflow_id
+            else:
+                # External workflow signal uses workflow_execution
+                bridge_cmd.signal_external_workflow_execution.workflow_execution.workflow_id = cmd.workflow_id
+                # Set run_id only if provided (empty = signal current run)
+                if cmd.run_id:
+                    bridge_cmd.signal_external_workflow_execution.workflow_execution.run_id = cmd.run_id
             bridge_cmd.signal_external_workflow_execution.signal_name = cmd.signal_name
 
-            # Encode signal arguments
-            for arg in cmd.args:
-                payload = data_converter.payload_converter.to_payload(arg)
-                bridge_cmd.signal_external_workflow_execution.args.append(payload)
+            # Extend with pre-encoded signal arguments
+            if cmd.args:
+                bridge_cmd.signal_external_workflow_execution.args.extend(cmd.args)
 
             # Apply headers
             temporalio.common._apply_headers(

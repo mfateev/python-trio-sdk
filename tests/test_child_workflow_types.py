@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 import temporalio.common
+import temporalio.converter
 
 from temporalio_trio.worker._activation import (
     CancelChildWorkflowCommand,
@@ -154,7 +155,7 @@ class TestStartChildWorkflowCommand:
         assert cmd.seq == 1
         assert cmd.workflow_id == "child-1"
         assert cmd.workflow_type == "ChildWorkflow"
-        assert cmd.args == ()
+        assert cmd.args == []
         assert cmd.task_queue is None
         assert cmd.execution_timeout is None
         assert cmd.run_timeout is None
@@ -170,11 +171,13 @@ class TestStartChildWorkflowCommand:
             initial_interval=timedelta(seconds=1),
             maximum_attempts=3,
         )
+        converter = temporalio.converter.DataConverter.default.payload_converter
+        encoded_args = converter.to_payloads(["arg1", "arg2"])
         cmd = StartChildWorkflowCommand(
             seq=1,
             workflow_id="child-1",
             workflow_type="ChildWorkflow",
-            args=("arg1", "arg2"),
+            args=encoded_args,
             task_queue="child-queue",
             execution_timeout=timedelta(hours=1),
             run_timeout=timedelta(minutes=30),
@@ -187,7 +190,7 @@ class TestStartChildWorkflowCommand:
         assert cmd.seq == 1
         assert cmd.workflow_id == "child-1"
         assert cmd.workflow_type == "ChildWorkflow"
-        assert cmd.args == ("arg1", "arg2")
+        assert len(cmd.args) == 2
         assert cmd.task_queue == "child-queue"
         assert cmd.execution_timeout == timedelta(hours=1)
         assert cmd.run_timeout == timedelta(minutes=30)

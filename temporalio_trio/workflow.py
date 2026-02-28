@@ -632,6 +632,7 @@ class _Runtime(ABC):
         *args: Any,
         id: str,
         task_queue: str | None,
+        result_type: type | None,
         cancellation_type: ChildWorkflowCancellationType,
         parent_close_policy: ParentClosePolicy,
         execution_timeout: timedelta | None,
@@ -1027,6 +1028,31 @@ class _SignalDefinition:
         """Get signal definition from a function if it has one."""
         return getattr(fn, "__temporal_signal_definition", None)
 
+    @staticmethod
+    def must_name_from_fn_or_str(signal: str | Callable) -> str:
+        """Get signal name from a function or string, raising if not found.
+
+        Args:
+            signal: Signal name string or decorated method reference.
+
+        Returns:
+            The signal name.
+
+        Raises:
+            RuntimeError: If signal definition not found or is dynamic.
+        """
+        if callable(signal):
+            defn = _SignalDefinition.from_fn(signal)
+            if not defn:
+                raise RuntimeError(
+                    f"Signal definition not found on {signal.__qualname__}, "
+                    "is it decorated with @workflow.signal?"
+                )
+            elif not defn.name:
+                raise RuntimeError("Cannot invoke dynamic signal definition")
+            return defn.name
+        return str(signal)
+
     def __post_init__(self) -> None:
         if self.arg_types is None:
             arg_types, _ = temporalio.common._type_hints_from_func(self.fn)
@@ -1194,6 +1220,28 @@ class _Definition:
             The workflow definition, or None if not a workflow run method.
         """
         return getattr(fn, "__temporal_workflow_definition", None)
+
+    @staticmethod
+    def must_from_run_fn(fn: Callable[..., Awaitable[Any]]) -> _Definition:
+        """Get definition from a workflow's run method, raising if not found.
+
+        Args:
+            fn: The run method to get definition from.
+
+        Returns:
+            The workflow definition.
+
+        Raises:
+            ValueError: If the function is not a workflow run method.
+        """
+        ret = _Definition.from_run_fn(fn)
+        if ret:
+            return ret
+        fn_name = getattr(fn, "__qualname__", "<unknown>")
+        raise ValueError(
+            f"Function {fn_name} missing attributes, was it decorated with "
+            f"@workflow.run and was its class decorated with @workflow.defn?"
+        )
 
 
 def init(fn: F) -> F:
@@ -2748,18 +2796,11 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
         Raises:
             RuntimeError: If the signal fails (e.g., workflow not found).
         """
-        # Get signal name from string or callable
-        if callable(signal):
-            signal_defn = _SignalDefinition.from_fn(signal)
-            if signal_defn and signal_defn.name:
-                signal_name = signal_defn.name
-            else:
-                signal_name = signal.__name__
-        else:
-            signal_name = signal
+        runtime = _Runtime.current()
+        runtime._workflow_runtime()._assert_not_read_only("signal child handle")
+        signal_name = _SignalDefinition.must_name_from_fn_or_str(signal)
 
         # Route through outbound interceptor if available
-        runtime = _Runtime.current()
         resolved_args = temporalio.common._arg_or_args(arg, args)
         outbound = getattr(runtime, "outbound_interceptor", None)
         if outbound is not None:
@@ -2778,6 +2819,20 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
             resolved_args,
             run_id=self._first_execution_run_id,
         )
+
+    def cancel(self) -> bool:
+        """Request cancellation of the child workflow.
+
+        Returns:
+            True if the cancellation request was sent.
+        """
+        from temporalio_trio.worker._activation import CancelChildWorkflowCommand
+
+        runtime = _Runtime.current()
+        rt = runtime._workflow_runtime()
+        rt._assert_not_read_only("cancel child workflow handle")
+        rt.commands.append(CancelChildWorkflowCommand(seq=self._seq))
+        return True
 
     def __await__(self):
         """Support `await handle` syntax.
@@ -2880,15 +2935,10 @@ class ExternalWorkflowHandle(Generic[SelfType]):
         Raises:
             RuntimeError: If the signal fails (e.g., workflow not found).
         """
-        # Get signal name from string or callable
-        if callable(signal):
-            signal_defn = _SignalDefinition.from_fn(signal)
-            if signal_defn and signal_defn.name:
-                signal_name = signal_defn.name
-            else:
-                signal_name = signal.__name__
-        else:
-            signal_name = signal
+        self._runtime._workflow_runtime()._assert_not_read_only(
+            "signal external handle"
+        )
+        signal_name = _SignalDefinition.must_name_from_fn_or_str(signal)
 
         resolved_args = temporalio.common._arg_or_args(arg, args)
         outbound = getattr(self._runtime, "outbound_interceptor", None)
@@ -2917,6 +2967,9 @@ class ExternalWorkflowHandle(Generic[SelfType]):
         This will fail if the workflow cannot accept the request (e.g. if the
         workflow is not found).
         """
+        self._runtime._workflow_runtime()._assert_not_read_only(
+            "cancel external handle"
+        )
         await self._runtime.workflow_cancel_external_workflow(
             self._workflow_id,
             run_id=self._run_id,
@@ -3092,59 +3145,13 @@ async def start_child_workflow(
         _NotInWorkflowContextError: If not in a workflow context.
         RuntimeError: If the child workflow fails to start.
     """
-    runtime = _Runtime.current()
-    resolved_args = temporalio.common._arg_or_args(arg, args)
-    resolved_id = id or str(uuid4())
-    outbound = getattr(runtime, "outbound_interceptor", None)
-    if outbound is not None:
-        # Get workflow name
-        if isinstance(workflow, str):
-            wf_name = workflow
-        elif isinstance(workflow, type):
-            defn = _Definition.from_class(workflow)
-            wf_name = (defn.name or workflow.__name__) if defn else workflow.__name__
-        else:
-            # It's a method reference (e.g., MyWorkflow.run)
-            defn = _Definition.from_run_fn(workflow)
-            if defn and defn.name:
-                wf_name = defn.name
-            else:
-                qualname = getattr(workflow, "__qualname__", "")
-                wf_name = (
-                    qualname.rsplit(".", 1)[0]
-                    if "." in qualname
-                    else getattr(workflow, "__name__", str(workflow))
-                )
-        return await outbound.start_child_workflow(
-            _interceptor_mod().StartChildWorkflowInput(
-                workflow=wf_name,
-                args=resolved_args,
-                id=resolved_id,
-                task_queue=task_queue,
-                cancellation_type=cancellation_type,
-                parent_close_policy=parent_close_policy,
-                execution_timeout=execution_timeout,
-                run_timeout=run_timeout,
-                task_timeout=task_timeout,
-                id_reuse_policy=id_reuse_policy,
-                retry_policy=retry_policy,
-                cron_schedule=cron_schedule,
-                memo=memo,
-                search_attributes=search_attributes,
-                headers={},
-                versioning_intent=versioning_intent,
-                static_summary=static_summary,
-                static_details=static_details,
-                priority=priority,
-                arg_types=None,
-                ret_type=result_type,
-            )
-        )
-    return await runtime.workflow_start_child_workflow(
+    temporalio.common._warn_on_deprecated_search_attributes(search_attributes)
+    return await _Runtime.current().workflow_start_child_workflow(
         workflow,
-        *resolved_args,
-        id=resolved_id,
+        *temporalio.common._arg_or_args(arg, args),
+        id=id or str(uuid4()),
         task_queue=task_queue,
+        result_type=result_type,
         cancellation_type=cancellation_type,
         parent_close_policy=parent_close_policy,
         execution_timeout=execution_timeout,
@@ -3155,6 +3162,10 @@ async def start_child_workflow(
         cron_schedule=cron_schedule,
         memo=memo,
         search_attributes=search_attributes,
+        versioning_intent=versioning_intent,
+        static_summary=static_summary,
+        static_details=static_details,
+        priority=priority,
     )
 
 
@@ -3245,7 +3256,7 @@ async def execute_child_workflow(
         static_details=static_details,
         priority=priority,
     )
-    return await handle.result()
+    return await handle
 
 
 def continue_as_new(

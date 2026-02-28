@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 
 import temporalio.common
 
+import temporalio.converter
+
 from temporalio_trio import workflow
 from temporalio_trio.worker._activation import (
     ChildWorkflowResolvedJob,
@@ -30,6 +32,12 @@ from temporalio_trio.workflow import (
     ParentClosePolicy,
     _Definition,
 )
+
+
+def _decode_args(encoded_args):
+    """Decode pre-encoded payload args back to Python objects for test assertions."""
+    converter = temporalio.converter.DataConverter.default.payload_converter
+    return tuple(converter.from_payload(p) for p in encoded_args)
 
 
 def make_instance(workflow_cls: type) -> TrioWorkflowInstance:
@@ -85,7 +93,7 @@ class TestChildWorkflowStartCommand:
         assert cmd.seq == 0
         assert cmd.workflow_id == "child-1"
         assert cmd.workflow_type == "ChildWorkflow"
-        assert cmd.args == ("arg1",)
+        assert _decode_args(cmd.args) == ("arg1",)
 
     def test_start_child_workflow_with_all_options(self):
         """Test starting a child workflow with all options."""
@@ -126,7 +134,7 @@ class TestChildWorkflowStartCommand:
         cmd = completion.commands[0]
         assert isinstance(cmd, StartChildWorkflowCommand)
         assert cmd.workflow_id == "child-1"
-        assert cmd.args == ("arg1", "arg2", 42)
+        assert _decode_args(cmd.args) == ("arg1", "arg2", 42)
         assert cmd.task_queue == "child-queue"
         assert cmd.execution_timeout == timedelta(hours=1)
         assert cmd.run_timeout == timedelta(minutes=30)
