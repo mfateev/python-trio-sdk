@@ -27,6 +27,7 @@ from temporalio_trio.worker._activation import (
     WorkflowActivation,
     WorkflowStartedJob,
 )
+import temporalio.converter
 from temporalio_trio.worker._runtime import (
     QueryFailureCommand,
     QuerySuccessCommand,
@@ -38,6 +39,13 @@ from temporalio_trio.worker._runtime import (
 from temporalio_trio.worker._single_thread_worker import SingleThreadWorker
 from temporalio_trio.worker._workflow_state import WorkflowState
 from temporalio_trio.workflow import defn, run
+
+
+def _to_payload(value: Any) -> Any:
+    """Convert a Python value to a protobuf Payload for test jobs."""
+    return temporalio.converter.DataConverter.default.payload_converter.to_payloads(
+        [value]
+    )[0]
 
 # =============================================================================
 # Test Workflows
@@ -1617,7 +1625,7 @@ class TestSingleThreadWorkerChildWorkflowExecution:
 
             # Deliver child workflow resolved activation
             child_activation = _create_activation(
-                jobs=[ChildWorkflowResolvedJob(seq=1, result="child completed!")],
+                jobs=[ChildWorkflowResolvedJob(seq=1, result_payload=_to_payload("child completed!"))],
                 timestamp_ns=2_000_000_000,
                 run_id="run-child",
             )
@@ -1664,7 +1672,7 @@ class TestSingleThreadWorkerChildWorkflowExecution:
 
             # Complete the child workflow
             child_activation = _create_activation(
-                jobs=[ChildWorkflowResolvedJob(seq=1, result="woken up!")],
+                jobs=[ChildWorkflowResolvedJob(seq=1, result_payload=_to_payload("woken up!"))],
                 timestamp_ns=2_000_000_000,
                 run_id="run-wake",
             )
@@ -1705,7 +1713,7 @@ class TestSingleThreadWorkerChildWorkflowExecution:
 
             # Complete first child workflow
             child1_activation = _create_activation(
-                jobs=[ChildWorkflowResolvedJob(seq=1, result="result1")],
+                jobs=[ChildWorkflowResolvedJob(seq=1, result_payload=_to_payload("result1"))],
                 timestamp_ns=2_000_000_000,
                 run_id="run-multi-child",
             )
@@ -1715,7 +1723,7 @@ class TestSingleThreadWorkerChildWorkflowExecution:
 
             # Complete second child workflow
             child2_activation = _create_activation(
-                jobs=[ChildWorkflowResolvedJob(seq=2, result="result2")],
+                jobs=[ChildWorkflowResolvedJob(seq=2, result_payload=_to_payload("result2"))],
                 timestamp_ns=3_000_000_000,
                 run_id="run-multi-child",
             )
@@ -1802,7 +1810,7 @@ class TestSingleThreadWorkerChildWorkflowExecution:
 
             # Complete the child workflow
             child_activation = _create_activation(
-                jobs=[ChildWorkflowResolvedJob(seq=1, result="child done")],
+                jobs=[ChildWorkflowResolvedJob(seq=1, result_payload=_to_payload("child done"))],
                 timestamp_ns=2_000_000_000,
                 run_id="run-combined",
             )
@@ -2130,6 +2138,97 @@ class TestSingleThreadWorkerCancellation:
 
             # Shutdown
             worker.shutdown()
+
+    @pytest.mark.trio
+    async def test_cancel_during_child_workflow_start_emits_cancel_child_command(
+        self,
+    ) -> None:
+        """Test that cancellation during child workflow start-wait emits CancelChildWorkflowCommand.
+
+        When a parent workflow is cancelled while waiting for a child workflow to
+        start, the completion must contain both CancelChildWorkflowCommand (for the
+        child) and CancelWorkflowCommand (for the parent). Without the cancel-child
+        command, the child workflow is orphaned and keeps running.
+        """
+        import temporalio.bridge.proto.workflow_completion.workflow_completion_pb2 as wc
+
+        from temporalio_trio.worker._activation import CancelWorkflowJob
+
+        # Create a bridge that captures completion bytes
+        captured_completions: list[bytes] = []
+
+        class CapturingMockBridge(MockBridge):
+            async def complete_workflow_activation(
+                self, completion_bytes: bytes
+            ) -> None:
+                captured_completions.append(completion_bytes)
+
+        bridge = CapturingMockBridge()
+        worker = SingleThreadWorker(
+            bridge=bridge,  # type: ignore
+            task_queue="test-queue",
+            workflows=[CancellableChildWorkflow],
+        )
+
+        # Start workflow — it will block on child workflow start_event.wait()
+        initial_activation = _create_activation(
+            jobs=[
+                WorkflowStartedJob(
+                    workflow_type="CancellableChildWorkflow", args=()
+                )
+            ],
+            timestamp_ns=1_000_000_000,
+            run_id="run-cancel-child-start",
+        )
+        bridge.add_activation(initial_activation)
+
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(worker.run)
+
+            # Wait for workflow to start and block on child workflow
+            await trio.sleep(0.1)
+            assert "run-cancel-child-start" in worker._workflow_states
+
+            # Send cancellation while workflow is waiting for child start
+            cancel_activation = _create_activation(
+                jobs=[CancelWorkflowJob()],
+                timestamp_ns=2_000_000_000,
+                run_id="run-cancel-child-start",
+            )
+            bridge.add_activation(cancel_activation)
+
+            await trio.sleep(0.1)
+
+            # Shutdown
+            worker.shutdown()
+
+        # Verify completions were captured
+        assert len(captured_completions) >= 2, (
+            f"Expected at least 2 completions, got {len(captured_completions)}"
+        )
+
+        # The second completion (after the cancel activation) should contain
+        # both CancelChildWorkflowCommand and CancelWorkflowCommand
+        cancel_completion = wc.WorkflowActivationCompletion()
+        cancel_completion.ParseFromString(captured_completions[1])
+
+        has_cancel_child = False
+        has_cancel_workflow = False
+        for cmd in cancel_completion.successful.commands:
+            if cmd.HasField("cancel_child_workflow_execution"):
+                has_cancel_child = True
+                assert cmd.cancel_child_workflow_execution.child_workflow_seq == 1
+            if cmd.HasField("cancel_workflow_execution"):
+                has_cancel_workflow = True
+
+        assert has_cancel_child, (
+            "Completion must contain CancelChildWorkflowCommand "
+            f"but only had: {[c.WhichOneof('variant') for c in cancel_completion.successful.commands]}"
+        )
+        assert has_cancel_workflow, (
+            "Completion must contain CancelWorkflowCommand "
+            f"but only had: {[c.WhichOneof('variant') for c in cancel_completion.successful.commands]}"
+        )
 
 
 # =============================================================================

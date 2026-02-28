@@ -473,7 +473,7 @@ def _convert_resolve_child_workflow_start(
             seq=seq,
             workflow_id=resolve.failed.workflow_id,
             workflow_type=resolve.failed.workflow_type,
-            cause=str(resolve.failed.cause),
+            cause=int(resolve.failed.cause),
         )
     elif status == "cancelled":
         # Cancelled during start - treat as start failure
@@ -516,11 +516,10 @@ def _convert_resolve_child_workflow(
     status = child_result.WhichOneof("status")
 
     if status == "completed":
-        # Child completed successfully - decode result
+        # Child completed successfully - keep raw payload for type-aware
+        # deserialization at resolution time (matching sdk-python pattern)
         if child_result.completed.result.ByteSize() > 0:
-            result = data_converter.payload_converter.from_payload(
-                child_result.completed.result
-            )
+            result = child_result.completed.result
     elif status == "failed":
         # Child workflow failed - convert to proper exception type
         # The failure converter produces ChildWorkflowError with __cause__ set
@@ -540,7 +539,7 @@ def _convert_resolve_child_workflow(
 
     return ChildWorkflowResolvedJob(
         seq=seq,
-        result=result,
+        result_payload=result,
         failure=failure,
     )
 

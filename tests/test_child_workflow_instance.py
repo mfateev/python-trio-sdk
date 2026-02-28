@@ -40,6 +40,13 @@ def _decode_args(encoded_args):
     return tuple(converter.from_payload(p) for p in encoded_args)
 
 
+def _to_payload(value):
+    """Convert a Python value to a protobuf Payload for test jobs."""
+    return temporalio.converter.DataConverter.default.payload_converter.to_payloads(
+        [value]
+    )[0]
+
+
 def make_instance(workflow_cls: type) -> TrioWorkflowInstance:
     """Create a workflow instance for testing."""
     defn = _Definition.must_from_class(workflow_cls)
@@ -253,7 +260,7 @@ class TestChildWorkflowResolvedJob:
         act2 = WorkflowActivation(
             jobs=[
                 ChildWorkflowStartedJob(seq=0, run_id="child-run-123"),
-                ChildWorkflowResolvedJob(seq=0, result="hello from child"),
+                ChildWorkflowResolvedJob(seq=0, result_payload=_to_payload("hello from child")),
             ],
             timestamp_ns=2000000000,
         )
@@ -320,14 +327,16 @@ class TestChildWorkflowStartFailedJob:
         class ParentWorkflow:
             @workflow.run
             async def run(self) -> str:
+                from temporalio.exceptions import WorkflowAlreadyStartedError
+
                 try:
                     handle = await workflow.start_child_workflow(
                         "ChildWorkflow",
                         id="child-1",
                     )
                     return "started"
-                except RuntimeError as e:
-                    return f"start failed: {e}"
+                except WorkflowAlreadyStartedError:
+                    return "start failed: already started"
 
         instance = make_instance(ParentWorkflow)
 
@@ -345,7 +354,7 @@ class TestChildWorkflowStartFailedJob:
                     seq=0,
                     workflow_id="child-1",
                     workflow_type="ChildWorkflow",
-                    cause="WORKFLOW_ALREADY_EXISTS",
+                    cause=1,  # WORKFLOW_ALREADY_EXISTS
                 ),
             ],
             timestamp_ns=2000000000,
@@ -356,7 +365,7 @@ class TestChildWorkflowStartFailedJob:
 
         assert len(completion2.commands) == 1
         assert isinstance(completion2.commands[0], CompleteWorkflowCommand)
-        assert "start failed:" in completion2.commands[0].result
+        assert "start failed: already started" in completion2.commands[0].result
 
 
 class TestMultipleChildWorkflows:
@@ -399,7 +408,7 @@ class TestMultipleChildWorkflows:
         act2 = WorkflowActivation(
             jobs=[
                 ChildWorkflowStartedJob(seq=0, run_id="child-run-1"),
-                ChildWorkflowResolvedJob(seq=0, result="hello1"),
+                ChildWorkflowResolvedJob(seq=0, result_payload=_to_payload("hello1")),
             ],
             timestamp_ns=2000000000,
         )
@@ -414,7 +423,7 @@ class TestMultipleChildWorkflows:
         act3 = WorkflowActivation(
             jobs=[
                 ChildWorkflowStartedJob(seq=1, run_id="child-run-2"),
-                ChildWorkflowResolvedJob(seq=1, result="hello2"),
+                ChildWorkflowResolvedJob(seq=1, result_payload=_to_payload("hello2")),
             ],
             timestamp_ns=3000000000,
         )

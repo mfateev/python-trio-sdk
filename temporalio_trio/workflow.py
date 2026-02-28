@@ -25,16 +25,23 @@ from typing import (
     Optional,
     Sequence,
     TypeVar,
+    overload,
 )
+
+from typing_extensions import Concatenate
 
 import temporalio.api.common.v1
 import temporalio.common
 import temporalio.converter
 import temporalio.exceptions
+from temporalio.types import (
+    MethodAsyncNoParam,
+    MethodAsyncSingleParam,
+    MethodSyncOrAsyncNoParam,
+    MethodSyncOrAsyncSingleParam,
+    MultiParamSpec,
+)
 from typing_extensions import TypedDict
-
-if TYPE_CHECKING:
-    pass
 
 
 def _interceptor_mod():
@@ -139,6 +146,7 @@ __all__ = [
 F = TypeVar("F", bound=Callable[..., Any])
 T = TypeVar("T")
 SelfType = TypeVar("SelfType")
+ParamType = TypeVar("ParamType")
 ReturnType = TypeVar("ReturnType")
 
 
@@ -2720,7 +2728,6 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
         self,
         seq: int,
         id: str,
-        workflow_type: str,
         first_execution_run_id: str | None = None,
     ) -> None:
         """Initialize a child workflow handle.
@@ -2728,12 +2735,10 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
         Args:
             seq: Internal sequence number.
             id: Workflow ID.
-            workflow_type: Type name of the child workflow.
             first_execution_run_id: Run ID of the first execution (if known).
         """
         self._seq = seq
         self._id = id
-        self._workflow_type = workflow_type
         self._first_execution_run_id = first_execution_run_id
         self._result: ReturnType | None = None
         self._failure: BaseException | None = None
@@ -2741,13 +2746,8 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
 
     @property
     def id(self) -> str:
-        """Workflow ID of the child workflow."""
+        """ID for the workflow."""
         return self._id
-
-    @property
-    def workflow_type(self) -> str:
-        """Type name of the child workflow."""
-        return self._workflow_type
 
     @property
     def first_execution_run_id(self) -> str | None:
@@ -2779,6 +2779,36 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
             raise self._failure
         return self._result  # type: ignore[return-value]
 
+    @overload
+    async def signal(
+        self,
+        signal: MethodSyncOrAsyncNoParam[SelfType, None],
+    ) -> None: ...
+
+    @overload
+    async def signal(
+        self,
+        signal: MethodSyncOrAsyncSingleParam[SelfType, ParamType, None],
+        arg: ParamType,
+    ) -> None: ...
+
+    @overload
+    async def signal(
+        self,
+        signal: Callable[Concatenate[SelfType, MultiParamSpec], Awaitable[None] | None],
+        *,
+        args: Sequence[Any],
+    ) -> None: ...
+
+    @overload
+    async def signal(
+        self,
+        signal: str,
+        arg: Any = temporalio.common._arg_unset,
+        *,
+        args: Sequence[Any] = [],
+    ) -> None: ...
+
     async def signal(
         self,
         signal: str | Callable,
@@ -2786,38 +2816,23 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
         *,
         args: Sequence[Any] = [],
     ) -> None:
-        """Send a signal to the child workflow.
+        """Signal this child workflow.
 
         Args:
-            signal: Signal name or decorated method reference.
+            signal: Name or method reference for the signal.
             arg: Single argument to the signal.
-            args: Multiple arguments (cannot be set if arg is set).
-
-        Raises:
-            RuntimeError: If the signal fails (e.g., workflow not found).
+            args: Multiple arguments to the signal. Cannot be set if arg is.
         """
         runtime = _Runtime.current()
         runtime._workflow_runtime()._assert_not_read_only("signal child handle")
-        signal_name = _SignalDefinition.must_name_from_fn_or_str(signal)
-
-        # Route through outbound interceptor if available
-        resolved_args = temporalio.common._arg_or_args(arg, args)
-        outbound = getattr(runtime, "outbound_interceptor", None)
-        if outbound is not None:
-            await outbound.signal_child_workflow(
-                _interceptor_mod().SignalChildWorkflowInput(
-                    signal=signal_name,
-                    args=resolved_args,
-                    child_workflow_id=self._id,
-                    headers={},
-                )
+        # Route through outbound interceptor (matching sdk-python pattern)
+        await runtime.outbound_interceptor.signal_child_workflow(
+            _interceptor_mod().SignalChildWorkflowInput(
+                signal=_SignalDefinition.must_name_from_fn_or_str(signal),
+                args=temporalio.common._arg_or_args(arg, args),
+                child_workflow_id=self._id,
+                headers={},
             )
-            return
-        await runtime.workflow_signal_external_workflow(
-            self._id,
-            signal_name,
-            resolved_args,
-            run_id=self._first_execution_run_id,
         )
 
     def cancel(self) -> bool:
@@ -3072,8 +3087,117 @@ def get_external_workflow_handle_for(
 # =============================================================================
 
 
+# Overload for no-param workflow
+@overload
 async def start_child_workflow(
-    workflow: type | str,
+    workflow: MethodAsyncNoParam[SelfType, ReturnType],
+    *,
+    id: str | None = None,
+    task_queue: str | None = None,
+    cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
+    execution_timeout: timedelta | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    id_reuse_policy: temporalio.common.WorkflowIDReusePolicy = temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    cron_schedule: str = "",
+    memo: Mapping[str, Any] | None = None,
+    search_attributes: temporalio.common.SearchAttributes
+    | temporalio.common.TypedSearchAttributes
+    | None = None,
+    versioning_intent: VersioningIntent | None = None,
+    static_summary: str | None = None,
+    static_details: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
+) -> ChildWorkflowHandle[SelfType, ReturnType]: ...
+
+
+# Overload for single-param workflow
+@overload
+async def start_child_workflow(
+    workflow: MethodAsyncSingleParam[SelfType, ParamType, ReturnType],
+    arg: ParamType,
+    *,
+    id: str | None = None,
+    task_queue: str | None = None,
+    cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
+    execution_timeout: timedelta | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    id_reuse_policy: temporalio.common.WorkflowIDReusePolicy = temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    cron_schedule: str = "",
+    memo: Mapping[str, Any] | None = None,
+    search_attributes: temporalio.common.SearchAttributes
+    | temporalio.common.TypedSearchAttributes
+    | None = None,
+    versioning_intent: VersioningIntent | None = None,
+    static_summary: str | None = None,
+    static_details: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
+) -> ChildWorkflowHandle[SelfType, ReturnType]: ...
+
+
+# Overload for multi-param workflow
+@overload
+async def start_child_workflow(
+    workflow: Callable[Concatenate[SelfType, MultiParamSpec], Awaitable[ReturnType]],
+    *,
+    args: Sequence[Any],
+    id: str | None = None,
+    task_queue: str | None = None,
+    cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
+    execution_timeout: timedelta | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    id_reuse_policy: temporalio.common.WorkflowIDReusePolicy = temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    cron_schedule: str = "",
+    memo: Mapping[str, Any] | None = None,
+    search_attributes: temporalio.common.SearchAttributes
+    | temporalio.common.TypedSearchAttributes
+    | None = None,
+    versioning_intent: VersioningIntent | None = None,
+    static_summary: str | None = None,
+    static_details: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
+) -> ChildWorkflowHandle[SelfType, ReturnType]: ...
+
+
+# Overload for string-name workflow
+@overload
+async def start_child_workflow(
+    workflow: str,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    id: str | None = None,
+    task_queue: str | None = None,
+    result_type: type | None = None,
+    cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
+    execution_timeout: timedelta | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    id_reuse_policy: temporalio.common.WorkflowIDReusePolicy = temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    cron_schedule: str = "",
+    memo: Mapping[str, Any] | None = None,
+    search_attributes: temporalio.common.SearchAttributes
+    | temporalio.common.TypedSearchAttributes
+    | None = None,
+    versioning_intent: VersioningIntent | None = None,
+    static_summary: str | None = None,
+    static_details: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
+) -> ChildWorkflowHandle[Any, Any]: ...
+
+
+async def start_child_workflow(
+    workflow: Any,
     arg: Any = temporalio.common._arg_unset,
     *,
     args: Sequence[Any] = [],
@@ -3169,6 +3293,115 @@ async def start_child_workflow(
     )
 
 
+# Overload for no-param workflow
+@overload
+async def execute_child_workflow(
+    workflow: MethodAsyncNoParam[SelfType, ReturnType],
+    *,
+    id: str | None = None,
+    task_queue: str | None = None,
+    cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
+    execution_timeout: timedelta | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    id_reuse_policy: temporalio.common.WorkflowIDReusePolicy = temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    cron_schedule: str = "",
+    memo: Mapping[str, Any] | None = None,
+    search_attributes: temporalio.common.SearchAttributes
+    | temporalio.common.TypedSearchAttributes
+    | None = None,
+    versioning_intent: VersioningIntent | None = None,
+    static_summary: str | None = None,
+    static_details: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
+) -> ReturnType: ...
+
+
+# Overload for single-param workflow
+@overload
+async def execute_child_workflow(
+    workflow: MethodAsyncSingleParam[SelfType, ParamType, ReturnType],
+    arg: ParamType,
+    *,
+    id: str | None = None,
+    task_queue: str | None = None,
+    cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
+    execution_timeout: timedelta | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    id_reuse_policy: temporalio.common.WorkflowIDReusePolicy = temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    cron_schedule: str = "",
+    memo: Mapping[str, Any] | None = None,
+    search_attributes: temporalio.common.SearchAttributes
+    | temporalio.common.TypedSearchAttributes
+    | None = None,
+    versioning_intent: VersioningIntent | None = None,
+    static_summary: str | None = None,
+    static_details: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
+) -> ReturnType: ...
+
+
+# Overload for multi-param workflow
+@overload
+async def execute_child_workflow(
+    workflow: Callable[Concatenate[SelfType, MultiParamSpec], Awaitable[ReturnType]],
+    *,
+    args: Sequence[Any],
+    id: str | None = None,
+    task_queue: str | None = None,
+    cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
+    execution_timeout: timedelta | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    id_reuse_policy: temporalio.common.WorkflowIDReusePolicy = temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    cron_schedule: str = "",
+    memo: Mapping[str, Any] | None = None,
+    search_attributes: temporalio.common.SearchAttributes
+    | temporalio.common.TypedSearchAttributes
+    | None = None,
+    versioning_intent: VersioningIntent | None = None,
+    static_summary: str | None = None,
+    static_details: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
+) -> ReturnType: ...
+
+
+# Overload for string-name workflow
+@overload
+async def execute_child_workflow(
+    workflow: str,
+    arg: Any = temporalio.common._arg_unset,
+    *,
+    args: Sequence[Any] = [],
+    id: str | None = None,
+    task_queue: str | None = None,
+    result_type: type | None = None,
+    cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy: ParentClosePolicy = ParentClosePolicy.TERMINATE,
+    execution_timeout: timedelta | None = None,
+    run_timeout: timedelta | None = None,
+    task_timeout: timedelta | None = None,
+    id_reuse_policy: temporalio.common.WorkflowIDReusePolicy = temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    retry_policy: temporalio.common.RetryPolicy | None = None,
+    cron_schedule: str = "",
+    memo: Mapping[str, Any] | None = None,
+    search_attributes: temporalio.common.SearchAttributes
+    | temporalio.common.TypedSearchAttributes
+    | None = None,
+    versioning_intent: VersioningIntent | None = None,
+    static_summary: str | None = None,
+    static_details: str | None = None,
+    priority: temporalio.common.Priority = temporalio.common.Priority.default,
+) -> Any: ...
+
+
 async def execute_child_workflow(
     workflow: type | str,
     arg: Any = temporalio.common._arg_unset,
@@ -3234,11 +3467,13 @@ async def execute_child_workflow(
         _NotInWorkflowContextError: If not in a workflow context.
         RuntimeError: If the child workflow fails.
     """
-    handle = await start_child_workflow(
+    temporalio.common._warn_on_deprecated_search_attributes(search_attributes)
+    # We call the runtime directly instead of top-level start_child_workflow to
+    # ensure we don't miss new parameters (matching sdk-python pattern)
+    handle = await _Runtime.current().workflow_start_child_workflow(
         workflow,
-        arg,
-        args=args,
-        id=id,
+        *temporalio.common._arg_or_args(arg, args),
+        id=id or str(uuid4()),
         task_queue=task_queue,
         result_type=result_type,
         cancellation_type=cancellation_type,

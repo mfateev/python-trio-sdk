@@ -719,7 +719,7 @@ class ChildWorkflowStartFailedJob:
         seq: Sequence number matching StartChildWorkflowCommand.
         workflow_id: The requested workflow ID.
         workflow_type: The requested workflow type.
-        cause: The reason the child workflow failed to start.
+        cause: The raw cause value (int enum from proto).
     """
 
     seq: int
@@ -731,8 +731,8 @@ class ChildWorkflowStartFailedJob:
     workflow_type: str
     """The requested workflow type."""
 
-    cause: str
-    """The reason the child workflow failed to start."""
+    cause: int
+    """The raw cause value (StartChildWorkflowExecutionFailedCause enum)."""
 
 
 @dataclass
@@ -740,19 +740,22 @@ class ChildWorkflowResolvedJob:
     """Job indicating a child workflow completed, failed, or was cancelled.
 
     This job is sent when a previously started child workflow has finished
-    execution. Either result or failure will be set, but not both.
+    execution. Either result_payload or failure will be set, but not both.
+
+    The result is kept as a raw protobuf Payload so that the runtime can
+    decode it with the correct ret_type hint (matching sdk-python).
 
     Attributes:
         seq: Sequence number matching StartChildWorkflowCommand.
-        result: The result value (if completed successfully).
+        result_payload: The raw result Payload (if completed successfully).
         failure: The exception (if failed or cancelled).
     """
 
     seq: int
     """Sequence number matching the StartChildWorkflowCommand."""
 
-    result: Any | None = None
-    """The result value (if completed successfully)."""
+    result_payload: Any | None = None
+    """The raw protobuf Payload (if completed successfully). Decoded at resolution time."""
 
     failure: BaseException | None = None
     """The exception (if failed or cancelled)."""

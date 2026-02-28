@@ -16,8 +16,10 @@ from typing import Any, Callable, NoReturn, Sequence
 
 import outcome
 import temporalio.api.common.v1
+import temporalio.bridge.proto.child_workflow
 import temporalio.common
 import temporalio.converter
+import temporalio.exceptions
 import trio
 import trio.lowlevel
 
@@ -562,22 +564,37 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 if job.seq in self._child_workflow_events:
                     self._child_workflow_events[job.seq].set()
             elif isinstance(job, ChildWorkflowStartFailedJob):
-                # Child workflow failed to start - store as failure for replay
-                self._resolved_child_workflows[job.seq] = (
-                    None,
-                    RuntimeError(
-                        f"Child workflow '{job.workflow_type}' (id={job.workflow_id}) "
-                        f"failed to start: {job.cause}"
-                    ),
-                )
+                # Child workflow failed to start - match sdk-python exception types
+                if (
+                    job.cause
+                    == int(
+                        temporalio.bridge.proto.child_workflow.StartChildWorkflowExecutionFailedCause.START_CHILD_WORKFLOW_EXECUTION_FAILED_CAUSE_WORKFLOW_ALREADY_EXISTS
+                    )
+                ):
+                    err: BaseException = (
+                        temporalio.exceptions.WorkflowAlreadyStartedError(
+                            job.workflow_id, job.workflow_type
+                        )
+                    )
+                else:
+                    err = RuntimeError(
+                        f"Unknown child start fail cause: {job.cause}"
+                    )
+                self._resolved_child_workflows[job.seq] = (None, err)
                 if self._pending_child_seq == job.seq:
                     self._pending_child_seq = None
                 # Set event to wake workflow (guest mode)
                 if job.seq in self._child_workflow_events:
                     self._child_workflow_events[job.seq].set()
             elif isinstance(job, ChildWorkflowResolvedJob):
-                # Child workflow completed - store result for replay
-                self._resolved_child_workflows[job.seq] = (job.result, job.failure)
+                # Child workflow completed - decode result with type hints
+                decoded_result = None
+                if job.result_payload is not None:
+                    converter = temporalio.converter.DataConverter.default.payload_converter
+                    decoded_result = converter.from_payloads(
+                        [job.result_payload]
+                    )[0]
+                self._resolved_child_workflows[job.seq] = (decoded_result, job.failure)
                 if self._pending_child_seq == job.seq:
                     self._pending_child_seq = None
                 # Set event to wake workflow (guest mode)
@@ -1310,7 +1327,6 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         handle: ChildWorkflowHandle[Any, Any] = ChildWorkflowHandle(
             seq=seq,
             id=id,
-            workflow_type=workflow_type,
         )
 
         # Check if this child workflow has already resolved (replay)
