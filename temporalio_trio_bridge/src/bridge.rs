@@ -21,7 +21,7 @@ use parking_lot::Mutex;
 use pyo3::prelude::*;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::sync::Mutex as AsyncMutex;
+
 
 /// Main bridge class exposed to Python
 ///
@@ -54,7 +54,7 @@ impl TrioAsyncBridge {
         let core_worker = Arc::new(CoreWorkerHandle::new());
         let core_worker_clone = core_worker.clone();
         // Use async mutex for core_client to allow concurrent client operations
-        let core_client = Arc::new(AsyncMutex::new(CoreClientHandle::new()));
+        let core_client = Arc::new(CoreClientHandle::new());
         let core_client_clone = core_client.clone();
         let replay_worker = Arc::new(ReplayWorkerHandle::new());
         let replay_worker_clone = replay_worker.clone();
@@ -152,7 +152,7 @@ impl TrioAsyncBridge {
         mut rx: mpsc::UnboundedReceiver<Request>,
         shutdown: Arc<Mutex<bool>>,
         core_worker: Arc<CoreWorkerHandle>,
-        core_client: Arc<AsyncMutex<CoreClientHandle>>,
+        core_client: Arc<CoreClientHandle>,
         replay_worker: Arc<ReplayWorkerHandle>,
     ) {
         // Create Tokio runtime (single-threaded)
@@ -206,7 +206,7 @@ impl TrioAsyncBridge {
     async fn process_request_async(
         request: Request,
         core_worker: Arc<CoreWorkerHandle>,
-        core_client: Arc<AsyncMutex<CoreClientHandle>>,
+        core_client: Arc<CoreClientHandle>,
         replay_worker: Arc<ReplayWorkerHandle>,
     ) {
         let request_id = request.request_id.clone();
@@ -247,7 +247,7 @@ impl TrioAsyncBridge {
     async fn handle_operation(
         request: &Request,
         core_worker: Arc<CoreWorkerHandle>,
-        core_client: Arc<AsyncMutex<CoreClientHandle>>,
+        core_client: Arc<CoreClientHandle>,
         replay_worker: Arc<ReplayWorkerHandle>,
     ) -> RequestResult {
         match request.operation.as_str() {
@@ -405,7 +405,7 @@ impl TrioAsyncBridge {
                     }
                 };
 
-                let mut client = core_client.lock().await;
+                let client = &*core_client;
                 match client.initialize(config).await {
                     Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
                     Err(e) => RequestResult::error(
@@ -416,7 +416,7 @@ impl TrioAsyncBridge {
             }
 
             "start_workflow" => {
-                let client = core_client.lock().await;
+                let client = &*core_client;
                 match client.start_workflow_execution(request.data.clone()).await {
                     Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
                     Err(e) => RequestResult::error(
@@ -444,7 +444,7 @@ impl TrioAsyncBridge {
                     }
                 };
 
-                let client = core_client.lock().await;
+                let client = &*core_client;
                 match client.get_workflow_result(req.workflow_id, req.run_id).await {
                     Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
                     Err(e) => RequestResult::error(
@@ -473,7 +473,7 @@ impl TrioAsyncBridge {
                     }
                 };
 
-                let client = core_client.lock().await;
+                let client = &*core_client;
                 match client
                     .get_workflow_execution_history(req.workflow_id, req.run_id, req.next_page_token)
                     .await
@@ -503,7 +503,7 @@ impl TrioAsyncBridge {
                     }
                 };
 
-                let client = core_client.lock().await;
+                let client = &*core_client;
                 match client.cancel_workflow_execution(req.workflow_id, req.run_id).await {
                     Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
                     Err(e) => RequestResult::error(
@@ -531,7 +531,7 @@ impl TrioAsyncBridge {
                     }
                 };
 
-                let client = core_client.lock().await;
+                let client = &*core_client;
                 match client
                     .terminate_workflow_execution(req.workflow_id, req.run_id, req.reason)
                     .await
@@ -565,7 +565,7 @@ impl TrioAsyncBridge {
                     }
                 };
 
-                let client = core_client.lock().await;
+                let client = &*core_client;
                 match client
                     .query_workflow(req.workflow_id, req.run_id, req.query_type, req.args_bytes, req.reject_condition)
                     .await
@@ -595,7 +595,7 @@ impl TrioAsyncBridge {
                     }
                 };
 
-                let client = core_client.lock().await;
+                let client = &*core_client;
                 match client
                     .describe_workflow_execution(req.workflow_id, req.run_id)
                     .await
@@ -609,7 +609,7 @@ impl TrioAsyncBridge {
             }
 
             "list_workflows" => {
-                let client = core_client.lock().await;
+                let client = &*core_client;
                 match client
                     .list_workflow_executions(request.data.clone())
                     .await
@@ -623,7 +623,7 @@ impl TrioAsyncBridge {
             }
 
             "count_workflows" => {
-                let client = core_client.lock().await;
+                let client = &*core_client;
                 match client
                     .count_workflow_executions(request.data.clone())
                     .await
@@ -655,7 +655,7 @@ impl TrioAsyncBridge {
                     }
                 };
 
-                let client = core_client.lock().await;
+                let client = &*core_client;
                 match client
                     .signal_workflow(req.workflow_id, req.run_id, req.signal_name, req.args_bytes)
                     .await
@@ -669,7 +669,7 @@ impl TrioAsyncBridge {
             }
 
             "update_workflow" => {
-                let client = core_client.lock().await;
+                let client = &*core_client;
                 match client.update_workflow(request.data.clone()).await {
                     Ok(bytes) => RequestResult::success(
                         request.request_id.clone(),
@@ -683,7 +683,7 @@ impl TrioAsyncBridge {
             }
 
             "poll_workflow_execution_update" => {
-                let client = core_client.lock().await;
+                let client = &*core_client;
                 match client
                     .poll_workflow_execution_update(request.data.clone())
                     .await

@@ -740,15 +740,17 @@ class ChildWorkflowResolvedJob:
     """Job indicating a child workflow completed, failed, or was cancelled.
 
     This job is sent when a previously started child workflow has finished
-    execution. Either result_payload or failure will be set, but not both.
+    execution. Either result_payload or failure_proto will be set, but not both.
 
-    The result is kept as a raw protobuf Payload so that the runtime can
-    decode it with the correct ret_type hint (matching sdk-python).
+    Both result and failure are kept as raw protobufs so that the runtime can
+    decode them with the correct context-aware converter and ret_type hint
+    (matching sdk-python's pattern where handle._payload_converter and
+    handle._failure_converter are used).
 
     Attributes:
         seq: Sequence number matching StartChildWorkflowCommand.
         result_payload: The raw result Payload (if completed successfully).
-        failure: The exception (if failed or cancelled).
+        failure_proto: The raw Failure protobuf (if failed or cancelled).
     """
 
     seq: int
@@ -757,8 +759,8 @@ class ChildWorkflowResolvedJob:
     result_payload: Any | None = None
     """The raw protobuf Payload (if completed successfully). Decoded at resolution time."""
 
-    failure: BaseException | None = None
-    """The exception (if failed or cancelled)."""
+    failure_proto: Any | None = None
+    """The raw protobuf Failure (if failed or cancelled). Converted at resolution time."""
 
 
 # =============================================================================
@@ -798,6 +800,9 @@ class StartChildWorkflowCommand:
 
     workflow_type: str
     """Name of the workflow type to execute."""
+
+    namespace: str = ""
+    """Namespace for the child workflow."""
 
     args: list[temporalio.api.common.v1.Payload] = field(default_factory=list)
     """Pre-encoded arguments to pass to the child workflow."""

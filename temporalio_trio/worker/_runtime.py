@@ -279,6 +279,9 @@ class WorkflowRuntime:
     child_workflow_ret_types: dict[int, type | None] = field(default_factory=dict)
     """Return type hints for child workflows: seq -> ret_type (for deserialization)."""
 
+    child_workflow_ids: dict[int, str] = field(default_factory=dict)
+    """Child workflow IDs: seq -> workflow_id (for context-aware serialization)."""
+
     completed_external_signals: dict[int, BaseException | None] = field(
         default_factory=dict
     )
@@ -372,6 +375,11 @@ class WorkflowRuntime:
     )
     """Payload converter for serializing/deserializing workflow data."""
 
+    failure_converter: "temporalio.converter.FailureConverter" = field(
+        default_factory=lambda: temporalio.converter.DataConverter.default.failure_converter
+    )
+    """Failure converter for converting failures to/from exceptions."""
+
     _read_only: bool = False
     """Whether the runtime is in read-only mode (e.g., during query handling)."""
 
@@ -415,6 +423,21 @@ class WorkflowRuntime:
         if isinstance(payload_converter, temporalio.converter.WithSerializationContext):
             payload_converter = payload_converter.with_context(context)
         return payload_converter
+
+    def _failure_converter_with_context(
+        self,
+        context: temporalio.converter.SerializationContext,
+    ) -> temporalio.converter.FailureConverter:
+        """Construct failure converter with the given serialization context.
+
+        This plays a similar role to sdk-python's _failure_converter_with_context.
+        If the converter supports context, returns a context-aware wrapper.
+        Otherwise returns the original converter.
+        """
+        failure_converter = self.failure_converter
+        if isinstance(failure_converter, temporalio.converter.WithSerializationContext):
+            failure_converter = failure_converter.with_context(context)
+        return failure_converter
 
     def workflow_time_ns(self) -> int:
         """Get current workflow time in nanoseconds.
@@ -687,9 +710,11 @@ class WorkflowRuntime:
         # Get seq for this child workflow
         seq = self.next_child_workflow_seq()
 
-        # Store ret_type for type-aware deserialization at resolution time
-        # (matches sdk-python: handle._input.ret_type used in _convert_payloads)
+        # Store ret_type and workflow ID for type-aware deserialization and
+        # context-aware conversion at resolution time (matches sdk-python:
+        # handle._input.ret_type and handle._input.id used in resolution)
         self.child_workflow_ret_types[seq] = input.ret_type
+        self.child_workflow_ids[seq] = input.id
 
         # Default task_queue to workflow's task queue if not specified
         actual_task_queue = (
@@ -755,6 +780,7 @@ class WorkflowRuntime:
                 seq=seq,
                 workflow_type=input.workflow,
                 workflow_id=input.id,
+                namespace=self.namespace,
                 args=encoded_args,
                 task_queue=actual_task_queue,
                 execution_timeout=input.execution_timeout,

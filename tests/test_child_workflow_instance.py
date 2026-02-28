@@ -303,7 +303,7 @@ class TestChildWorkflowResolvedJob:
             jobs=[
                 ChildWorkflowStartedJob(seq=0, run_id="child-run-123"),
                 ChildWorkflowResolvedJob(
-                    seq=0, failure=RuntimeError("Child workflow error")
+                    seq=0, failure_proto=RuntimeError("Child workflow error")
                 ),
             ],
             timestamp_ns=2000000000,

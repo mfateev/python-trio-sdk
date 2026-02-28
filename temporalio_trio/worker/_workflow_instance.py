@@ -587,14 +587,29 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 if job.seq in self._child_workflow_events:
                     self._child_workflow_events[job.seq].set()
             elif isinstance(job, ChildWorkflowResolvedJob):
-                # Child workflow completed - decode result with type hints
+                # Child workflow completed - decode result and failure
                 decoded_result = None
+                failure: BaseException | None = None
                 if job.result_payload is not None:
                     converter = temporalio.converter.DataConverter.default.payload_converter
                     decoded_result = converter.from_payloads(
                         [job.result_payload]
                     )[0]
-                self._resolved_child_workflows[job.seq] = (decoded_result, job.failure)
+                elif job.failure_proto is not None:
+                    if isinstance(job.failure_proto, BaseException):
+                        # Already a Python exception (unit test path)
+                        failure = job.failure_proto
+                    else:
+                        # Raw protobuf Failure from bridge - convert
+                        from temporalio_trio.worker._failure_converter import (
+                            failure_to_exception,
+                        )
+
+                        failure = failure_to_exception(
+                            job.failure_proto,
+                            temporalio.converter.DataConverter.default.payload_converter,
+                        )
+                self._resolved_child_workflows[job.seq] = (decoded_result, failure)
                 if self._pending_child_seq == job.seq:
                     self._pending_child_seq = None
                 # Set event to wake workflow (guest mode)

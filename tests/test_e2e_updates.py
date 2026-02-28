@@ -751,18 +751,28 @@ class UpdateCompletionAfterWorkflowReturnWorkflow:
 
     Ported from sdk-python's
     UpdateCompletionIsHonoredWhenAfterWorkflowReturn1Workflow.
+
+    Note: The workflow waits for the update to be received before returning,
+    to avoid a race where the workflow completes before the update arrives.
+    This is necessary because the trio SDK shares a single bridge between
+    client and worker, unlike sdk-python which can queue the update on the
+    server before starting the worker.
     """
 
     def __init__(self) -> None:
         self._workflow_returned = False
+        self._update_received = False
 
     @workflow.run
     async def run(self) -> str:
+        # Wait for the update to be received before returning
+        await workflow.wait_condition(lambda: self._update_received)
         self._workflow_returned = True
         return "workflow-result"
 
     @workflow.update
     async def my_update(self) -> str:
+        self._update_received = True
         await workflow.wait_condition(lambda: self._workflow_returned)
         return "update-result"
 

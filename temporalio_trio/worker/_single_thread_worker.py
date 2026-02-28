@@ -502,6 +502,7 @@ class SingleThreadWorker:
             on_suspend=state.signal_commands_ready,
             disable_eager_activity_execution=self._disable_eager_activity_execution,
             payload_converter=self._data_converter.payload_converter,
+            failure_converter=self._data_converter.failure_converter,
         )
         state.runtime = runtime
 
@@ -862,26 +863,43 @@ class SingleThreadWorker:
                     cause=job.cause,
                 )
             elif isinstance(job, ChildWorkflowResolvedJob):
-                # Decode result payload with ret_type hint (matching
-                # sdk-python's _apply_resolve_child_workflow_execution)
+                # Decode result/failure with context-aware converters scoped
+                # to the child workflow ID (matching sdk-python's pattern where
+                # handle._payload_converter and handle._failure_converter are
+                # created with the child's workflow ID context)
+                child_workflow_id = runtime.child_workflow_ids.get(
+                    job.seq, runtime.workflow_id
+                )
+                child_context = temporalio.converter.WorkflowSerializationContext(
+                    namespace=runtime.namespace,
+                    workflow_id=child_workflow_id,
+                )
                 decoded_result = None
+                error: BaseException | None = None
                 if job.result_payload is not None:
                     ret_type = runtime.child_workflow_ret_types.get(job.seq)
                     ret_types = [ret_type] if ret_type else None
                     converter = runtime._payload_converter_with_context(
-                        temporalio.converter.WorkflowSerializationContext(
-                            namespace=runtime.namespace,
-                            workflow_id=runtime.workflow_id,
-                        )
+                        child_context
                     )
                     decoded_vals = converter.from_payloads(
                         [job.result_payload], type_hints=ret_types
                     )
                     decoded_result = decoded_vals[0] if decoded_vals else None
+                elif job.failure_proto is not None:
+                    failure_converter = runtime._failure_converter_with_context(
+                        child_context
+                    )
+                    payload_converter = runtime._payload_converter_with_context(
+                        child_context
+                    )
+                    error = failure_converter.from_failure(
+                        job.failure_proto, payload_converter
+                    )
                 runtime.apply_child_workflow_resolved(
                     seq=job.seq,
                     result=decoded_result,
-                    error=job.failure,
+                    error=error,
                 )
             elif isinstance(job, SignalExternalResolvedJob):
                 runtime.apply_signal_external_resolved(

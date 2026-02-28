@@ -112,7 +112,7 @@ class TestConvertResolveChildWorkflow:
         assert result.result_payload is not None
         decoded = data_converter.payload_converter.from_payloads([result.result_payload])
         assert decoded[0] == "hello world"
-        assert result.failure is None
+        assert result.failure_proto is None
 
     def test_completed_complex_result(self):
         """Test converting completed child workflow with complex result."""
@@ -135,12 +135,10 @@ class TestConvertResolveChildWorkflow:
         assert result.result_payload is not None
         decoded = data_converter.payload_converter.from_payloads([result.result_payload])
         assert decoded[0] == {"key": "value", "count": 42}
-        assert result.failure is None
+        assert result.failure_proto is None
 
     def test_failed(self):
-        """Test converting failed child workflow."""
-        from temporalio.exceptions import FailureError
-
+        """Test converting failed child workflow - failure kept as raw proto."""
         data_converter = temporalio.converter.DataConverter()
 
         # Create bridge protobuf
@@ -153,13 +151,12 @@ class TestConvertResolveChildWorkflow:
         assert isinstance(result, ChildWorkflowResolvedJob)
         assert result.seq == 3
         assert result.result_payload is None
-        assert result.failure is not None
-        # Now uses proper FailureError type instead of RuntimeError
-        assert isinstance(result.failure, FailureError)
-        assert "Child workflow error" in str(result.failure)
+        # failure_proto is the raw protobuf Failure, not a Python exception
+        assert result.failure_proto is not None
+        assert result.failure_proto.message == "Child workflow error"
 
     def test_cancelled(self):
-        """Test converting cancelled child workflow."""
+        """Test converting cancelled child workflow - failure kept as raw proto."""
         data_converter = temporalio.converter.DataConverter()
 
         # Create bridge protobuf
@@ -172,9 +169,9 @@ class TestConvertResolveChildWorkflow:
         assert isinstance(result, ChildWorkflowResolvedJob)
         assert result.seq == 4
         assert result.result_payload is None
-        assert result.failure is not None
-        assert "cancelled" in str(result.failure).lower()
-        assert "Cancelled by parent" in str(result.failure)
+        # failure_proto is the raw protobuf Failure, not a Python exception
+        assert result.failure_proto is not None
+        assert result.failure_proto.message == "Cancelled by parent"
 
 
 class TestPocToBridgeCompletionChildWorkflow:

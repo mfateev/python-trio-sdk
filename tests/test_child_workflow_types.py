@@ -109,22 +109,22 @@ class TestChildWorkflowResolvedJob:
         job = ChildWorkflowResolvedJob(seq=1, result_payload="hello")
         assert job.seq == 1
         assert job.result_payload == "hello"
-        assert job.failure is None
+        assert job.failure_proto is None
 
     def test_creation_with_failure(self):
         """Test creating a ChildWorkflowResolvedJob with failure."""
         error = RuntimeError("Child workflow failed")
-        job = ChildWorkflowResolvedJob(seq=1, failure=error)
+        job = ChildWorkflowResolvedJob(seq=1, failure_proto=error)
         assert job.seq == 1
         assert job.result_payload is None
-        assert job.failure is error
+        assert job.failure_proto is error
 
     def test_creation_defaults(self):
         """Test default values."""
         job = ChildWorkflowResolvedJob(seq=1)
         assert job.seq == 1
         assert job.result_payload is None
-        assert job.failure is None
+        assert job.failure_proto is None
 
     def test_equality(self):
         """Test equality comparison."""
