@@ -58,12 +58,12 @@ class TestChildWorkflowStartFailedJob:
             seq=1,
             workflow_id="child-1",
             workflow_type="ChildWorkflow",
-            cause="WORKFLOW_ALREADY_EXISTS",
+            cause=1,
         )
         assert job.seq == 1
         assert job.workflow_id == "child-1"
         assert job.workflow_type == "ChildWorkflow"
-        assert job.cause == "WORKFLOW_ALREADY_EXISTS"
+        assert job.cause == 1
 
     def test_equality(self):
         """Test equality comparison."""
@@ -71,19 +71,19 @@ class TestChildWorkflowStartFailedJob:
             seq=1,
             workflow_id="child-1",
             workflow_type="ChildWorkflow",
-            cause="WORKFLOW_ALREADY_EXISTS",
+            cause=1,
         )
         job2 = ChildWorkflowStartFailedJob(
             seq=1,
             workflow_id="child-1",
             workflow_type="ChildWorkflow",
-            cause="WORKFLOW_ALREADY_EXISTS",
+            cause=1,
         )
         job3 = ChildWorkflowStartFailedJob(
             seq=2,
             workflow_id="child-2",
             workflow_type="OtherWorkflow",
-            cause="OTHER_CAUSE",
+            cause=99,
         )
 
         assert job1 == job2
@@ -95,7 +95,7 @@ class TestChildWorkflowStartFailedJob:
             seq=1,
             workflow_id="child-1",
             workflow_type="ChildWorkflow",
-            cause="CAUSE",
+            cause=1,
         )
         jobs: list[WorkflowJob] = [job]
         assert len(jobs) == 1
@@ -106,9 +106,9 @@ class TestChildWorkflowResolvedJob:
 
     def test_creation_with_result(self):
         """Test creating a ChildWorkflowResolvedJob with result."""
-        job = ChildWorkflowResolvedJob(seq=1, result="hello")
+        job = ChildWorkflowResolvedJob(seq=1, result_payload="hello")
         assert job.seq == 1
-        assert job.result == "hello"
+        assert job.result_payload == "hello"
         assert job.failure is None
 
     def test_creation_with_failure(self):
@@ -116,28 +116,28 @@ class TestChildWorkflowResolvedJob:
         error = RuntimeError("Child workflow failed")
         job = ChildWorkflowResolvedJob(seq=1, failure=error)
         assert job.seq == 1
-        assert job.result is None
+        assert job.result_payload is None
         assert job.failure is error
 
     def test_creation_defaults(self):
         """Test default values."""
         job = ChildWorkflowResolvedJob(seq=1)
         assert job.seq == 1
-        assert job.result is None
+        assert job.result_payload is None
         assert job.failure is None
 
     def test_equality(self):
         """Test equality comparison."""
-        job1 = ChildWorkflowResolvedJob(seq=1, result="hello")
-        job2 = ChildWorkflowResolvedJob(seq=1, result="hello")
-        job3 = ChildWorkflowResolvedJob(seq=1, result="world")
+        job1 = ChildWorkflowResolvedJob(seq=1, result_payload="hello")
+        job2 = ChildWorkflowResolvedJob(seq=1, result_payload="hello")
+        job3 = ChildWorkflowResolvedJob(seq=1, result_payload="world")
 
         assert job1 == job2
         assert job1 != job3
 
     def test_is_workflow_job(self):
         """Test that ChildWorkflowResolvedJob is a WorkflowJob."""
-        job = ChildWorkflowResolvedJob(seq=1, result="hello")
+        job = ChildWorkflowResolvedJob(seq=1, result_payload="hello")
         jobs: list[WorkflowJob] = [job]
         assert len(jobs) == 1
 
@@ -264,9 +264,9 @@ class TestTypeUnions:
         jobs: list[WorkflowJob] = [
             ChildWorkflowStartedJob(seq=1, run_id="run-1"),
             ChildWorkflowStartFailedJob(
-                seq=2, workflow_id="wf-1", workflow_type="Wf", cause="CAUSE"
+                seq=2, workflow_id="wf-1", workflow_type="Wf", cause=1
             ),
-            ChildWorkflowResolvedJob(seq=3, result="result"),
+            ChildWorkflowResolvedJob(seq=3, result_payload="result"),
         ]
         assert len(jobs) == 3
 

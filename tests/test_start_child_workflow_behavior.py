@@ -15,7 +15,29 @@ with a real Temporal server.
 import pytest
 import trio
 
+import temporalio.common
 from temporalio_trio.worker._runtime import WorkflowRuntime
+from temporalio_trio.workflow import (
+    ChildWorkflowCancellationType,
+    ParentClosePolicy,
+)
+
+# Default kwargs for workflow_start_child_workflow test calls
+_CHILD_WF_DEFAULTS = dict(
+    task_queue="queue",
+    result_type=None,
+    cancellation_type=ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED,
+    parent_close_policy=ParentClosePolicy.TERMINATE,
+    execution_timeout=None,
+    run_timeout=None,
+    task_timeout=None,
+    id_reuse_policy=temporalio.common.WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+    retry_policy=None,
+    cron_schedule="",
+    memo=None,
+    search_attributes=None,
+    versioning_intent=None,
+)
 
 
 def _setup_outbound(runtime: WorkflowRuntime) -> None:
@@ -47,15 +69,7 @@ class TestStartChildWorkflowBehavior:
             handle = await runtime.workflow_start_child_workflow(
                 "Child",
                 id="child-1",
-                task_queue="queue",
-                result_type=None,
-                cancellation_type=None,
-                parent_close_policy=None,
-                execution_timeout=None,
-                run_timeout=None,
-                task_timeout=None,
-                id_reuse_policy=None,
-                retry_policy=None,
+                **_CHILD_WF_DEFAULTS,
             )
 
             # Verify run_id is set immediately after start
@@ -96,15 +110,7 @@ class TestStartChildWorkflowBehavior:
         handle = await runtime.workflow_start_child_workflow(
             "Child",
             id="child-1",
-            task_queue="queue",
-            result_type=None,
-            cancellation_type=None,
-            parent_close_policy=None,
-            execution_timeout=None,
-            run_timeout=None,
-            task_timeout=None,
-            id_reuse_policy=None,
-            retry_policy=None,
+            **_CHILD_WF_DEFAULTS,
         )
 
         # In replay, handle should have run_id immediately
@@ -130,15 +136,7 @@ class TestStartChildWorkflowBehavior:
             handle = await runtime.workflow_start_child_workflow(
                 "Child",
                 id="child-1",
-                task_queue="queue",
-                result_type=None,
-                cancellation_type=None,
-                parent_close_policy=None,
-                execution_timeout=None,
-                run_timeout=None,
-                task_timeout=None,
-                id_reuse_policy=None,
-                retry_policy=None,
+                **_CHILD_WF_DEFAULTS,
             )
 
             # After starting, the child should NOT be in pending_child_starts anymore

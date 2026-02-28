@@ -24,6 +24,7 @@ import temporalio.activity
 import temporalio.api.common.v1
 import temporalio.common
 import temporalio.converter
+import temporalio.exceptions
 import trio
 
 from temporalio_trio.workflow import ActivityCancellationType
@@ -31,9 +32,11 @@ from temporalio_trio.workflow import ActivityCancellationType
 if TYPE_CHECKING:
     from temporalio_trio.workflow import (
         ActivityHandle,
+        ChildWorkflowCancellationType,
         ChildWorkflowHandle,
         ExternalWorkflowHandle,
         Info,
+        ParentClosePolicy,
         VersioningIntent,
     )
 
@@ -272,6 +275,9 @@ class WorkflowRuntime:
 
     started_children: dict[int, str] = field(default_factory=dict)
     """Child workflows that have started: seq -> run_id."""
+
+    child_workflow_ret_types: dict[int, type | None] = field(default_factory=dict)
+    """Return type hints for child workflows: seq -> ret_type (for deserialization)."""
 
     completed_external_signals: dict[int, BaseException | None] = field(
         default_factory=dict
@@ -574,24 +580,24 @@ class WorkflowRuntime:
 
     async def workflow_start_child_workflow(
         self,
-        workflow: str | type,
+        workflow: Any,
         *args: Any,
         id: str,
-        task_queue: str | None = None,
-        result_type: type | None = None,
-        cancellation_type: Any = None,
-        parent_close_policy: Any = None,
-        execution_timeout: timedelta | None = None,
-        run_timeout: timedelta | None = None,
-        task_timeout: timedelta | None = None,
-        id_reuse_policy: Any = None,
-        retry_policy: Any = None,
-        cron_schedule: str = "",
-        memo: Mapping[str, Any] | None = None,
+        task_queue: str | None,
+        result_type: type | None,
+        cancellation_type: "ChildWorkflowCancellationType",
+        parent_close_policy: "ParentClosePolicy",
+        execution_timeout: timedelta | None,
+        run_timeout: timedelta | None,
+        task_timeout: timedelta | None,
+        id_reuse_policy: temporalio.common.WorkflowIDReusePolicy,
+        retry_policy: temporalio.common.RetryPolicy | None,
+        cron_schedule: str,
+        memo: Mapping[str, Any] | None,
         search_attributes: temporalio.common.SearchAttributes
         | temporalio.common.TypedSearchAttributes
-        | None = None,
-        versioning_intent: Any = None,
+        | None,
+        versioning_intent: "VersioningIntent | None",
         static_summary: str | None = None,
         static_details: str | None = None,
         priority: temporalio.common.Priority = temporalio.common.Priority.default,
@@ -638,8 +644,7 @@ class WorkflowRuntime:
                 raise TypeError("Cannot invoke dynamic workflow explicitly")
             name = defn.name
             arg_types = defn.arg_types
-            if ret_type is None:
-                ret_type = defn.ret_type
+            ret_type = defn.ret_type
         else:
             raise TypeError("Workflow must be a string or callable")
 
@@ -682,6 +687,10 @@ class WorkflowRuntime:
         # Get seq for this child workflow
         seq = self.next_child_workflow_seq()
 
+        # Store ret_type for type-aware deserialization at resolution time
+        # (matches sdk-python: handle._input.ret_type used in _convert_payloads)
+        self.child_workflow_ret_types[seq] = input.ret_type
+
         # Default task_queue to workflow's task queue if not specified
         actual_task_queue = (
             input.task_queue if input.task_queue is not None else self.task_queue
@@ -717,7 +726,6 @@ class WorkflowRuntime:
         handle: ChildWorkflowHandle = ChildWorkflowHandle(
             seq=seq,
             id=input.id,
-            workflow_type=input.workflow,
         )
 
         # Check if already started (replay path)
@@ -752,15 +760,9 @@ class WorkflowRuntime:
                 execution_timeout=input.execution_timeout,
                 run_timeout=input.run_timeout,
                 task_timeout=input.task_timeout,
-                parent_close_policy=int(input.parent_close_policy)
-                if input.parent_close_policy is not None
-                else 1,
-                cancellation_type=int(input.cancellation_type)
-                if input.cancellation_type is not None
-                else 2,
-                id_reuse_policy=int(input.id_reuse_policy)
-                if input.id_reuse_policy is not None
-                else 1,
+                parent_close_policy=int(input.parent_close_policy),
+                cancellation_type=int(input.cancellation_type),
+                id_reuse_policy=int(input.id_reuse_policy),
                 retry_policy=input.retry_policy,
                 cron_schedule=input.cron_schedule,
                 encoded_memo=encoded_memo,
@@ -780,7 +782,15 @@ class WorkflowRuntime:
             self.on_suspend()
 
         # Wait for child to START (not complete)
-        await start_event.wait()
+        try:
+            await start_event.wait()
+        except trio.Cancelled:
+            # If cancelled during start-wait, send cancel command for the child
+            # (matching sdk-python's apply_child_cancel_error pattern)
+            from temporalio_trio.worker._activation import CancelChildWorkflowCommand
+
+            self.commands.append(CancelChildWorkflowCommand(seq=seq))
+            raise
 
         # Get run_id and clean up start tracking
         run_id = self.started_children[seq]
@@ -819,7 +829,15 @@ class WorkflowRuntime:
             self.on_suspend()
 
         # Wait for child to complete
-        await event.wait()
+        try:
+            await event.wait()
+        except trio.Cancelled:
+            # If cancelled during result-wait, send cancel command for the child
+            # (matching sdk-python's apply_child_cancel_error pattern)
+            from temporalio_trio.worker._activation import CancelChildWorkflowCommand
+
+            self.commands.append(CancelChildWorkflowCommand(seq=seq))
+            raise
 
         # Get result and clean up
         result = self.completed_children[seq]
@@ -2015,7 +2033,15 @@ class WorkflowRuntime:
             self.on_suspend()
 
         # Suspend until child workflow completes
-        await event.wait()
+        try:
+            await event.wait()
+        except trio.Cancelled:
+            # If cancelled during child-wait, send cancel command for the child
+            # (matching sdk-python's apply_child_cancel_error pattern)
+            from temporalio_trio.worker._activation import CancelChildWorkflowCommand
+
+            self.commands.append(CancelChildWorkflowCommand(seq=seq))
+            raise
 
         # Get result and clean up
         result = self.completed_children[seq]
@@ -2038,12 +2064,13 @@ class WorkflowRuntime:
         """Handle a child workflow resolution job from an activation.
 
         This is called when the activation contains a ChildWorkflowResolved job.
-        It stores the result (or error) and wakes up any suspended workflow
-        that was waiting for this child workflow.
+        The caller is responsible for decoding the result payload with proper
+        ret_type hints before calling this method (matching sdk-python's pattern
+        where _apply_resolve_child_workflow_execution decodes before resolving).
 
         Args:
             seq: The child workflow sequence number that completed.
-            result: The child workflow result (if successful).
+            result: The decoded child workflow result (if successful).
             error: The exception (if the child workflow failed).
         """
         # Store result or error
@@ -2079,36 +2106,47 @@ class WorkflowRuntime:
             self.pending_child_starts[seq].set()
 
     def apply_child_workflow_start_failed(
-        self, seq: int, workflow_id: str, workflow_type: str, cause: str
+        self, seq: int, workflow_id: str, workflow_type: str, cause: int
     ) -> None:
         """Handle a child workflow start failed job from an activation.
 
         This is called when the activation contains a ChildWorkflowStartFailedJob.
         The child workflow could not be started (e.g., workflow ID conflict).
-        We treat this as an immediate failure and wake up the waiting parent.
+
+        Matches sdk-python's _apply_resolve_child_workflow_execution_start:
+        - WORKFLOW_ALREADY_EXISTS cause -> WorkflowAlreadyStartedError
+        - Other causes -> RuntimeError
 
         Args:
             seq: The child workflow sequence number that failed to start.
             workflow_id: The requested workflow ID.
             workflow_type: The requested workflow type.
-            cause: The reason the child workflow failed to start.
+            cause: The raw cause value (StartChildWorkflowExecutionFailedCause enum).
         """
-        from temporalio.exceptions import ChildWorkflowError
+        import temporalio.bridge.proto.child_workflow
 
-        # Create an error to wake the parent with
-        error = ChildWorkflowError(
-            f"Child workflow {workflow_type} ({workflow_id}) failed to start: {cause}",
-            namespace=self.namespace,
-            workflow_id=workflow_id,
-            run_id="",
-            workflow_type=workflow_type,
-            initiated_event_id=0,
-            started_event_id=0,
-            retry_state=None,
-        )
+        # Match sdk-python: check specific cause for proper exception type
+        if (
+            cause
+            == int(
+                temporalio.bridge.proto.child_workflow.StartChildWorkflowExecutionFailedCause.START_CHILD_WORKFLOW_EXECUTION_FAILED_CAUSE_WORKFLOW_ALREADY_EXISTS
+            )
+        ):
+            error: BaseException = (
+                temporalio.exceptions.WorkflowAlreadyStartedError(
+                    workflow_id, workflow_type
+                )
+            )
+        else:
+            error = RuntimeError(
+                f"Unknown child start fail cause: {cause}"
+            )
+
         self.completed_children[seq] = error
 
-        # Wake up the suspended workflow if waiting
+        # Wake up the suspended workflow if waiting for start or completion
+        if seq in self.pending_child_starts:
+            self.pending_child_starts[seq].set()
         if seq in self.pending_children:
             self.pending_children[seq].set()
 

@@ -862,9 +862,25 @@ class SingleThreadWorker:
                     cause=job.cause,
                 )
             elif isinstance(job, ChildWorkflowResolvedJob):
+                # Decode result payload with ret_type hint (matching
+                # sdk-python's _apply_resolve_child_workflow_execution)
+                decoded_result = None
+                if job.result_payload is not None:
+                    ret_type = runtime.child_workflow_ret_types.get(job.seq)
+                    ret_types = [ret_type] if ret_type else None
+                    converter = runtime._payload_converter_with_context(
+                        temporalio.converter.WorkflowSerializationContext(
+                            namespace=runtime.namespace,
+                            workflow_id=runtime.workflow_id,
+                        )
+                    )
+                    decoded_vals = converter.from_payloads(
+                        [job.result_payload], type_hints=ret_types
+                    )
+                    decoded_result = decoded_vals[0] if decoded_vals else None
                 runtime.apply_child_workflow_resolved(
                     seq=job.seq,
-                    result=job.result,
+                    result=decoded_result,
                     error=job.failure,
                 )
             elif isinstance(job, SignalExternalResolvedJob):
