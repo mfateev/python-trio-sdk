@@ -375,11 +375,17 @@ class TestBridgeTypeIntegration:
         data_converter = temporalio.converter.DataConverter()
         poc_act = bridge_to_poc_activation(bridge_act, data_converter)
 
-        # Verify the failure is properly typed
+        # Verify the raw failure proto is preserved (conversion is now deferred
+        # to the SingleThreadWorker for context-aware conversion)
         assert len(poc_act.jobs) == 1
         child_job = poc_act.jobs[0]
-        assert child_job.failure is not None
-        assert isinstance(child_job.failure, ChildWorkflowError)
-        assert child_job.failure.__cause__ is not None
-        assert isinstance(child_job.failure.__cause__, ApplicationError)
-        assert child_job.failure.__cause__.type == "ChildException"
+        assert child_job.failure_proto is not None
+        assert child_job.failure_proto.message == "Child workflow threw error"
+        # Verify the proto can be converted to proper exception types
+        from temporalio_trio.worker._failure_converter import failure_to_exception
+
+        failure = failure_to_exception(child_job.failure_proto, payload_converter)
+        assert isinstance(failure, ChildWorkflowError)
+        assert failure.__cause__ is not None
+        assert isinstance(failure.__cause__, ApplicationError)
+        assert failure.__cause__.type == "ChildException"

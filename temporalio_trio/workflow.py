@@ -2839,8 +2839,11 @@ class ChildWorkflowHandle(Generic[SelfType, ReturnType]):
         """Request cancellation of the child workflow.
 
         Returns:
-            True if the cancellation request was sent.
+            True if the cancellation request was sent, False if the child
+            workflow has already completed.
         """
+        if self._completed:
+            return False
         from temporalio_trio.worker._activation import CancelChildWorkflowCommand
 
         runtime = _Runtime.current()
@@ -3403,7 +3406,7 @@ async def execute_child_workflow(
 
 
 async def execute_child_workflow(
-    workflow: type | str,
+    workflow: Any,
     arg: Any = temporalio.common._arg_unset,
     *,
     args: Sequence[Any] = [],

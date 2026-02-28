@@ -498,18 +498,21 @@ def _convert_resolve_child_workflow(
 ) -> ChildWorkflowResolvedJob:
     """Convert ResolveChildWorkflowExecution to ChildWorkflowResolvedJob.
 
+    Both result and failure are kept as raw protobufs. The caller
+    (SingleThreadWorker) is responsible for converting them using
+    context-aware converters, matching sdk-python's pattern where
+    handle._payload_converter and handle._failure_converter are used.
+
     Args:
         resolve: Bridge ResolveChildWorkflowExecution job
-        data_converter: Data converter for deserializing result payload
+        data_converter: Data converter (unused, kept for API consistency)
 
     Returns:
-        POC ChildWorkflowResolvedJob with result or failure.
-        Failures are converted to proper exception types (ChildWorkflowError, etc.)
-        using the failure converter.
+        ChildWorkflowResolvedJob with raw result payload or failure proto.
     """
     seq = resolve.seq
     result = None
-    failure = None
+    failure_proto = None
 
     # Get the child workflow result
     child_result = resolve.result
@@ -521,26 +524,18 @@ def _convert_resolve_child_workflow(
         if child_result.completed.result.ByteSize() > 0:
             result = child_result.completed.result
     elif status == "failed":
-        # Child workflow failed - convert to proper exception type
-        # The failure converter produces ChildWorkflowError with __cause__ set
-        # to the underlying exception (e.g., ApplicationError)
-        failure = failure_to_exception(
-            child_result.failed.failure,
-            data_converter.payload_converter,
-        )
+        # Keep raw failure proto for context-aware conversion at resolution time
+        failure_proto = child_result.failed.failure
     elif status == "cancelled":
-        # Child workflow was cancelled - convert to proper exception type
-        failure = failure_to_exception(
-            child_result.cancelled.failure,
-            data_converter.payload_converter,
-        )
+        # Keep raw failure proto for context-aware conversion at resolution time
+        failure_proto = child_result.cancelled.failure
     else:
-        failure = RuntimeError(f"Unknown child workflow result status: {status}")
+        raise RuntimeError(f"Unknown child workflow result status: {status}")
 
     return ChildWorkflowResolvedJob(
         seq=seq,
         result_payload=result,
-        failure=failure,
+        failure_proto=failure_proto,
     )
 
 
@@ -897,6 +892,7 @@ def poc_to_bridge_completion(
         elif isinstance(cmd, StartChildWorkflowCommand):
             # Convert StartChildWorkflowCommand to StartChildWorkflowExecution
             bridge_cmd.start_child_workflow_execution.seq = cmd.seq
+            bridge_cmd.start_child_workflow_execution.namespace = cmd.namespace
             bridge_cmd.start_child_workflow_execution.workflow_id = cmd.workflow_id
             bridge_cmd.start_child_workflow_execution.workflow_type = cmd.workflow_type
             if cmd.task_queue:

@@ -1766,7 +1766,7 @@ class TestSingleThreadWorkerChildWorkflowExecution:
             child_activation = _create_activation(
                 jobs=[
                     ChildWorkflowResolvedJob(
-                        seq=1, failure=RuntimeError("Child failed!")
+                        seq=1, failure_proto=RuntimeError("Child failed!")
                     )
                 ],
                 timestamp_ns=2_000_000_000,
