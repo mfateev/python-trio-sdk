@@ -18,7 +18,6 @@ import temporalio.bridge.worker
 import temporalio.converter
 import trio
 
-from temporalio_trio._async_bridge import TrioBridgeWrapper
 from temporalio_trio.runtime import TelemetryConfig
 from temporalio_trio.worker._interceptor import Interceptor
 from temporalio_trio.worker._single_thread_worker import SingleThreadWorker
@@ -275,54 +274,14 @@ class Worker:
             "debug_mode": self._debug_mode,
         }
 
-    def _get_target_url(self) -> str:
-        """Extract target URL from client, supporting both Trio and official SDK clients.
-
-        Returns:
-            Target URL with http/https scheme.
-
-        Raises:
-            RuntimeError: If target URL cannot be extracted from client.
-        """
-        # Try our Trio client's ClientConfig (dataclass with target_url attribute)
-        if hasattr(self._client, "_config"):
-            config = self._client._config
-            # Our temporalio_trio.client.Client uses a ClientConfig dataclass
-            if hasattr(config, "target_url"):
-                target_url = config.target_url
-            # Official temporalio.client.Client uses a dict with service_client
-            elif isinstance(config, dict) and "service_client" in config:
-                service_client = config["service_client"]
-                if hasattr(service_client, "config") and hasattr(
-                    service_client.config, "target_host"
-                ):
-                    target_url = service_client.config.target_host
-                else:
-                    raise RuntimeError(
-                        f"Cannot extract target_url from client: "
-                        f"service_client.config.target_host not found"
-                    )
-            else:
-                raise RuntimeError(
-                    f"Cannot extract target_url from client: "
-                    f"unsupported _config type {type(config)}"
-                )
-        else:
-            raise RuntimeError(
-                f"Cannot extract target_url from client: no _config attribute"
-            )
-
-        # Ensure URL has scheme
-        if not target_url.startswith(("http://", "https://")):
-            target_url = f"http://{target_url}"
-
-        return target_url
-
     async def run(self) -> None:
         """Run the worker and wait on it to be shut down.
 
         This will not return until shutdown is complete. To shut down this worker,
         invoke :py:meth:`shutdown` from another task.
+
+        The worker reuses the Client's bridge and gRPC connection instead of
+        creating its own, matching sdk-python's architecture.
 
         Raises:
             RuntimeError: If the worker has already been started.
@@ -332,16 +291,13 @@ class Worker:
 
         self._started = True
 
-        bridge_wrapper = TrioBridgeWrapper()
-        await bridge_wrapper.start()
+        # Reuse the client's bridge — shared gRPC connection
+        bridge_wrapper = self._client._bridge
+        worker_id: Optional[str] = None
 
         try:
-            # Initialize bridge with Temporal configuration
-            # Extract target_url from client config (supports both Trio and official SDK clients)
-            target_url = self._get_target_url()
-
-            await bridge_wrapper.initialize_with_config(
-                target_url=target_url,
+            # Create a worker on the client's bridge (shares gRPC connection)
+            worker_id = await bridge_wrapper.create_worker(
                 namespace=self._namespace,
                 task_queue=self._task_queue,
                 identity=self._identity,
@@ -373,10 +329,6 @@ class Worker:
                 telemetry=self._telemetry._to_json_dict() if self._telemetry else None,
             )
 
-            # Note: Skipping bridge validation - not implemented in Rust bridge yet
-            # The initialization above already validates connection to Temporal server
-            # await bridge_wrapper.validate()
-
             # Create workflow worker if workflows provided
             self._single_thread_worker = None
             if self._workflows:
@@ -393,6 +345,7 @@ class Worker:
                     or temporalio.converter.DataConverter.default,
                     debug_mode=self._debug_mode,
                     disable_eager_activity_execution=self._disable_eager_activity_execution,
+                    worker_id=worker_id,
                 )
 
             # Create Trio activity worker if activities provided
@@ -408,6 +361,7 @@ class Worker:
                     max_heartbeat_throttle_interval=self._max_heartbeat_throttle_interval,
                     default_heartbeat_throttle_interval=self._default_heartbeat_throttle_interval,
                     interceptors=self._interceptors,
+                    worker_id=worker_id,
                 )
 
             logger.info(f"Starting Trio worker on {self._namespace}/{self._task_queue}")
@@ -429,28 +383,30 @@ class Worker:
 
                 await self._shutdown_event.wait()
 
-                # Initiate bridge shutdown to unblock poll_workflow_activation
-                # This sends PollShutdownError to the poll loops, causing them to exit
-                # But it does NOT close the bridge - in-flight completions can still proceed
-                bridge_wrapper.initiate_shutdown()
+                # Initiate worker shutdown (NOT bridge shutdown — client owns the bridge)
+                bridge_wrapper.initiate_shutdown(worker_id=worker_id)
 
                 # Wait a brief moment for poll loops to receive the shutdown signal
-                # and for any in-flight handlers to complete
                 await trio.sleep(0.1)
 
                 # Cancel the nursery to stop any remaining tasks
-                # At this point, most handlers should have completed gracefully
                 nursery.cancel_scope.cancel()
 
-            # Shutdown bridge - now it's safe since handlers have drained
-            await bridge_wrapper.shutdown()
+            # Finalize worker shutdown (drains in-flight operations for this worker)
+            # Do NOT call bridge_wrapper.shutdown() — the Client owns the bridge lifecycle
+            await bridge_wrapper.finalize_shutdown(worker_id=worker_id)
 
             logger.info("Trio worker stopped")
 
         except Exception:
             logger.exception("Worker failed")
-            # Ensure bridge is shut down on error
-            await bridge_wrapper.shutdown()
+            # Ensure worker is shut down on error (but NOT the bridge)
+            if worker_id:
+                try:
+                    bridge_wrapper.initiate_shutdown(worker_id=worker_id)
+                    await bridge_wrapper.finalize_shutdown(worker_id=worker_id)
+                except Exception:
+                    pass
             raise
         finally:
             self._shutdown_complete = True

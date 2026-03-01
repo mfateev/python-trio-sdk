@@ -234,6 +234,139 @@ class TrioBridgeWrapper:
         if error_container:
             raise error_container[0]
 
+    @staticmethod
+    def _encode_worker_id_prefix(worker_id: str, data: bytes) -> bytes:
+        """Encode worker_id as a length-prefixed prefix before data.
+
+        Format: 4 bytes (big-endian) worker_id length + worker_id UTF-8 + data.
+        Used by complete/heartbeat operations that send protobuf data.
+        """
+        wid_bytes = worker_id.encode("utf-8")
+        return len(wid_bytes).to_bytes(4, byteorder="big") + wid_bytes + data
+
+    async def create_worker(
+        self,
+        *,
+        namespace: str,
+        task_queue: str,
+        identity: Optional[str] = None,
+        max_cached_workflows: int = 1000,
+        max_concurrent_workflow_task_polls: int = 5,
+        nonsticky_to_sticky_poll_ratio: float = 0.2,
+        max_concurrent_activity_task_polls: int = 5,
+        no_remote_activities: bool = False,
+        sticky_queue_schedule_to_start_timeout_millis: int = 10_000,
+        max_heartbeat_throttle_interval_millis: int = 60_000,
+        default_heartbeat_throttle_interval_millis: int = 30_000,
+        max_activities_per_second: Optional[float] = None,
+        max_task_queue_activities_per_second: Optional[float] = None,
+        graceful_shutdown_period_millis: Optional[int] = None,
+        max_concurrent_workflow_tasks: Optional[int] = None,
+        max_concurrent_activities: Optional[int] = None,
+        max_concurrent_local_activities: Optional[int] = None,
+        build_id: Optional[str] = None,
+        telemetry: Optional[dict] = None,
+        timeout: Optional[float] = None,
+    ) -> str:
+        """Create a worker using the already-connected client's gRPC connection.
+
+        Returns a worker_id for use with poll/complete operations.
+        The client must already be initialized via initialize_client().
+
+        Args:
+            namespace: Temporal namespace.
+            task_queue: Task queue name.
+            identity: Worker identity.
+            max_cached_workflows: Maximum cached workflows.
+            ... (same params as initialize_with_config minus target_url and telemetry)
+            timeout: Optional timeout in seconds.
+
+        Returns:
+            worker_id string to pass to all subsequent worker operations.
+
+        Raises:
+            RuntimeError: If bridge is not running or creation fails.
+            trio.TooSlowError: If timeout is exceeded.
+        """
+        self._check_running()
+
+        import json
+
+        config: dict = {
+            "namespace": namespace,
+            "task_queue": task_queue,
+            "identity": identity or "",
+            "max_cached_workflows": max_cached_workflows,
+            "max_concurrent_workflow_task_polls": max_concurrent_workflow_task_polls,
+            "nonsticky_to_sticky_poll_ratio": nonsticky_to_sticky_poll_ratio,
+            "max_concurrent_activity_task_polls": max_concurrent_activity_task_polls,
+            "no_remote_activities": no_remote_activities,
+            "sticky_queue_schedule_to_start_timeout_millis": sticky_queue_schedule_to_start_timeout_millis,
+            "max_heartbeat_throttle_interval_millis": max_heartbeat_throttle_interval_millis,
+            "default_heartbeat_throttle_interval_millis": default_heartbeat_throttle_interval_millis,
+        }
+
+        if max_activities_per_second is not None:
+            config["max_activities_per_second"] = max_activities_per_second
+        if max_task_queue_activities_per_second is not None:
+            config["max_task_queue_activities_per_second"] = (
+                max_task_queue_activities_per_second
+            )
+        if graceful_shutdown_period_millis is not None:
+            config["graceful_shutdown_period_millis"] = graceful_shutdown_period_millis
+        if max_concurrent_workflow_tasks is not None:
+            config["max_concurrent_workflow_tasks"] = max_concurrent_workflow_tasks
+        if max_concurrent_activities is not None:
+            config["max_concurrent_activities"] = max_concurrent_activities
+        if max_concurrent_local_activities is not None:
+            config["max_concurrent_local_activities"] = max_concurrent_local_activities
+        if build_id is not None:
+            config["build_id"] = build_id
+        if telemetry is not None:
+            config["telemetry"] = telemetry
+
+        event = trio.Event()
+        result_container: list = []
+        error_container: list = []
+
+        def deliver_result(result) -> None:
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is None:
+                        error_container.append(
+                            RuntimeError("create_worker returned success without data")
+                        )
+                    else:
+                        # worker_id is returned as UTF-8 bytes
+                        result_container.append(bytes(data_bytes).decode("utf-8"))
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(
+                        RuntimeError(f"create_worker failed: {error_msg}")
+                    )
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(
+            "create_worker", json.dumps(config).encode("utf-8"), deliver_result
+        )
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError("create_worker timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        return result_container[0]
+
     async def initialize_client(
         self,
         target_url: str,
@@ -1186,13 +1319,15 @@ class TrioBridgeWrapper:
 
         return result_container[0]
 
-    async def poll_activity_task(self, timeout: Optional[float] = None) -> bytes:
+    async def poll_activity_task(
+        self,
+        worker_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> bytes:
         """Poll for an activity task.
 
-        This is a fully async operation that polls for activity tasks from
-        the Temporal server via the Rust bridge.
-
         Args:
+            worker_id: Optional worker_id for multi-worker routing.
             timeout: Optional timeout in seconds.
 
         Returns:
@@ -1210,13 +1345,6 @@ class TrioBridgeWrapper:
         error_container: list = []
 
         def deliver_result(result) -> None:
-            """Callback for activity task result."""
-            import logging
-
-            logger = logging.getLogger(__name__)
-            logger.debug(
-                f"poll_activity_task callback received: success={result.success}"
-            )
             try:
                 if result.success:
                     data_bytes = result.get_data()
@@ -1229,24 +1357,16 @@ class TrioBridgeWrapper:
                         )
                     else:
                         result_container.append(bytes(data_bytes))
-                        logger.debug(f"poll_activity_task got {len(data_bytes)} bytes")
                 else:
                     error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(error_msg))
-                    logger.debug(f"poll_activity_task error: {error_msg}")
             except Exception as e:
                 error_container.append(e)
-                logger.debug(f"poll_activity_task callback exception: {e}")
             finally:
-                logger.debug("poll_activity_task setting event")
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        import logging
-
-        logging.getLogger(__name__).debug(
-            "Sending poll_activity_task request to bridge"
-        )
-        self._rust_bridge.send_request("poll_activity_task", b"", deliver_result)
+        data = worker_id.encode("utf-8") if worker_id else b""
+        self._rust_bridge.send_request("poll_activity_task", data, deliver_result)
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
@@ -1263,14 +1383,16 @@ class TrioBridgeWrapper:
         return result_container[0]
 
     async def complete_activity_task(
-        self, completion_bytes: bytes, timeout: Optional[float] = None
+        self,
+        completion_bytes: bytes,
+        worker_id: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> None:
         """Complete an activity task.
 
-        Sends the activity completion back to the Rust bridge for delivery to Temporal.
-
         Args:
             completion_bytes: Serialized activity task completion (protobuf)
+            worker_id: Optional worker_id for multi-worker routing.
             timeout: Optional timeout in seconds
 
         Raises:
@@ -1284,7 +1406,6 @@ class TrioBridgeWrapper:
         error_container: list = []
 
         def deliver_result(result) -> None:
-            """Callback for activity completion acknowledgment."""
             try:
                 if not result.success:
                     error_msg = result.error or "Unknown error"
@@ -1296,9 +1417,12 @@ class TrioBridgeWrapper:
             finally:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        self._rust_bridge.send_request(
-            "complete_activity_task", completion_bytes, deliver_result
+        data = (
+            self._encode_worker_id_prefix(worker_id, completion_bytes)
+            if worker_id
+            else completion_bytes
         )
+        self._rust_bridge.send_request("complete_activity_task", data, deliver_result)
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
@@ -1313,15 +1437,16 @@ class TrioBridgeWrapper:
             raise error_container[0]
 
     async def record_activity_heartbeat(
-        self, heartbeat_bytes: bytes, timeout: Optional[float] = None
+        self,
+        heartbeat_bytes: bytes,
+        worker_id: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> bytes:
         """Record an activity heartbeat.
 
-        Sends heartbeat to the server. Returns any cancellation details if the
-        activity was cancelled.
-
         Args:
             heartbeat_bytes: Serialized heartbeat data (protobuf)
+            worker_id: Optional worker_id for multi-worker routing.
             timeout: Optional timeout in seconds
 
         Returns:
@@ -1339,7 +1464,6 @@ class TrioBridgeWrapper:
         error_container: list = []
 
         def deliver_result(result) -> None:
-            """Callback for heartbeat result."""
             try:
                 if result.success:
                     data_bytes = result.get_data()
@@ -1360,8 +1484,13 @@ class TrioBridgeWrapper:
             finally:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
+        data = (
+            self._encode_worker_id_prefix(worker_id, heartbeat_bytes)
+            if worker_id
+            else heartbeat_bytes
+        )
         self._rust_bridge.send_request(
-            "record_activity_heartbeat", heartbeat_bytes, deliver_result
+            "record_activity_heartbeat", data, deliver_result
         )
 
         if timeout is not None:
@@ -1378,16 +1507,20 @@ class TrioBridgeWrapper:
 
         return result_container[0]
 
-    async def poll_workflow_activation(self, timeout: Optional[float] = None) -> bytes:
+    async def poll_workflow_activation(
+        self,
+        worker_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> bytes:
         """Poll for a workflow activation.
 
         This is a fully async operation that does not block any threads. It sends
         a request to the Rust bridge and awaits the result using a Trio Event.
 
-        The Rust bridge processes the request asynchronously in its Tokio runtime
-        and delivers the result back via a trio.from_thread callback.
-
         Args:
+            worker_id: Optional worker_id for multi-worker routing. If provided,
+                routes to the worker created by create_worker(). If None, uses
+                the legacy single worker.
             timeout: Optional timeout in seconds. If specified and exceeded,
                     raises trio.TooSlowError.
 
@@ -1398,39 +1531,16 @@ class TrioBridgeWrapper:
             RuntimeError: If bridge is not running or trio_token not set
             trio.TooSlowError: If timeout is exceeded
             Exception: Any error from the Rust bridge
-
-        Example:
-            # Poll with no timeout
-            activation = await bridge.poll_workflow_activation()
-
-            # Poll with 30 second timeout
-            try:
-                activation = await bridge.poll_workflow_activation(timeout=30.0)
-            except trio.TooSlowError:
-                print("Poll timed out")
         """
         self._check_running()
 
         event = trio.Event()
-
-        # Container to store result (or error)
-        # We use a list so the callback can modify it
         result_container: list = []
         error_container: list = []
 
         def deliver_result(result) -> None:
-            """Callback invoked from Rust thread when result is ready.
-
-            This is called from the Rust thread and uses trio.from_thread.run_sync
-            to safely deliver the result into the Trio context.
-
-            Args:
-                result: RequestResult struct from the Rust bridge
-            """
             try:
-                # Handle RequestResult struct directly - no JSON parsing!
                 if result.success:
-                    # Extract the protobuf bytes from the struct
                     data_bytes = result.get_data()
                     if data_bytes is None:
                         error_container.append(
@@ -1447,11 +1557,11 @@ class TrioBridgeWrapper:
             except Exception as e:
                 error_container.append(e)
             finally:
-                # This is the magic: Rust thread -> Trio async
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        # Send request to Rust bridge (non-blocking)
-        self._rust_bridge.send_request("poll_activation", b"", deliver_result)
+        # If worker_id is provided, send it as the data for multi-worker routing
+        data = worker_id.encode("utf-8") if worker_id else b""
+        self._rust_bridge.send_request("poll_activation", data, deliver_result)
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
@@ -1468,7 +1578,10 @@ class TrioBridgeWrapper:
         return result_container[0]
 
     async def complete_workflow_activation(
-        self, completion_bytes: bytes, timeout: Optional[float] = None
+        self,
+        completion_bytes: bytes,
+        worker_id: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> None:
         """Complete a workflow activation.
 
@@ -1479,6 +1592,7 @@ class TrioBridgeWrapper:
 
         Args:
             completion_bytes: Serialized workflow activation completion (protobuf)
+            worker_id: Optional worker_id for multi-worker routing.
             timeout: Optional timeout in seconds
 
         Raises:
@@ -1492,9 +1606,7 @@ class TrioBridgeWrapper:
         error_container: list = []
 
         def deliver_result(result) -> None:
-            """Callback for completion acknowledgment."""
             try:
-                # Handle RequestResult struct directly
                 if not result.success:
                     error_msg = result.error or "Unknown error"
                     error_container.append(
@@ -1505,9 +1617,13 @@ class TrioBridgeWrapper:
             finally:
                 trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
 
-        self._rust_bridge.send_request(
-            "complete_activation", completion_bytes, deliver_result
+        # If worker_id, prefix the data with length-prefixed worker_id
+        data = (
+            self._encode_worker_id_prefix(worker_id, completion_bytes)
+            if worker_id
+            else completion_bytes
         )
+        self._rust_bridge.send_request("complete_activation", data, deliver_result)
 
         if timeout is not None:
             with trio.move_on_after(timeout) as cancel_scope:
@@ -1568,40 +1684,32 @@ class TrioBridgeWrapper:
         if error_container:
             raise error_container[0]
 
-    def initiate_shutdown(self) -> None:
-        """Initiate bridge shutdown (synchronous).
+    def initiate_shutdown(self, worker_id: Optional[str] = None) -> None:
+        """Initiate shutdown (synchronous).
 
-        This is a synchronous method that signals the bridge to begin shutdown.
-        It does not wait for shutdown to complete - call finalize_shutdown() for that.
+        When called with a worker_id, shuts down just that worker (the bridge
+        stays alive for the client and other workers). When called without a
+        worker_id, shuts down the legacy single worker and marks the bridge
+        as shutting down.
 
-        This two-phase shutdown allows:
-        1. Synchronous initiation (e.g., from signal handlers)
-        2. Async finalization (waits for in-flight operations)
-
-        Note:
-            After calling this, poll_workflow_activation will stop returning new work.
-            However, complete_workflow_activation will continue to work, allowing
-            in-flight activations to complete gracefully.
+        Args:
+            worker_id: Optional worker_id. If provided, only that worker is
+                shut down. If None, the bridge-level shutdown is initiated.
         """
-        if self._state == BridgeState.SHUTDOWN:
+        if worker_id is None and self._state == BridgeState.SHUTDOWN:
             return
 
-        # Send initiate_shutdown request to the core worker (fire-and-forget)
-        # This tells the core worker to stop polling, which unblocks poll_workflow_activation
-        # but does NOT close the bridge - completions can still be sent
         def noop_callback(result: object) -> None:
-            pass  # Ignore result - this is fire-and-forget
+            pass
 
         try:
-            self._rust_bridge.send_request("initiate_shutdown", b"", noop_callback)
+            data = worker_id.encode("utf-8") if worker_id else b""
+            self._rust_bridge.send_request("initiate_shutdown", data, noop_callback)
         except RuntimeError as e:
-            # Bridge may already be shut down - expected during shutdown
             error_str = str(e).lower()
             if "shutdown" in error_str or "not running" in error_str:
-                # Expected shutdown error, safe to ignore
                 pass
             else:
-                # Unexpected error during shutdown initiation
                 import logging
 
                 logger = logging.getLogger(__name__)
@@ -1610,39 +1718,42 @@ class TrioBridgeWrapper:
                     f"This may indicate a bridge issue."
                 )
 
-        self._state = BridgeState.SHUTDOWN
+        if worker_id is None:
+            self._state = BridgeState.SHUTDOWN
 
-    async def finalize_shutdown(self, timeout: Optional[float] = None) -> None:
-        """Finalize bridge shutdown (async).
+    async def finalize_shutdown(
+        self,
+        worker_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Finalize shutdown (async).
 
-        Waits for all in-flight operations to complete and cleans up resources.
-        This should be called after initiate_shutdown().
-
-        This method is idempotent - calling it multiple times after the first
-        successful call will return immediately without error.
+        When called with a worker_id, finalizes shutdown of just that worker
+        (removes it from the bridge's worker map). When called without a
+        worker_id, finalizes the bridge-level shutdown (legacy worker +
+        closes the Rust bridge).
 
         Args:
-            timeout: Optional timeout in seconds
+            worker_id: Optional worker_id to finalize.
+            timeout: Optional timeout in seconds.
 
         Raises:
-            trio.TooSlowError: If timeout is exceeded
-            Exception: Any errors during shutdown
+            trio.TooSlowError: If timeout is exceeded.
+            Exception: Any errors during shutdown.
         """
-        # Return early if already finalized (idempotent)
-        if self._shutdown_finalized:
-            return
+        # For bridge-level shutdown, check idempotency
+        if worker_id is None:
+            if self._shutdown_finalized:
+                return
 
-        if self._state != BridgeState.SHUTDOWN:
-            # Initiate if not already done
-            self.initiate_shutdown()
+            if self._state != BridgeState.SHUTDOWN:
+                self.initiate_shutdown()
 
         event = trio.Event()
         error_container: list = []
 
         def deliver_result(result) -> None:
-            """Callback for shutdown completion."""
             try:
-                # Handle RequestResult struct directly
                 if not result.success:
                     error_msg = result.error or "Unknown error"
                     error_container.append(RuntimeError(f"Shutdown error: {error_msg}"))
@@ -1652,20 +1763,17 @@ class TrioBridgeWrapper:
                 if self._trio_token:
                     trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
                 else:
-                    # If trio_token is None, just set the event directly
-                    # This shouldn't happen, but handle gracefully
                     event.set()
 
         try:
-            self._rust_bridge.send_request("finalize_shutdown", b"", deliver_result)
+            data = worker_id.encode("utf-8") if worker_id else b""
+            self._rust_bridge.send_request("finalize_shutdown", data, deliver_result)
         except RuntimeError as e:
-            # Handle case where bridge is already fully shutdown
             error_str = str(e).lower()
             if "shutdown" in error_str or "not running" in error_str:
-                # Expected shutdown error - bridge already finalized
-                self._shutdown_finalized = True
+                if worker_id is None:
+                    self._shutdown_finalized = True
                 return
-            # Unexpected error - re-raise
             import logging
 
             logger = logging.getLogger(__name__)
@@ -1681,15 +1789,14 @@ class TrioBridgeWrapper:
         else:
             await event.wait()
 
-        self._shutdown_finalized = True
+        if worker_id is None:
+            self._shutdown_finalized = True
 
-        # Now it's safe to close the Rust bridge completely
-        # All operations have been drained
-        try:
-            self._rust_bridge.shutdown()
-        except RuntimeError:
-            # Bridge may already be shut down, ignore
-            pass
+            # Now it's safe to close the Rust bridge completely
+            try:
+                self._rust_bridge.shutdown()
+            except RuntimeError:
+                pass
 
         if error_container:
             raise error_container[0]

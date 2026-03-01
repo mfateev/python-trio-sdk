@@ -200,7 +200,7 @@ class MockBridge:
         self._activation_ready_event.set()
 
     async def poll_workflow_activation(
-        self, timeout: float | None = None
+        self, worker_id: str | None = None, timeout: float | None = None
     ) -> WorkflowActivation:
         """Return the next activation or wait for shutdown."""
         while True:
@@ -218,12 +218,14 @@ class MockBridge:
             with trio.move_on_after(0.1):
                 await self._activation_ready_event.wait()
 
-    async def complete_workflow_activation(self, completion_bytes: bytes) -> None:
+    async def complete_workflow_activation(
+        self, completion_bytes: bytes, worker_id: str | None = None
+    ) -> None:
         """Record completion for verification."""
         # For mock, we just track that completion was called
         pass
 
-    def initiate_shutdown(self) -> None:
+    def initiate_shutdown(self, worker_id: str | None = None) -> None:
         """Signal shutdown."""
         self._shutdown = True
         self._activation_ready_event.set()
@@ -2159,7 +2161,7 @@ class TestSingleThreadWorkerCancellation:
 
         class CapturingMockBridge(MockBridge):
             async def complete_workflow_activation(
-                self, completion_bytes: bytes
+                self, completion_bytes: bytes, worker_id: str | None = None
             ) -> None:
                 captured_completions.append(completion_bytes)
 

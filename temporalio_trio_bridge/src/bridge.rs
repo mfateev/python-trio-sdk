@@ -14,11 +14,12 @@
  */
 
 use crate::core_client::{ClientInitConfig, CoreClientHandle};
-use crate::core_worker::{CoreWorkerHandle, ReplayWorkerHandle, ReplayWorkerInitConfig, WorkerInitConfig};
+use crate::core_worker::{CoreWorkerHandle, ReplayWorkerHandle, ReplayWorkerInitConfig, WorkerCreateConfig, WorkerInitConfig};
 use crate::request::{Request, RequestResult};
 use futures_util::FutureExt;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -50,9 +51,14 @@ impl TrioAsyncBridge {
         let shutdown = Arc::new(Mutex::new(false));
         let shutdown_clone = shutdown.clone();
 
-        // Create Core Worker, Client, and Replay Worker Handles
+        // Create Core Worker (legacy single-worker for backward compat),
+        // Worker Map (for create_worker multi-worker support),
+        // Client, and Replay Worker Handles
         let core_worker = Arc::new(CoreWorkerHandle::new());
         let core_worker_clone = core_worker.clone();
+        let core_workers: Arc<tokio::sync::Mutex<HashMap<String, Arc<CoreWorkerHandle>>>> =
+            Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let core_workers_clone = core_workers.clone();
         // Use async mutex for core_client to allow concurrent client operations
         let core_client = Arc::new(CoreClientHandle::new());
         let core_client_clone = core_client.clone();
@@ -63,7 +69,7 @@ impl TrioAsyncBridge {
         std::thread::Builder::new()
             .name("RustTokioThread".to_string())
             .spawn(move || {
-                Self::rust_event_loop(rx, shutdown_clone, core_worker_clone, core_client_clone, replay_worker_clone);
+                Self::rust_event_loop(rx, shutdown_clone, core_worker_clone, core_workers_clone, core_client_clone, replay_worker_clone);
             })
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
@@ -152,6 +158,7 @@ impl TrioAsyncBridge {
         mut rx: mpsc::UnboundedReceiver<Request>,
         shutdown: Arc<Mutex<bool>>,
         core_worker: Arc<CoreWorkerHandle>,
+        core_workers: Arc<tokio::sync::Mutex<HashMap<String, Arc<CoreWorkerHandle>>>>,
         core_client: Arc<CoreClientHandle>,
         replay_worker: Arc<ReplayWorkerHandle>,
     ) {
@@ -190,9 +197,10 @@ impl TrioAsyncBridge {
                 // Spawn async task to process request
                 // This allows concurrent processing of multiple requests
                 let core_worker_clone = core_worker.clone();
+                let core_workers_clone = core_workers.clone();
                 let core_client_clone = core_client.clone();
                 let replay_worker_clone = replay_worker.clone();
-                tokio::spawn(Self::process_request_async(request, core_worker_clone, core_client_clone, replay_worker_clone));
+                tokio::spawn(Self::process_request_async(request, core_worker_clone, core_workers_clone, core_client_clone, replay_worker_clone));
             }
         });
     }
@@ -206,6 +214,7 @@ impl TrioAsyncBridge {
     async fn process_request_async(
         request: Request,
         core_worker: Arc<CoreWorkerHandle>,
+        core_workers: Arc<tokio::sync::Mutex<HashMap<String, Arc<CoreWorkerHandle>>>>,
         core_client: Arc<CoreClientHandle>,
         replay_worker: Arc<ReplayWorkerHandle>,
     ) {
@@ -214,7 +223,7 @@ impl TrioAsyncBridge {
         // Wrap processing in catch_unwind to handle panics
         // Must do this before moving callback since we need request reference
         let panic_result = std::panic::AssertUnwindSafe(
-            Self::handle_operation(&request, core_worker, core_client, replay_worker)
+            Self::handle_operation(&request, core_worker, core_workers, core_client, replay_worker)
         ).catch_unwind().await;
 
         // Move callback after processing (can't do this before because handle_operation needs &request)
@@ -244,13 +253,104 @@ impl TrioAsyncBridge {
     ///
     /// This is where actual async work happens.
     /// Routes operations to the appropriate CoreWorkerHandle or CoreClientHandle methods.
+    /// Helper: resolve a worker handle from a worker_id string, looking up
+    /// in the multi-worker map. Returns error if not found.
+    async fn get_worker_by_id(
+        worker_id: &str,
+        core_workers: &Arc<tokio::sync::Mutex<HashMap<String, Arc<CoreWorkerHandle>>>>,
+    ) -> Result<Arc<CoreWorkerHandle>, String> {
+        let workers = core_workers.lock().await;
+        workers
+            .get(worker_id)
+            .cloned()
+            .ok_or_else(|| format!("Worker not found: {}", worker_id))
+    }
+
+    /// Helper: parse length-prefixed worker_id from data.
+    /// Format: 4 bytes (big-endian) worker_id length + worker_id UTF-8 + remaining data.
+    /// Returns (worker_id, remaining_data) or None if data is too short.
+    fn parse_worker_id_prefix(data: &[u8]) -> Option<(String, Vec<u8>)> {
+        if data.len() < 4 {
+            return None;
+        }
+        let wid_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        if data.len() < 4 + wid_len {
+            return None;
+        }
+        let worker_id = String::from_utf8(data[4..4 + wid_len].to_vec()).ok()?;
+        let remaining = data[4 + wid_len..].to_vec();
+        Some((worker_id, remaining))
+    }
+
     async fn handle_operation(
         request: &Request,
         core_worker: Arc<CoreWorkerHandle>,
+        core_workers: Arc<tokio::sync::Mutex<HashMap<String, Arc<CoreWorkerHandle>>>>,
         core_client: Arc<CoreClientHandle>,
         replay_worker: Arc<ReplayWorkerHandle>,
     ) -> RequestResult {
         match request.operation.as_str() {
+            "create_worker" => {
+                // Create a worker using the client's existing gRPC connection.
+                // Returns a worker_id that must be used for all subsequent worker ops.
+                let config: WorkerCreateConfig = match serde_json::from_slice(&request.data) {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to parse create_worker config: {}", e),
+                        );
+                    }
+                };
+
+                // Get the client's inner configured client (shared gRPC connection)
+                let client = match core_client.get_client_for_worker().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to get client for worker: {}", e),
+                        );
+                    }
+                };
+
+                // Get the client's runtime
+                let runtime = match core_client.get_runtime().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to get runtime for worker: {}", e),
+                        );
+                    }
+                };
+
+                // Create and initialize a new CoreWorkerHandle
+                let worker_handle = Arc::new(CoreWorkerHandle::new());
+                match worker_handle.initialize_with_client(client, runtime, config).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        return RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Failed to initialize worker: {}", e),
+                        );
+                    }
+                }
+
+                // Generate worker_id and store
+                let worker_id = uuid::Uuid::new_v4().to_string();
+                {
+                    let mut workers = core_workers.lock().await;
+                    workers.insert(worker_id.clone(), worker_handle);
+                }
+
+                // Return worker_id as the response data
+                RequestResult::success(
+                    request.request_id.clone(),
+                    worker_id.into_bytes(),
+                )
+            }
+
             "initialize" => {
                 // Parse configuration from request data
                 let config: WorkerInitConfig = match serde_json::from_slice(&request.data) {
@@ -286,12 +386,32 @@ impl TrioAsyncBridge {
             }
 
             "poll_activation" => {
-                // Poll for workflow activation
-                match core_worker.poll_workflow_activation().await {
+                // Poll for workflow activation.
+                // If data is non-empty, it's a UTF-8 worker_id for multi-worker routing.
+                let worker = if !request.data.is_empty() {
+                    let worker_id = match String::from_utf8(request.data.clone()) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            return RequestResult::error(
+                                request.request_id.clone(),
+                                format!("Invalid worker_id: {}", e),
+                            );
+                        }
+                    };
+                    match Self::get_worker_by_id(&worker_id, &core_workers).await {
+                        Ok(w) => w,
+                        Err(e) => {
+                            return RequestResult::error(request.request_id.clone(), e);
+                        }
+                    }
+                } else {
+                    core_worker.clone()
+                };
+
+                match worker.poll_workflow_activation().await {
                     Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
                     Err(e) => {
                         let error_msg = e.to_string();
-                        // Check if this is a shutdown error
                         if error_msg.contains("Shutdown") || error_msg.contains("shutdown") {
                             RequestResult::error(
                                 request.request_id.clone(),
@@ -308,9 +428,23 @@ impl TrioAsyncBridge {
             }
 
             "complete_activation" => {
-                // Complete workflow activation
-                match core_worker
-                    .complete_workflow_activation(request.data.clone())
+                // Complete workflow activation.
+                // If data starts with a length-prefixed worker_id, route to that worker.
+                let (worker, completion_data) = if let Some((worker_id, remaining)) =
+                    Self::parse_worker_id_prefix(&request.data)
+                {
+                    match Self::get_worker_by_id(&worker_id, &core_workers).await {
+                        Ok(w) => (w, remaining),
+                        Err(e) => {
+                            return RequestResult::error(request.request_id.clone(), e);
+                        }
+                    }
+                } else {
+                    (core_worker.clone(), request.data.clone())
+                };
+
+                match worker
+                    .complete_workflow_activation(completion_data)
                     .await
                 {
                     Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
@@ -322,12 +456,32 @@ impl TrioAsyncBridge {
             }
 
             "poll_activity_task" => {
-                // Poll for activity task
-                match core_worker.poll_activity_task().await {
+                // Poll for activity task.
+                // If data is non-empty, it's a UTF-8 worker_id.
+                let worker = if !request.data.is_empty() {
+                    let worker_id = match String::from_utf8(request.data.clone()) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            return RequestResult::error(
+                                request.request_id.clone(),
+                                format!("Invalid worker_id: {}", e),
+                            );
+                        }
+                    };
+                    match Self::get_worker_by_id(&worker_id, &core_workers).await {
+                        Ok(w) => w,
+                        Err(e) => {
+                            return RequestResult::error(request.request_id.clone(), e);
+                        }
+                    }
+                } else {
+                    core_worker.clone()
+                };
+
+                match worker.poll_activity_task().await {
                     Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
                     Err(e) => {
                         let error_msg = e.to_string();
-                        // Check if this is a shutdown error
                         if error_msg.contains("Shutdown") || error_msg.contains("shutdown") {
                             RequestResult::error(
                                 request.request_id.clone(),
@@ -344,9 +498,23 @@ impl TrioAsyncBridge {
             }
 
             "complete_activity_task" => {
-                // Complete activity task
-                match core_worker
-                    .complete_activity_task(request.data.clone())
+                // Complete activity task.
+                // If data starts with length-prefixed worker_id, route to that worker.
+                let (worker, completion_data) = if let Some((worker_id, remaining)) =
+                    Self::parse_worker_id_prefix(&request.data)
+                {
+                    match Self::get_worker_by_id(&worker_id, &core_workers).await {
+                        Ok(w) => (w, remaining),
+                        Err(e) => {
+                            return RequestResult::error(request.request_id.clone(), e);
+                        }
+                    }
+                } else {
+                    (core_worker.clone(), request.data.clone())
+                };
+
+                match worker
+                    .complete_activity_task(completion_data)
                     .await
                 {
                     Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
@@ -358,9 +526,23 @@ impl TrioAsyncBridge {
             }
 
             "record_activity_heartbeat" => {
-                // Record activity heartbeat
-                match core_worker
-                    .record_activity_heartbeat(request.data.clone())
+                // Record activity heartbeat.
+                // If data starts with length-prefixed worker_id, route to that worker.
+                let (worker, heartbeat_data) = if let Some((worker_id, remaining)) =
+                    Self::parse_worker_id_prefix(&request.data)
+                {
+                    match Self::get_worker_by_id(&worker_id, &core_workers).await {
+                        Ok(w) => (w, remaining),
+                        Err(e) => {
+                            return RequestResult::error(request.request_id.clone(), e);
+                        }
+                    }
+                } else {
+                    (core_worker.clone(), request.data.clone())
+                };
+
+                match worker
+                    .record_activity_heartbeat(heartbeat_data)
                     .await
                 {
                     Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
@@ -372,8 +554,29 @@ impl TrioAsyncBridge {
             }
 
             "initiate_shutdown" => {
-                // Initiate graceful shutdown
-                match core_worker.initiate_shutdown().await {
+                // Initiate graceful shutdown.
+                // If data is non-empty, it's a UTF-8 worker_id.
+                let worker = if !request.data.is_empty() {
+                    let worker_id = match String::from_utf8(request.data.clone()) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            return RequestResult::error(
+                                request.request_id.clone(),
+                                format!("Invalid worker_id: {}", e),
+                            );
+                        }
+                    };
+                    match Self::get_worker_by_id(&worker_id, &core_workers).await {
+                        Ok(w) => w,
+                        Err(e) => {
+                            return RequestResult::error(request.request_id.clone(), e);
+                        }
+                    }
+                } else {
+                    core_worker.clone()
+                };
+
+                match worker.initiate_shutdown().await {
                     Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
                     Err(e) => RequestResult::error(
                         request.request_id.clone(),
@@ -383,13 +586,48 @@ impl TrioAsyncBridge {
             }
 
             "finalize_shutdown" => {
-                // Finalize shutdown
-                match core_worker.finalize_shutdown().await {
-                    Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
-                    Err(e) => RequestResult::error(
-                        request.request_id.clone(),
-                        format!("Shutdown failed: {}", e),
-                    ),
+                // Finalize shutdown.
+                // If data is non-empty, it's a UTF-8 worker_id.
+                if !request.data.is_empty() {
+                    let worker_id = match String::from_utf8(request.data.clone()) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            return RequestResult::error(
+                                request.request_id.clone(),
+                                format!("Invalid worker_id: {}", e),
+                            );
+                        }
+                    };
+                    // Remove from map and finalize
+                    let worker = {
+                        let mut workers = core_workers.lock().await;
+                        workers.remove(&worker_id)
+                    };
+                    match worker {
+                        Some(w) => {
+                            match w.finalize_shutdown().await {
+                                Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                                Err(e) => RequestResult::error(
+                                    request.request_id.clone(),
+                                    format!("Shutdown failed: {}", e),
+                                ),
+                            }
+                        }
+                        None => {
+                            RequestResult::error(
+                                request.request_id.clone(),
+                                format!("Worker not found: {}", worker_id),
+                            )
+                        }
+                    }
+                } else {
+                    match core_worker.finalize_shutdown().await {
+                        Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
+                        Err(e) => RequestResult::error(
+                            request.request_id.clone(),
+                            format!("Shutdown failed: {}", e),
+                        ),
+                    }
                 }
             }
 
