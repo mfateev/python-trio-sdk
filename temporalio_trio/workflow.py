@@ -28,8 +28,6 @@ from typing import (
     overload,
 )
 
-from typing_extensions import Concatenate
-
 import temporalio.api.common.v1
 import temporalio.common
 import temporalio.converter
@@ -41,7 +39,7 @@ from temporalio.types import (
     MethodSyncOrAsyncSingleParam,
     MultiParamSpec,
 )
-from typing_extensions import TypedDict
+from typing_extensions import Concatenate, TypedDict
 
 
 def _interceptor_mod():

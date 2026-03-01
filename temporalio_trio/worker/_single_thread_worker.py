@@ -883,9 +883,7 @@ class SingleThreadWorker:
                 if job.result_payload is not None:
                     ret_type = runtime.child_workflow_ret_types.get(job.seq)
                     ret_types = [ret_type] if ret_type else None
-                    converter = runtime._payload_converter_with_context(
-                        child_context
-                    )
+                    converter = runtime._payload_converter_with_context(child_context)
                     decoded_vals = converter.from_payloads(
                         [job.result_payload], type_hints=ret_types
                     )

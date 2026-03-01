@@ -41,8 +41,8 @@ from temporalio_trio.worker._activation import (
     QueryResultCommand,
     QueryWorkflowJob,
     RequestCancelActivityCommand,
-    RequestCancelLocalActivityCommand,
     RequestCancelExternalWorkflowCommand,
+    RequestCancelLocalActivityCommand,
     ScheduleActivityCommand,
     ScheduleLocalActivityCommand,
     SetPatchMarkerCommand,
@@ -989,7 +989,9 @@ def poc_to_bridge_completion(
             bridge_cmd.signal_external_workflow_execution.seq = cmd.seq
             if cmd.child_workflow_id:
                 # Child workflow signal uses child_workflow_id
-                bridge_cmd.signal_external_workflow_execution.child_workflow_id = cmd.child_workflow_id
+                bridge_cmd.signal_external_workflow_execution.child_workflow_id = (
+                    cmd.child_workflow_id
+                )
             else:
                 # External workflow signal uses workflow_execution
                 bridge_cmd.signal_external_workflow_execution.workflow_execution.workflow_id = cmd.workflow_id

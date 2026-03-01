@@ -379,12 +379,15 @@ class Client:
             run_id = swr.run_id
 
         # Return handle - run_id intentionally left as None so the handle
-        # tracks the latest run (matching sdk-python behavior)
+        # tracks the latest run (matching sdk-python behavior).
+        # first_execution_run_id is set for regular start but not for
+        # signal-with-start (matching sdk-python _ClientImpl.start_workflow).
         return WorkflowHandle(
             client=self,
             workflow_id=id,
             run_id=None,
             result_run_id=run_id,
+            first_execution_run_id=run_id if start_signal is None else None,
         )
 
     async def execute_workflow(
@@ -463,12 +466,15 @@ class Client:
         workflow_id: str,
         *,
         run_id: Optional[str] = None,
+        first_execution_run_id: Optional[str] = None,
     ) -> WorkflowHandle:
         """Get a handle to an existing workflow.
 
         Args:
             workflow_id: Workflow ID
             run_id: Optional run ID (if not provided, uses latest run)
+            first_execution_run_id: First execution run ID for
+                cancel/terminate operations on workflow chains.
 
         Returns:
             WorkflowHandle for the workflow
@@ -482,6 +488,7 @@ class Client:
             workflow_id=workflow_id,
             run_id=run_id,
             result_run_id=run_id,
+            first_execution_run_id=first_execution_run_id,
         )
 
     async def list_workflows(

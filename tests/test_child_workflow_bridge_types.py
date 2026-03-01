@@ -110,7 +110,9 @@ class TestConvertResolveChildWorkflow:
         assert result.seq == 1
         # result_payload is the raw Payload, not decoded
         assert result.result_payload is not None
-        decoded = data_converter.payload_converter.from_payloads([result.result_payload])
+        decoded = data_converter.payload_converter.from_payloads(
+            [result.result_payload]
+        )
         assert decoded[0] == "hello world"
         assert result.failure_proto is None
 
@@ -133,7 +135,9 @@ class TestConvertResolveChildWorkflow:
         assert result.seq == 2
         # result_payload is the raw Payload, not decoded
         assert result.result_payload is not None
-        decoded = data_converter.payload_converter.from_payloads([result.result_payload])
+        decoded = data_converter.payload_converter.from_payloads(
+            [result.result_payload]
+        )
         assert decoded[0] == {"key": "value", "count": 42}
         assert result.failure_proto is None
 

@@ -565,11 +565,8 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                     self._child_workflow_events[job.seq].set()
             elif isinstance(job, ChildWorkflowStartFailedJob):
                 # Child workflow failed to start - match sdk-python exception types
-                if (
-                    job.cause
-                    == int(
-                        temporalio.bridge.proto.child_workflow.StartChildWorkflowExecutionFailedCause.START_CHILD_WORKFLOW_EXECUTION_FAILED_CAUSE_WORKFLOW_ALREADY_EXISTS
-                    )
+                if job.cause == int(
+                    temporalio.bridge.proto.child_workflow.StartChildWorkflowExecutionFailedCause.START_CHILD_WORKFLOW_EXECUTION_FAILED_CAUSE_WORKFLOW_ALREADY_EXISTS
                 ):
                     err: BaseException = (
                         temporalio.exceptions.WorkflowAlreadyStartedError(
@@ -577,9 +574,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                         )
                     )
                 else:
-                    err = RuntimeError(
-                        f"Unknown child start fail cause: {job.cause}"
-                    )
+                    err = RuntimeError(f"Unknown child start fail cause: {job.cause}")
                 self._resolved_child_workflows[job.seq] = (None, err)
                 if self._pending_child_seq == job.seq:
                     self._pending_child_seq = None
@@ -591,10 +586,10 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 decoded_result = None
                 failure: BaseException | None = None
                 if job.result_payload is not None:
-                    converter = temporalio.converter.DataConverter.default.payload_converter
-                    decoded_result = converter.from_payloads(
-                        [job.result_payload]
-                    )[0]
+                    converter = (
+                        temporalio.converter.DataConverter.default.payload_converter
+                    )
+                    decoded_result = converter.from_payloads([job.result_payload])[0]
                 elif job.failure_proto is not None:
                     if isinstance(job.failure_proto, BaseException):
                         # Already a Python exception (unit test path)
@@ -1383,9 +1378,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         encoded_args = converter.to_payloads(list(args)) if args else []
         encoded_memo = None
         if memo:
-            encoded_memo = {
-                k: converter.to_payloads([v])[0] for k, v in memo.items()
-            }
+            encoded_memo = {k: converter.to_payloads([v])[0] for k, v in memo.items()}
         encoded_summary = (
             converter.to_payload(static_summary) if static_summary else None
         )

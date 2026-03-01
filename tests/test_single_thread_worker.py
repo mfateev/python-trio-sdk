@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import temporalio.converter
 import trio
 
 from temporalio_trio.worker._activation import (
@@ -27,7 +28,6 @@ from temporalio_trio.worker._activation import (
     WorkflowActivation,
     WorkflowStartedJob,
 )
-import temporalio.converter
 from temporalio_trio.worker._runtime import (
     QueryFailureCommand,
     QuerySuccessCommand,
@@ -46,6 +46,7 @@ def _to_payload(value: Any) -> Any:
     return temporalio.converter.DataConverter.default.payload_converter.to_payloads(
         [value]
     )[0]
+
 
 # =============================================================================
 # Test Workflows
@@ -1627,7 +1628,11 @@ class TestSingleThreadWorkerChildWorkflowExecution:
 
             # Deliver child workflow resolved activation
             child_activation = _create_activation(
-                jobs=[ChildWorkflowResolvedJob(seq=1, result_payload=_to_payload("child completed!"))],
+                jobs=[
+                    ChildWorkflowResolvedJob(
+                        seq=1, result_payload=_to_payload("child completed!")
+                    )
+                ],
                 timestamp_ns=2_000_000_000,
                 run_id="run-child",
             )
@@ -1674,7 +1679,11 @@ class TestSingleThreadWorkerChildWorkflowExecution:
 
             # Complete the child workflow
             child_activation = _create_activation(
-                jobs=[ChildWorkflowResolvedJob(seq=1, result_payload=_to_payload("woken up!"))],
+                jobs=[
+                    ChildWorkflowResolvedJob(
+                        seq=1, result_payload=_to_payload("woken up!")
+                    )
+                ],
                 timestamp_ns=2_000_000_000,
                 run_id="run-wake",
             )
@@ -1715,7 +1724,11 @@ class TestSingleThreadWorkerChildWorkflowExecution:
 
             # Complete first child workflow
             child1_activation = _create_activation(
-                jobs=[ChildWorkflowResolvedJob(seq=1, result_payload=_to_payload("result1"))],
+                jobs=[
+                    ChildWorkflowResolvedJob(
+                        seq=1, result_payload=_to_payload("result1")
+                    )
+                ],
                 timestamp_ns=2_000_000_000,
                 run_id="run-multi-child",
             )
@@ -1725,7 +1738,11 @@ class TestSingleThreadWorkerChildWorkflowExecution:
 
             # Complete second child workflow
             child2_activation = _create_activation(
-                jobs=[ChildWorkflowResolvedJob(seq=2, result_payload=_to_payload("result2"))],
+                jobs=[
+                    ChildWorkflowResolvedJob(
+                        seq=2, result_payload=_to_payload("result2")
+                    )
+                ],
                 timestamp_ns=3_000_000_000,
                 run_id="run-multi-child",
             )
@@ -1812,7 +1829,11 @@ class TestSingleThreadWorkerChildWorkflowExecution:
 
             # Complete the child workflow
             child_activation = _create_activation(
-                jobs=[ChildWorkflowResolvedJob(seq=1, result_payload=_to_payload("child done"))],
+                jobs=[
+                    ChildWorkflowResolvedJob(
+                        seq=1, result_payload=_to_payload("child done")
+                    )
+                ],
                 timestamp_ns=2_000_000_000,
                 run_id="run-combined",
             )
@@ -2175,9 +2196,7 @@ class TestSingleThreadWorkerCancellation:
         # Start workflow — it will block on child workflow start_event.wait()
         initial_activation = _create_activation(
             jobs=[
-                WorkflowStartedJob(
-                    workflow_type="CancellableChildWorkflow", args=()
-                )
+                WorkflowStartedJob(workflow_type="CancellableChildWorkflow", args=())
             ],
             timestamp_ns=1_000_000_000,
             run_id="run-cancel-child-start",

@@ -9,7 +9,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import temporalio.common
-
 import temporalio.converter
 
 from temporalio_trio import workflow
@@ -260,7 +259,9 @@ class TestChildWorkflowResolvedJob:
         act2 = WorkflowActivation(
             jobs=[
                 ChildWorkflowStartedJob(seq=0, run_id="child-run-123"),
-                ChildWorkflowResolvedJob(seq=0, result_payload=_to_payload("hello from child")),
+                ChildWorkflowResolvedJob(
+                    seq=0, result_payload=_to_payload("hello from child")
+                ),
             ],
             timestamp_ns=2000000000,
         )

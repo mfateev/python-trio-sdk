@@ -724,6 +724,7 @@ class TrioBridgeWrapper:
         self,
         workflow_id: str,
         run_id: Optional[str] = None,
+        first_execution_run_id: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> None:
         """Cancel a workflow execution.
@@ -731,6 +732,7 @@ class TrioBridgeWrapper:
         Args:
             workflow_id: Workflow ID
             run_id: Optional run ID
+            first_execution_run_id: Optional first execution run ID
             timeout: Optional timeout in seconds
 
         Raises:
@@ -742,7 +744,9 @@ class TrioBridgeWrapper:
 
         import json
 
-        request_data = {"workflow_id": workflow_id, "run_id": run_id}
+        request_data: dict = {"workflow_id": workflow_id, "run_id": run_id}
+        if first_execution_run_id is not None:
+            request_data["first_execution_run_id"] = first_execution_run_id
 
         event = trio.Event()
         error_container: list = []
@@ -779,6 +783,8 @@ class TrioBridgeWrapper:
         workflow_id: str,
         run_id: Optional[str] = None,
         reason: str = "",
+        first_execution_run_id: Optional[str] = None,
+        details_payloads_bytes: Optional[bytes] = None,
         timeout: Optional[float] = None,
     ) -> None:
         """Terminate a workflow execution.
@@ -787,6 +793,8 @@ class TrioBridgeWrapper:
             workflow_id: Workflow ID
             run_id: Optional run ID
             reason: Termination reason
+            first_execution_run_id: Optional first execution run ID
+            details_payloads_bytes: Optional encoded Payloads bytes for details
             timeout: Optional timeout in seconds
 
         Raises:
@@ -798,11 +806,15 @@ class TrioBridgeWrapper:
 
         import json
 
-        request_data = {
+        request_data: dict = {
             "workflow_id": workflow_id,
             "run_id": run_id,
             "reason": reason,
         }
+        if first_execution_run_id is not None:
+            request_data["first_execution_run_id"] = first_execution_run_id
+        if details_payloads_bytes is not None:
+            request_data["details_bytes"] = list(details_payloads_bytes)
 
         event = trio.Event()
         error_container: list = []
