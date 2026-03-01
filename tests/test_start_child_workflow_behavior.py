@@ -13,9 +13,9 @@ with a real Temporal server.
 """
 
 import pytest
+import temporalio.common
 import trio
 
-import temporalio.common
 from temporalio_trio.worker._runtime import WorkflowRuntime
 from temporalio_trio.workflow import (
     ChildWorkflowCancellationType,

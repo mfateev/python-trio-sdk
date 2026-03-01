@@ -371,12 +371,16 @@ class WorkflowRuntime:
     """If true, activities will not be eagerly dispatched to a local worker."""
 
     payload_converter: "temporalio.converter.PayloadConverter" = field(
-        default_factory=lambda: temporalio.converter.DataConverter.default.payload_converter
+        default_factory=lambda: (
+            temporalio.converter.DataConverter.default.payload_converter
+        )
     )
     """Payload converter for serializing/deserializing workflow data."""
 
     failure_converter: "temporalio.converter.FailureConverter" = field(
-        default_factory=lambda: temporalio.converter.DataConverter.default.failure_converter
+        default_factory=lambda: (
+            temporalio.converter.DataConverter.default.failure_converter
+        )
     )
     """Failure converter for converting failures to/from exceptions."""
 
@@ -697,9 +701,7 @@ class WorkflowRuntime:
             )
         )
 
-    async def _outbound_start_child_workflow(
-        self, input: Any
-    ) -> "ChildWorkflowHandle":
+    async def _outbound_start_child_workflow(self, input: Any) -> "ChildWorkflowHandle":
         """Create the StartChildWorkflowCommand from a StartChildWorkflowInput.
 
         Called by the terminal outbound interceptor (_WorkflowOutboundImpl).
@@ -1645,9 +1647,7 @@ class WorkflowRuntime:
         encoded_args = converter.to_payloads(list(input.args)) if input.args else []
 
         # Encode summary
-        encoded_summary = (
-            converter.to_payload(input.summary) if input.summary else None
-        )
+        encoded_summary = converter.to_payload(input.summary) if input.summary else None
 
         seq = self.next_activity_seq()
 
@@ -1776,9 +1776,7 @@ class WorkflowRuntime:
         encoded_args = converter.to_payloads(list(input.args)) if input.args else []
 
         # Encode summary
-        encoded_summary = (
-            converter.to_payload(input.summary) if input.summary else None
-        )
+        encoded_summary = converter.to_payload(input.summary) if input.summary else None
 
         seq = self.next_activity_seq()
 
@@ -2152,21 +2150,14 @@ class WorkflowRuntime:
         import temporalio.bridge.proto.child_workflow
 
         # Match sdk-python: check specific cause for proper exception type
-        if (
-            cause
-            == int(
-                temporalio.bridge.proto.child_workflow.StartChildWorkflowExecutionFailedCause.START_CHILD_WORKFLOW_EXECUTION_FAILED_CAUSE_WORKFLOW_ALREADY_EXISTS
-            )
+        if cause == int(
+            temporalio.bridge.proto.child_workflow.StartChildWorkflowExecutionFailedCause.START_CHILD_WORKFLOW_EXECUTION_FAILED_CAUSE_WORKFLOW_ALREADY_EXISTS
         ):
-            error: BaseException = (
-                temporalio.exceptions.WorkflowAlreadyStartedError(
-                    workflow_id, workflow_type
-                )
+            error: BaseException = temporalio.exceptions.WorkflowAlreadyStartedError(
+                workflow_id, workflow_type
             )
         else:
-            error = RuntimeError(
-                f"Unknown child start fail cause: {cause}"
-            )
+            error = RuntimeError(f"Unknown child start fail cause: {cause}")
 
         self.completed_children[seq] = error
 

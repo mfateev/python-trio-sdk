@@ -121,7 +121,9 @@ async def test_signal_external_workflow_success(unique_task_queue: str) -> None:
         )
 
         def build_signal_external(rid: str) -> bytes:
-            encoded_args = dc.payload_converter.to_payloads(["signal_data_from_external"])
+            encoded_args = dc.payload_converter.to_payloads(
+                ["signal_data_from_external"]
+            )
             signal_cmd = SignalExternalWorkflowCommand(
                 seq=1,
                 workflow_id=target_workflow_id,

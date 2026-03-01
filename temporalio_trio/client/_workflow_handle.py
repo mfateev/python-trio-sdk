@@ -257,6 +257,7 @@ class WorkflowHandle:
         workflow_id: str,
         run_id: Optional[str],
         result_run_id: Optional[str],
+        first_execution_run_id: Optional[str] = None,
     ) -> None:
         """Initialize workflow handle (internal).
 
@@ -265,11 +266,15 @@ class WorkflowHandle:
             workflow_id: Workflow ID
             run_id: Current run ID (None for latest)
             result_run_id: Run ID to wait for result (None for latest)
+            first_execution_run_id: Run ID of the first execution in the
+                chain. Used by cancel/terminate to target the correct
+                workflow chain.
         """
         self._client = client
         self._workflow_id = workflow_id
         self._run_id = run_id
         self._result_run_id = result_run_id
+        self._first_execution_run_id = first_execution_run_id
 
     @property
     def workflow_id(self) -> str:
@@ -515,13 +520,14 @@ class WorkflowHandle:
         await self._client._bridge.cancel_workflow_execution(
             workflow_id=self._workflow_id,
             run_id=self._run_id,
+            first_execution_run_id=self._first_execution_run_id,
             timeout=timeout,
         )
 
     async def terminate(
         self,
-        *,
-        reason: str = "Terminated by client",
+        *args: Any,
+        reason: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> None:
         """Forcefully terminate workflow.
@@ -529,16 +535,28 @@ class WorkflowHandle:
         This immediately terminates the workflow without allowing cleanup.
 
         Args:
+            args: Details to store on the termination. Encoded via the
+                client's data converter.
             reason: Termination reason
             timeout: Optional timeout in seconds
 
         Example:
             await handle.terminate(reason="User requested termination")
+            await handle.terminate("detail1", "detail2", reason="with details")
         """
+        # Encode details args if provided
+        details_payloads_bytes: Optional[bytes] = None
+        if args:
+            payloads_list = await self._client.data_converter.encode(list(args))
+            payloads = Payloads(payloads=payloads_list)
+            details_payloads_bytes = payloads.SerializeToString()
+
         await self._client._bridge.terminate_workflow_execution(
             workflow_id=self._workflow_id,
             run_id=self._run_id,
-            reason=reason,
+            reason=reason or "",
+            first_execution_run_id=self._first_execution_run_id,
+            details_payloads_bytes=details_payloads_bytes,
             timeout=timeout,
         )
 
@@ -868,6 +886,11 @@ class WorkflowHandle:
             if event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED:
                 # Extract result payload
                 completed = event.workflow_execution_completed_event_attributes
+                # Check if workflow continued as new (follow_runs)
+                if follow_runs and completed.new_execution_run_id:
+                    return _WorkflowResult(
+                        None, follow_run_id=completed.new_execution_run_id
+                    )
                 if completed.result and completed.result.payloads:
                     # Deserialize payloads
                     results = await self._client.data_converter.decode(
@@ -879,6 +902,11 @@ class WorkflowHandle:
             elif event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED:
                 # Workflow failed - decode the failure chain
                 failed = event.workflow_execution_failed_event_attributes
+                # Check if workflow continued as new (follow_runs)
+                if follow_runs and failed.new_execution_run_id:
+                    return _WorkflowResult(
+                        None, follow_run_id=failed.new_execution_run_id
+                    )
                 if failed.failure and failed.failure.ByteSize():
                     cause = await self._client.data_converter.decode_failure(
                         failed.failure
@@ -901,6 +929,12 @@ class WorkflowHandle:
                 )
 
             elif event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_TIMED_OUT:
+                timed_out = event.workflow_execution_timed_out_event_attributes
+                # Check if workflow continued as new (follow_runs)
+                if follow_runs and timed_out.new_execution_run_id:
+                    return _WorkflowResult(
+                        None, follow_run_id=timed_out.new_execution_run_id
+                    )
                 raise WorkflowFailureError(
                     cause=temporalio.exceptions.TimeoutError(
                         "Workflow timed out",

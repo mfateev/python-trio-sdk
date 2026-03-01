@@ -171,6 +171,7 @@ async def test_workflow_handle_cancel(mock_bridge):
     mock_bridge.cancel_workflow_execution.assert_called_once_with(
         workflow_id="wf-123",
         run_id="run-456",
+        first_execution_run_id=None,
         timeout=None,
     )
 
@@ -187,6 +188,8 @@ async def test_workflow_handle_terminate(mock_bridge):
         workflow_id="wf-123",
         run_id="run-456",
         reason="Test termination",
+        first_execution_run_id=None,
+        details_payloads_bytes=None,
         timeout=None,
     )
 
@@ -223,3 +226,185 @@ async def test_workflow_failed(mock_bridge):
 
     with pytest.raises(WorkflowFailureError):
         await handle.result()
+
+
+@pytest.mark.trio
+async def test_terminate_default_reason(mock_bridge):
+    """Test terminate with no reason defaults to empty string."""
+    client = await Client.connect("localhost:7233")
+    handle = client.get_workflow_handle("wf-123")
+
+    await handle.terminate()
+
+    mock_bridge.terminate_workflow_execution.assert_called_once_with(
+        workflow_id="wf-123",
+        run_id=None,
+        reason="",
+        first_execution_run_id=None,
+        details_payloads_bytes=None,
+        timeout=None,
+    )
+
+
+@pytest.mark.trio
+async def test_terminate_with_args(mock_bridge):
+    """Test terminate with detail args encodes payloads."""
+    client = await Client.connect("localhost:7233")
+    handle = client.get_workflow_handle("wf-123")
+
+    await handle.terminate("detail1", reason="test reason")
+
+    call_kwargs = mock_bridge.terminate_workflow_execution.call_args.kwargs
+    assert call_kwargs["reason"] == "test reason"
+    assert call_kwargs["workflow_id"] == "wf-123"
+    # details_payloads_bytes should be non-None bytes
+    assert call_kwargs["details_payloads_bytes"] is not None
+    assert isinstance(call_kwargs["details_payloads_bytes"], bytes)
+    assert len(call_kwargs["details_payloads_bytes"]) > 0
+
+
+@pytest.mark.trio
+async def test_result_follows_completed_run(mock_bridge):
+    """Test result() follows new_execution_run_id on COMPLETED event."""
+    import json
+
+    from temporalio.api.common.v1 import Payload
+
+    # First response: COMPLETED with new_execution_run_id (follows to new run)
+    resp1 = GetWorkflowExecutionHistoryResponse()
+    ev1 = resp1.history.events.add()
+    ev1.event_type = EventType.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED
+    ev1.workflow_execution_completed_event_attributes.new_execution_run_id = (
+        "follow-run-1"
+    )
+
+    # Second response: COMPLETED with actual result
+    resp2 = GetWorkflowExecutionHistoryResponse()
+    ev2 = resp2.history.events.add()
+    ev2.event_type = EventType.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED
+    payload = Payload()
+    payload.metadata["encoding"] = b"json/plain"
+    payload.data = json.dumps("final-result").encode("utf-8")
+    ev2.workflow_execution_completed_event_attributes.result.payloads.append(payload)
+
+    mock_bridge.get_workflow_result.side_effect = [
+        resp1.SerializeToString(),
+        resp2.SerializeToString(),
+    ]
+
+    client = await Client.connect("localhost:7233")
+    handle = client.get_workflow_handle("wf-123")
+    result = await handle.result()
+    assert result == "final-result"
+
+    # Should have been called twice (once for original, once for follow)
+    assert mock_bridge.get_workflow_result.call_count == 2
+    second_call = mock_bridge.get_workflow_result.call_args_list[1]
+    assert second_call.kwargs["run_id"] == "follow-run-1"
+
+
+@pytest.mark.trio
+async def test_result_follows_failed_run(mock_bridge):
+    """Test result() follows new_execution_run_id on FAILED event."""
+    import json
+
+    from temporalio.api.common.v1 import Payload
+
+    # First response: FAILED with new_execution_run_id
+    resp1 = GetWorkflowExecutionHistoryResponse()
+    ev1 = resp1.history.events.add()
+    ev1.event_type = EventType.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED
+    ev1.workflow_execution_failed_event_attributes.new_execution_run_id = "follow-run-2"
+
+    # Second response: COMPLETED with result
+    resp2 = GetWorkflowExecutionHistoryResponse()
+    ev2 = resp2.history.events.add()
+    ev2.event_type = EventType.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED
+    payload = Payload()
+    payload.metadata["encoding"] = b"json/plain"
+    payload.data = json.dumps("recovered").encode("utf-8")
+    ev2.workflow_execution_completed_event_attributes.result.payloads.append(payload)
+
+    mock_bridge.get_workflow_result.side_effect = [
+        resp1.SerializeToString(),
+        resp2.SerializeToString(),
+    ]
+
+    client = await Client.connect("localhost:7233")
+    handle = client.get_workflow_handle("wf-123")
+    result = await handle.result()
+    assert result == "recovered"
+
+    assert mock_bridge.get_workflow_result.call_count == 2
+    second_call = mock_bridge.get_workflow_result.call_args_list[1]
+    assert second_call.kwargs["run_id"] == "follow-run-2"
+
+
+@pytest.mark.trio
+async def test_result_follows_timed_out_run(mock_bridge):
+    """Test result() follows new_execution_run_id on TIMED_OUT event."""
+    import json
+
+    from temporalio.api.common.v1 import Payload
+
+    # First response: TIMED_OUT with new_execution_run_id
+    resp1 = GetWorkflowExecutionHistoryResponse()
+    ev1 = resp1.history.events.add()
+    ev1.event_type = EventType.EVENT_TYPE_WORKFLOW_EXECUTION_TIMED_OUT
+    ev1.workflow_execution_timed_out_event_attributes.new_execution_run_id = (
+        "follow-run-3"
+    )
+
+    # Second response: COMPLETED with result
+    resp2 = GetWorkflowExecutionHistoryResponse()
+    ev2 = resp2.history.events.add()
+    ev2.event_type = EventType.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED
+    payload = Payload()
+    payload.metadata["encoding"] = b"json/plain"
+    payload.data = json.dumps("after-timeout").encode("utf-8")
+    ev2.workflow_execution_completed_event_attributes.result.payloads.append(payload)
+
+    mock_bridge.get_workflow_result.side_effect = [
+        resp1.SerializeToString(),
+        resp2.SerializeToString(),
+    ]
+
+    client = await Client.connect("localhost:7233")
+    handle = client.get_workflow_handle("wf-123")
+    result = await handle.result()
+    assert result == "after-timeout"
+
+    assert mock_bridge.get_workflow_result.call_count == 2
+    second_call = mock_bridge.get_workflow_result.call_args_list[1]
+    assert second_call.kwargs["run_id"] == "follow-run-3"
+
+
+@pytest.mark.trio
+async def test_start_workflow_sets_first_execution_run_id(mock_bridge):
+    """Test that start_workflow sets first_execution_run_id on the handle."""
+    response = StartWorkflowExecutionResponse(run_id="run-abc")
+    mock_bridge.start_workflow_execution.return_value = response.SerializeToString()
+
+    client = await Client.connect("localhost:7233")
+    handle = await client.start_workflow("MyWorkflow", id="wf-123", task_queue="q")
+
+    assert handle._first_execution_run_id == "run-abc"
+
+
+@pytest.mark.trio
+async def test_cancel_passes_first_execution_run_id(mock_bridge):
+    """Test that cancel passes first_execution_run_id to the bridge."""
+    response = StartWorkflowExecutionResponse(run_id="run-xyz")
+    mock_bridge.start_workflow_execution.return_value = response.SerializeToString()
+
+    client = await Client.connect("localhost:7233")
+    handle = await client.start_workflow("MyWorkflow", id="wf-123", task_queue="q")
+
+    await handle.cancel()
+
+    mock_bridge.cancel_workflow_execution.assert_called_once_with(
+        workflow_id="wf-123",
+        run_id=None,
+        first_execution_run_id="run-xyz",
+        timeout=None,
+    )

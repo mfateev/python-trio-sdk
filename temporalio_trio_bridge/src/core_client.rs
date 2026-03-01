@@ -196,6 +196,7 @@ impl CoreClientHandle {
         &self,
         workflow_id: String,
         run_id: Option<String>,
+        first_execution_run_id: Option<String>,
     ) -> Result<()> {
         let (mut client, ns) = self.get_client().await?;
 
@@ -208,6 +209,7 @@ impl CoreClientHandle {
                 workflow_id,
                 run_id: run_id.unwrap_or_default(),
             }),
+            first_execution_run_id: first_execution_run_id.unwrap_or_default(),
             ..Default::default()
         };
 
@@ -225,11 +227,20 @@ impl CoreClientHandle {
         workflow_id: String,
         run_id: Option<String>,
         reason: String,
+        first_execution_run_id: Option<String>,
+        details_bytes: Vec<u8>,
     ) -> Result<()> {
         let (mut client, ns) = self.get_client().await?;
 
         use temporalio_common::protos::temporal::api::workflowservice::v1::TerminateWorkflowExecutionRequest;
-        use temporalio_common::protos::temporal::api::common::v1::WorkflowExecution;
+        use temporalio_common::protos::temporal::api::common::v1::{WorkflowExecution, Payloads};
+
+        let details = if details_bytes.is_empty() {
+            None
+        } else {
+            Some(Payloads::decode(&details_bytes[..])
+                .map_err(|e| anyhow!("Failed to decode terminate details: {}", e))?)
+        };
 
         let request = TerminateWorkflowExecutionRequest {
             namespace: ns,
@@ -238,6 +249,8 @@ impl CoreClientHandle {
                 run_id: run_id.unwrap_or_default(),
             }),
             reason,
+            first_execution_run_id: first_execution_run_id.unwrap_or_default(),
+            details,
             ..Default::default()
         };
 

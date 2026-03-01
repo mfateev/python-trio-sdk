@@ -729,6 +729,8 @@ impl TrioAsyncBridge {
                 struct CancelRequest {
                     workflow_id: String,
                     run_id: Option<String>,
+                    #[serde(default)]
+                    first_execution_run_id: Option<String>,
                 }
 
                 let req: CancelRequest = match serde_json::from_slice(&request.data) {
@@ -742,7 +744,7 @@ impl TrioAsyncBridge {
                 };
 
                 let client = &*core_client;
-                match client.cancel_workflow_execution(req.workflow_id, req.run_id).await {
+                match client.cancel_workflow_execution(req.workflow_id, req.run_id, req.first_execution_run_id).await {
                     Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
                     Err(e) => RequestResult::error(
                         request.request_id.clone(),
@@ -757,6 +759,10 @@ impl TrioAsyncBridge {
                     workflow_id: String,
                     run_id: Option<String>,
                     reason: String,
+                    #[serde(default)]
+                    first_execution_run_id: Option<String>,
+                    #[serde(default)]
+                    details_bytes: Vec<u8>,
                 }
 
                 let req: TerminateRequest = match serde_json::from_slice(&request.data) {
@@ -771,7 +777,7 @@ impl TrioAsyncBridge {
 
                 let client = &*core_client;
                 match client
-                    .terminate_workflow_execution(req.workflow_id, req.run_id, req.reason)
+                    .terminate_workflow_execution(req.workflow_id, req.run_id, req.reason, req.first_execution_run_id, req.details_bytes)
                     .await
                 {
                     Ok(_) => RequestResult::success(request.request_id.clone(), vec![]),
