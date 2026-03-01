@@ -117,9 +117,11 @@ class TrioActivityWorker:
         max_heartbeat_throttle_interval: timedelta = timedelta(seconds=60),
         default_heartbeat_throttle_interval: timedelta = timedelta(seconds=30),
         interceptors: Sequence[Interceptor] = [],
+        worker_id: str | None = None,
     ) -> None:
         """Initialize the Trio activity worker."""
         self._bridge = bridge_wrapper
+        self._worker_id = worker_id
         self._interceptors = list(interceptors)
         self._task_queue = task_queue
         self._data_converter = data_converter or temporalio.converter.DataConverter()
@@ -183,7 +185,9 @@ class TrioActivityWorker:
             while not self._shutdown_event.is_set():
                 try:
                     logger.debug("Polling for activity task...")
-                    task_bytes = await self._bridge.poll_activity_task()
+                    task_bytes = await self._bridge.poll_activity_task(
+                        worker_id=self._worker_id
+                    )
                     logger.debug(f"Received activity task: {len(task_bytes)} bytes")
                     task = temporalio.bridge.proto.activity_task.ActivityTask()
                     task.ParseFromString(task_bytes)
@@ -397,7 +401,8 @@ class TrioActivityWorker:
             running.done = True
             try:
                 await self._bridge.complete_activity_task(
-                    completion.SerializeToString()
+                    completion.SerializeToString(),
+                    worker_id=self._worker_id,
                 )
             except Exception:
                 logger.exception("Failed completing activity task")
@@ -490,7 +495,9 @@ class TrioActivityWorker:
                 heartbeat.details.extend(payloads)
 
             # Send to bridge
-            await self._bridge.record_activity_heartbeat(heartbeat.SerializeToString())
+            await self._bridge.record_activity_heartbeat(
+                heartbeat.SerializeToString(), worker_id=self._worker_id
+            )
 
         except Exception as e:
             if running.done:
@@ -509,7 +516,9 @@ class TrioActivityWorker:
         completion.result.failed.failure.source = "PythonSDK"
         completion.result.failed.failure.application_failure_info.type = error_type
 
-        await self._bridge.complete_activity_task(completion.SerializeToString())
+        await self._bridge.complete_activity_task(
+            completion.SerializeToString(), worker_id=self._worker_id
+        )
 
     def _create_info(
         self,

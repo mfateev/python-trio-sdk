@@ -105,7 +105,7 @@ class MockBridge:
         self._activation_ready_event.set()
 
     async def poll_workflow_activation(
-        self, timeout: float | None = None
+        self, worker_id: str | None = None, timeout: float | None = None
     ) -> WorkflowActivation:
         while True:
             if self._shutdown:
@@ -118,10 +118,12 @@ class MockBridge:
             with trio.move_on_after(0.1):
                 await self._activation_ready_event.wait()
 
-    async def complete_workflow_activation(self, completion_bytes: bytes) -> None:
+    async def complete_workflow_activation(
+        self, completion_bytes: bytes, worker_id: str | None = None
+    ) -> None:
         self.completion_bytes.append(completion_bytes)
 
-    def initiate_shutdown(self) -> None:
+    def initiate_shutdown(self, worker_id: str | None = None) -> None:
         self._shutdown = True
         self._activation_ready_event.set()
 

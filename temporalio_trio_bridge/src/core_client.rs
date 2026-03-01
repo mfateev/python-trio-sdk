@@ -19,10 +19,15 @@ pub struct ClientInitConfig {
 
 type ClientType = temporalio_sdk_core::RetryClient<temporalio_client::ConfiguredClient<temporalio_client::TemporalServiceClient>>;
 
+/// The inner configured client type, used when sharing the client's gRPC
+/// connection with workers (same pattern as sdk-python's
+/// `client.retry_client.clone().into_inner()`).
+pub type InnerClientType = temporalio_client::ConfiguredClient<temporalio_client::TemporalServiceClient>;
+
 /// Inner state behind the mutex — holds client, runtime, and namespace.
 struct ClientState {
     client: Option<ClientType>,
-    runtime: Option<CoreRuntime>,
+    runtime: Option<Arc<CoreRuntime>>,
     namespace: String,
 }
 
@@ -99,7 +104,7 @@ impl CoreClientHandle {
             .map_err(|e| anyhow!("Failed to connect to Temporal server: {}", e))?;
 
         // Store everything
-        guard.runtime = Some(runtime);
+        guard.runtime = Some(Arc::new(runtime));
         guard.client = Some(client);
         guard.namespace = config.namespace;
 
@@ -423,6 +428,32 @@ impl CoreClientHandle {
             .map_err(|e| anyhow!("Failed to count workflow executions: {}", e))?;
 
         Ok(response.into_inner().encode_to_vec())
+    }
+
+    /// Get the inner configured client for use by a worker.
+    ///
+    /// This clones the `RetryClient` and extracts its inner `ConfiguredClient`.
+    /// The clone is cheap — it shares the same tonic channel (gRPC connection).
+    /// This matches sdk-python's `client.retry_client.clone().into_inner()`.
+    pub async fn get_client_for_worker(&self) -> Result<InnerClientType> {
+        let guard = self.state.lock().await;
+        let client = guard
+            .client
+            .as_ref()
+            .ok_or_else(|| anyhow!("Client not initialized"))?;
+        Ok(client.clone().into_inner())
+    }
+
+    /// Get a reference to the CoreRuntime for sharing with workers.
+    ///
+    /// Workers need the runtime for telemetry and other core operations.
+    /// Returns a clone of the Arc reference (cheap, shares the same runtime).
+    pub async fn get_runtime(&self) -> Result<Arc<CoreRuntime>> {
+        let guard = self.state.lock().await;
+        guard
+            .runtime
+            .clone()
+            .ok_or_else(|| anyhow!("Client not initialized (no runtime)"))
     }
 
     /// Validate that the client is initialized and ready

@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use temporalio_client::ClientOptions;
 use std::collections::HashSet;
+
+use crate::core_client::InnerClientType;
 use temporalio_common::errors::{PollError, WorkflowErrorType};
 use temporalio_common::protos::coresdk::workflow_completion::WorkflowActivationCompletion;
 use temporalio_common::protos::coresdk::{ActivityHeartbeat, ActivityTaskCompletion};
@@ -95,6 +97,49 @@ pub struct WorkerInitConfig {
     #[serde(default)]
     pub max_task_queue_activities_per_second: Option<f64>,
     /// Graceful shutdown period in milliseconds.
+    #[serde(default)]
+    pub graceful_shutdown_period_millis: Option<u64>,
+    #[serde(default)]
+    pub max_concurrent_workflow_tasks: Option<usize>,
+    #[serde(default)]
+    pub max_concurrent_activities: Option<usize>,
+    #[serde(default)]
+    pub max_concurrent_local_activities: Option<usize>,
+    #[serde(default)]
+    pub build_id: Option<String>,
+    #[serde(default)]
+    pub telemetry: Option<TelemetryInitConfig>,
+}
+
+/// Configuration for creating a worker that shares an existing client's
+/// gRPC connection. Same fields as WorkerInitConfig minus `target_url`
+/// (the connection is already established).
+#[derive(serde::Deserialize)]
+pub struct WorkerCreateConfig {
+    pub namespace: String,
+    pub task_queue: String,
+    #[serde(default)]
+    pub identity: String,
+    #[serde(default = "default_max_cached_workflows")]
+    pub max_cached_workflows: usize,
+    #[serde(default = "default_max_concurrent_polls")]
+    pub max_concurrent_workflow_task_polls: usize,
+    #[serde(default = "default_nonsticky_to_sticky_poll_ratio")]
+    pub nonsticky_to_sticky_poll_ratio: f32,
+    #[serde(default = "default_max_concurrent_polls")]
+    pub max_concurrent_activity_task_polls: usize,
+    #[serde(default)]
+    pub no_remote_activities: bool,
+    #[serde(default = "default_sticky_queue_schedule_to_start_timeout_millis")]
+    pub sticky_queue_schedule_to_start_timeout_millis: u64,
+    #[serde(default = "default_max_heartbeat_throttle_interval_millis")]
+    pub max_heartbeat_throttle_interval_millis: u64,
+    #[serde(default = "default_default_heartbeat_throttle_interval_millis")]
+    pub default_heartbeat_throttle_interval_millis: u64,
+    #[serde(default)]
+    pub max_activities_per_second: Option<f64>,
+    #[serde(default)]
+    pub max_task_queue_activities_per_second: Option<f64>,
     #[serde(default)]
     pub graceful_shutdown_period_millis: Option<u64>,
     #[serde(default)]
@@ -312,6 +357,137 @@ impl CoreWorkerHandle {
         drop(runtime_guard);
 
         // Store worker as Arc (no lock needed for subsequent operations)
+        *worker_guard = Some(Arc::new(worker));
+
+        Ok(())
+    }
+
+    /// Initialize the worker using an existing client's gRPC connection.
+    ///
+    /// This is the shared-bridge path: the worker reuses the Client's already-
+    /// established gRPC connection instead of creating its own. Everything else
+    /// (telemetry, WorkerConfig, `init_worker()` call) is the same as
+    /// `initialize()`.
+    pub async fn initialize_with_client(
+        &self,
+        client: InnerClientType,
+        runtime: Arc<CoreRuntime>,
+        config: WorkerCreateConfig,
+    ) -> Result<()> {
+        let mut worker_guard = self.worker.lock().await;
+        if worker_guard.is_some() {
+            return Err(anyhow!("Worker already initialized"));
+        }
+
+        // Apply telemetry to the shared runtime if configured.
+        // This is safe because attach_late_init_metrics is designed for late
+        // initialization and is idempotent in practice.
+        if let Some(telem_config) = config.telemetry {
+            // We need a mutable reference to the runtime to attach metrics.
+            // Since Arc doesn't allow mutable access, we use unsafe to get it.
+            // This is safe because telemetry attachment is done once and the
+            // runtime is not being concurrently modified at this point.
+            let runtime_ptr = Arc::as_ptr(&runtime) as *mut CoreRuntime;
+            let runtime_mut = unsafe { &mut *runtime_ptr };
+
+            if let Some(ref prom) = telem_config.prometheus {
+                let global_tags = telem_config.global_tags.clone().unwrap_or_default();
+                let prom_opts = PrometheusExporterOptions::builder()
+                    .socket_addr(
+                        prom.bind_address
+                            .parse()
+                            .map_err(|e| anyhow!("Invalid Prometheus bind address: {}", e))?,
+                    )
+                    .global_tags(global_tags)
+                    .counters_total_suffix(prom.counters_total_suffix)
+                    .unit_suffix(prom.unit_suffix)
+                    .use_seconds_for_durations(prom.durations_as_seconds)
+                    .build();
+                let started = start_prometheus_metric_exporter(prom_opts)
+                    .map_err(|e| anyhow!("Failed to start Prometheus exporter: {}", e))?;
+                runtime_mut
+                    .telemetry_mut()
+                    .attach_late_init_metrics(started.meter);
+            } else if let Some(ref otel) = telem_config.opentelemetry {
+                let global_tags = telem_config.global_tags.clone().unwrap_or_default();
+                let otel_opts = OtelCollectorOptions::builder()
+                    .url(
+                        Url::from_str(&otel.url)
+                            .map_err(|e| anyhow!("Invalid OTel collector URL: {}", e))?,
+                    )
+                    .headers(otel.headers.clone())
+                    .metric_periodicity(Duration::from_millis(
+                        otel.metric_periodicity_millis.unwrap_or(1000),
+                    ))
+                    .metric_temporality(if otel.metric_temporality_delta {
+                        MetricTemporality::Delta
+                    } else {
+                        MetricTemporality::Cumulative
+                    })
+                    .use_seconds_for_durations(otel.durations_as_seconds)
+                    .global_tags(global_tags)
+                    .protocol(if otel.http {
+                        OtlpProtocol::Http
+                    } else {
+                        OtlpProtocol::Grpc
+                    })
+                    .build();
+                let meter = build_otlp_metric_exporter(otel_opts)
+                    .map_err(|e| anyhow!("Failed to build OTel exporter: {}", e))?;
+                runtime_mut
+                    .telemetry_mut()
+                    .attach_late_init_metrics(Arc::new(meter));
+            }
+        }
+
+        let retry_client = RetryClient::new(client, Default::default());
+
+        // Build worker config (same as initialize())
+        let build_id = config.build_id.unwrap_or_else(|| "trio-worker".to_string());
+        let worker_config = WorkerConfig::builder()
+            .namespace(config.namespace.clone())
+            .task_queue(config.task_queue.clone())
+            .versioning_strategy(WorkerVersioningStrategy::None {
+                build_id,
+            })
+            .task_types(WorkerTaskTypes {
+                enable_workflows: true,
+                enable_local_activities: false,
+                enable_remote_activities: !config.no_remote_activities,
+                enable_nexus: false,
+            })
+            .max_cached_workflows(config.max_cached_workflows)
+            .workflow_task_poller_behavior(PollerBehavior::SimpleMaximum(
+                config.max_concurrent_workflow_task_polls,
+            ))
+            .nonsticky_to_sticky_poll_ratio(config.nonsticky_to_sticky_poll_ratio)
+            .activity_task_poller_behavior(PollerBehavior::SimpleMaximum(
+                config.max_concurrent_activity_task_polls,
+            ))
+            .sticky_queue_schedule_to_start_timeout(Duration::from_millis(
+                config.sticky_queue_schedule_to_start_timeout_millis,
+            ))
+            .max_heartbeat_throttle_interval(Duration::from_millis(
+                config.max_heartbeat_throttle_interval_millis,
+            ))
+            .default_heartbeat_throttle_interval(Duration::from_millis(
+                config.default_heartbeat_throttle_interval_millis,
+            ))
+            .maybe_max_worker_activities_per_second(config.max_activities_per_second)
+            .maybe_max_task_queue_activities_per_second(config.max_task_queue_activities_per_second)
+            .maybe_graceful_shutdown_period(config.graceful_shutdown_period_millis.map(Duration::from_millis))
+            .maybe_max_outstanding_workflow_tasks(config.max_concurrent_workflow_tasks)
+            .maybe_max_outstanding_activities(config.max_concurrent_activities)
+            .maybe_max_outstanding_local_activities(config.max_concurrent_local_activities)
+            .build()
+            .map_err(|e| anyhow!("Failed to build worker config: {}", e))?;
+
+        // Initialize the worker using the shared runtime and client.
+        // The runtime is borrowed here — the client owns it.
+        // We don't store the runtime since the client manages its lifecycle.
+        let worker = init_worker(&runtime, worker_config, retry_client)?;
+
+        // Store worker as Arc (runtime is NOT stored — owned by client)
         *worker_guard = Some(Arc::new(worker));
 
         Ok(())

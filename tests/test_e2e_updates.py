@@ -751,28 +751,18 @@ class UpdateCompletionAfterWorkflowReturnWorkflow:
 
     Ported from sdk-python's
     UpdateCompletionIsHonoredWhenAfterWorkflowReturn1Workflow.
-
-    Note: The workflow waits for the update to be received before returning,
-    to avoid a race where the workflow completes before the update arrives.
-    This is necessary because the trio SDK shares a single bridge between
-    client and worker, unlike sdk-python which can queue the update on the
-    server before starting the worker.
     """
 
     def __init__(self) -> None:
         self._workflow_returned = False
-        self._update_received = False
 
     @workflow.run
     async def run(self) -> str:
-        # Wait for the update to be received before returning
-        await workflow.wait_condition(lambda: self._update_received)
         self._workflow_returned = True
         return "workflow-result"
 
     @workflow.update
     async def my_update(self) -> str:
-        self._update_received = True
         await workflow.wait_condition(lambda: self._workflow_returned)
         return "update-result"
 
@@ -875,32 +865,45 @@ async def test_update_completion_after_workflow_return(client: Client) -> None:
     test_update_completion_is_honored_when_after_workflow_return_1.
 
     The update handler awaits wait_condition(workflow_returned), which becomes
-    true only when the main workflow's run method returns.
+    true only when the main workflow's run method returns. We send the update
+    before starting the worker so it's queued server-side and delivered in the
+    same workflow task as the start — matching the sdk-python pattern.
     """
     task_queue = f"test-update-after-return-{uuid.uuid4().hex[:8]}"
+    wf_id = f"update-after-return-{uuid.uuid4().hex[:8]}"
 
-    async def test():
-        handle = await client.start_workflow(
-            UpdateCompletionAfterWorkflowReturnWorkflow,
-            id=f"update-after-return-{uuid.uuid4().hex[:8]}",
-            task_queue=task_queue,
-        )
-
-        # The update handler awaits workflow_returned which becomes true
-        # when the main workflow run() method returns. The workflow run()
-        # returns immediately, but the update handler needs to observe that.
-        update_result = await handle.execute_update("my_update")
-        assert update_result == "update-result"
-
-        wf_result = await handle.result()
-        assert wf_result == "workflow-result"
-
-    await _run_with_worker(
-        client,
-        task_queue,
-        [UpdateCompletionAfterWorkflowReturnWorkflow],
-        test,
+    # 1. Start the workflow (no worker yet, so it just queues)
+    handle = await client.start_workflow(
+        UpdateCompletionAfterWorkflowReturnWorkflow,
+        id=wf_id,
+        task_queue=task_queue,
     )
+
+    # 2. Send the update (queued on server since no worker is processing yet)
+    #    Use start_update so we don't block — we'll get the result after starting the worker
+    update_handle = await handle.start_update("my_update")
+
+    # 3. Now start the worker — it picks up both the workflow start AND the update
+    worker = Worker(
+        client=client,
+        task_queue=task_queue,
+        workflows=[UpdateCompletionAfterWorkflowReturnWorkflow],
+    )
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(worker.run)
+        await trio.sleep(0)
+        try:
+            # 4. Get the update result
+            update_result = await update_handle.result()
+            assert update_result == "update-result"
+
+            # 5. Get the workflow result
+            wf_result = await handle.result()
+            assert wf_result == "workflow-result"
+        finally:
+            await worker.shutdown()
+            await trio.sleep(0.3)
+            nursery.cancel_scope.cancel()
 
 
 @pytest.mark.temporal_server

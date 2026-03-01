@@ -122,6 +122,7 @@ class SingleThreadWorker:
         data_converter: temporalio.converter.DataConverter = temporalio.converter.DataConverter.default,
         debug_mode: bool = False,
         disable_eager_activity_execution: bool = False,
+        worker_id: str | None = None,
     ) -> None:
         """Initialize the single-thread worker.
 
@@ -155,6 +156,7 @@ class SingleThreadWorker:
         self._debug_mode = debug_mode
         self._disable_eager_activity_execution = disable_eager_activity_execution
         self._on_eviction_hook = on_eviction_hook
+        self._worker_id = worker_id
         self._shutdown_event = trio.Event()
 
         # Collect workflow interceptor classes
@@ -222,7 +224,9 @@ class SingleThreadWorker:
                 if self._replay_mode:
                     activation_bytes = await self._bridge.poll_replay_activation()
                 else:
-                    activation_bytes = await self._bridge.poll_workflow_activation()
+                    activation_bytes = await self._bridge.poll_workflow_activation(
+                        worker_id=self._worker_id
+                    )
                 logger.debug(
                     f"Received activation: {len(activation_bytes) if isinstance(activation_bytes, bytes) else 'parsed'}"
                 )
@@ -1383,7 +1387,9 @@ class SingleThreadWorker:
         if self._replay_mode:
             await self._bridge.complete_replay_activation(completion_bytes)
         else:
-            await self._bridge.complete_workflow_activation(completion_bytes)
+            await self._bridge.complete_workflow_activation(
+                completion_bytes, worker_id=self._worker_id
+            )
 
     async def _send_empty_completion(self, run_id: str) -> None:
         """Send an empty success completion for cache eviction.
@@ -1400,7 +1406,9 @@ class SingleThreadWorker:
         if self._replay_mode:
             await self._bridge.complete_replay_activation(completion_bytes)
         else:
-            await self._bridge.complete_workflow_activation(completion_bytes)
+            await self._bridge.complete_workflow_activation(
+                completion_bytes, worker_id=self._worker_id
+            )
 
     def shutdown(self) -> None:
         """Initiate graceful shutdown of the worker."""
