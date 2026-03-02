@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -340,7 +340,12 @@ class WorkflowHandle:
         return self.get_update_handle(id=id)
 
     async def result(
-        self, *, follow_runs: bool = True, timeout: Optional[float] = None
+        self,
+        *,
+        follow_runs: bool = True,
+        timeout: Optional[float] = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> Any:
         """Wait for workflow to complete and return result.
 
@@ -416,6 +421,8 @@ class WorkflowHandle:
         result_type: type | None = None,
         reject_condition: temporalio.common.QueryRejectCondition | None = None,
         timeout: float | None = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: timedelta | None = None,
     ) -> Any:
         """Query the workflow.
 
@@ -512,6 +519,8 @@ class WorkflowHandle:
         *,
         args: Sequence[Any] = [],
         timeout: Optional[float] = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> None:
         """Send signal to workflow.
 
@@ -558,7 +567,13 @@ class WorkflowHandle:
             timeout=timeout,
         )
 
-    async def cancel(self, *, timeout: Optional[float] = None) -> None:
+    async def cancel(
+        self,
+        *,
+        timeout: Optional[float] = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
+    ) -> None:
         """Request workflow cancellation.
 
         This sends a cancellation request to the workflow. The workflow can
@@ -582,6 +597,8 @@ class WorkflowHandle:
         *args: Any,
         reason: Optional[str] = None,
         timeout: Optional[float] = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> None:
         """Forcefully terminate workflow.
 
@@ -621,6 +638,8 @@ class WorkflowHandle:
         args: Sequence[Any] = [],
         id: Optional[str] = None,
         timeout: Optional[float] = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> Any:
         """Send an update request and wait for it to complete.
 
@@ -656,6 +675,8 @@ class WorkflowHandle:
         id: Optional[str] = None,
         wait_for_stage: "WorkflowUpdateStage" = WorkflowUpdateStage.ACCEPTED,
         timeout: Optional[float] = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> "WorkflowUpdateHandle":
         """Send an update request and wait for it to reach the specified stage.
 
@@ -790,7 +811,11 @@ class WorkflowHandle:
         )
 
     async def describe(
-        self, *, timeout: Optional[float] = None
+        self,
+        *,
+        timeout: Optional[float] = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> WorkflowExecutionDescription:
         """Get workflow execution details.
 

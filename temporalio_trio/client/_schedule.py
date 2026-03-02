@@ -621,7 +621,12 @@ class ScheduleHandle:
         """Schedule ID."""
         return self._id
 
-    async def describe(self) -> ScheduleDescription:
+    async def describe(
+        self,
+        *,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
+    ) -> ScheduleDescription:
         """Describe this schedule."""
         req = DescribeScheduleRequest(
             namespace=self._client.namespace,
@@ -634,7 +639,12 @@ class ScheduleHandle:
         resp.ParseFromString(resp_bytes)
         return ScheduleDescription._from_proto(self._id, resp)
 
-    async def delete(self) -> None:
+    async def delete(
+        self,
+        *,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
+    ) -> None:
         """Delete this schedule."""
         req = DeleteScheduleRequest(
             namespace=self._client.namespace,
@@ -643,7 +653,13 @@ class ScheduleHandle:
         )
         await self._client._bridge.delete_schedule(req.SerializeToString())
 
-    async def pause(self, *, note: str | None = None) -> None:
+    async def pause(
+        self,
+        *,
+        note: str | None = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
+    ) -> None:
         """Pause this schedule.
 
         Args:
@@ -658,7 +674,13 @@ class ScheduleHandle:
         )
         await self._client._bridge.patch_schedule(req.SerializeToString())
 
-    async def unpause(self, *, note: str | None = None) -> None:
+    async def unpause(
+        self,
+        *,
+        note: str | None = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
+    ) -> None:
         """Unpause this schedule.
 
         Args:
@@ -677,6 +699,8 @@ class ScheduleHandle:
         self,
         *,
         overlap: ScheduleOverlapPolicy | None = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> None:
         """Trigger this schedule immediately.
 
@@ -699,6 +723,8 @@ class ScheduleHandle:
     async def backfill(
         self,
         *backfills: ScheduleBackfill,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> None:
         """Backfill this schedule.
 
@@ -722,6 +748,8 @@ class ScheduleHandle:
             [ScheduleUpdateInput],
             ScheduleUpdate | None | Awaitable[ScheduleUpdate | None],
         ],
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> None:
         """Update this schedule.
 
