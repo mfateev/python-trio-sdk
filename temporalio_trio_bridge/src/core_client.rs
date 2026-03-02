@@ -520,6 +520,68 @@ impl CoreClientHandle {
         Ok(response.into_inner().encode_to_vec())
     }
 
+    // --- Schedule operations (protobuf passthrough) ---
+
+    pub async fn create_schedule(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::CreateScheduleRequest;
+        let request = CreateScheduleRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.create_schedule(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("create_schedule failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn describe_schedule(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::DescribeScheduleRequest;
+        let request = DescribeScheduleRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.describe_schedule(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("describe_schedule failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn update_schedule(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::UpdateScheduleRequest;
+        let request = UpdateScheduleRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.update_schedule(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("update_schedule failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn patch_schedule(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::PatchScheduleRequest;
+        let request = PatchScheduleRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.patch_schedule(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("patch_schedule failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn delete_schedule(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::DeleteScheduleRequest;
+        let request = DeleteScheduleRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.delete_schedule(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("delete_schedule failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn list_schedules(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::ListSchedulesRequest;
+        let request = ListSchedulesRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.list_schedules(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("list_schedules failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
     // --- Async activity operations (protobuf passthrough) ---
 
     pub async fn record_activity_task_heartbeat(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
