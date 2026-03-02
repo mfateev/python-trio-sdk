@@ -1400,6 +1400,50 @@ class TrioBridgeWrapper:
 
         return result_container[0]
 
+    # --- Schedule operations (protobuf passthrough) ---
+
+    async def create_schedule(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "create_schedule", request_bytes, timeout
+        )
+
+    async def describe_schedule(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "describe_schedule", request_bytes, timeout
+        )
+
+    async def update_schedule(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "update_schedule", request_bytes, timeout
+        )
+
+    async def patch_schedule(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "patch_schedule", request_bytes, timeout
+        )
+
+    async def delete_schedule(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "delete_schedule", request_bytes, timeout
+        )
+
+    async def list_schedules(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "list_schedules", request_bytes, timeout
+        )
+
     # --- Async activity operations (protobuf passthrough) ---
 
     async def record_activity_task_heartbeat(

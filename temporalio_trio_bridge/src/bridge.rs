@@ -961,6 +961,55 @@ impl TrioAsyncBridge {
                 }
             }
 
+            // Schedule operations (protobuf passthrough)
+            "create_schedule" => {
+                let client = &*core_client;
+                match client.create_schedule(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "describe_schedule" => {
+                let client = &*core_client;
+                match client.describe_schedule(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "update_schedule" => {
+                let client = &*core_client;
+                match client.update_schedule(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "patch_schedule" => {
+                let client = &*core_client;
+                match client.patch_schedule(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "delete_schedule" => {
+                let client = &*core_client;
+                match client.delete_schedule(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "list_schedules" => {
+                let client = &*core_client;
+                match client.list_schedules(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
             // Async activity operations (protobuf passthrough)
             "record_activity_task_heartbeat" => {
                 let client = &*core_client;

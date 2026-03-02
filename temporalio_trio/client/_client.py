@@ -39,6 +39,13 @@ from ._async_activity_handle import (
     AsyncActivityHandle,
     AsyncActivityIDReference,
 )
+from ._schedule import (
+    Schedule,
+    ScheduleAlreadyRunningError,
+    ScheduleBackfill,
+    ScheduleHandle,
+    ScheduleListEntry,
+)
 from ._workflow_handle import WorkflowExecutionStatus, WorkflowHandle
 
 
@@ -646,6 +653,195 @@ class Client:
         response.ParseFromString(response_bytes)
 
         return response.count
+
+    async def create_schedule(
+        self,
+        id: str,
+        schedule: Schedule,
+        *,
+        trigger_immediately: bool = False,
+        backfill: Sequence[ScheduleBackfill] = (),
+        memo: Optional[dict[str, Any]] = None,
+        search_attributes: Optional[
+            Union[temporalio.common.SearchAttributes, dict[str, Any]]
+        ] = None,
+    ) -> ScheduleHandle:
+        """Create a schedule.
+
+        Args:
+            id: Unique schedule ID.
+            schedule: The schedule definition.
+            trigger_immediately: If True, trigger the schedule immediately.
+            backfill: Backfill requests to run on creation.
+            memo: Optional memo for the schedule.
+            search_attributes: Optional search attributes.
+
+        Returns:
+            Handle to the created schedule.
+
+        Raises:
+            ScheduleAlreadyRunningError: If a schedule with this ID exists.
+        """
+        from temporalio.api.schedule.v1 import (
+            SchedulePatch,
+            TriggerImmediatelyRequest,
+        )
+        from temporalio.api.workflowservice.v1 import (
+            CreateScheduleRequest,
+            CreateScheduleResponse,
+        )
+
+        schedule_proto = await schedule._to_proto(self)
+
+        # Build initial patch if trigger_immediately or backfill
+        initial_patch = None
+        if trigger_immediately or backfill:
+            initial_patch = SchedulePatch()
+            if trigger_immediately:
+                initial_patch.trigger_immediately.CopyFrom(TriggerImmediatelyRequest())
+            if backfill:
+                for b in backfill:
+                    initial_patch.backfill_request.append(b._to_proto())
+
+        req = CreateScheduleRequest(
+            namespace=self._config.namespace,
+            schedule_id=id,
+            schedule=schedule_proto,
+            identity=self._config.identity or "",
+            request_id=str(uuid.uuid4()),
+        )
+        if initial_patch:
+            req.initial_patch.CopyFrom(initial_patch)
+
+        # Encode memo
+        if memo is not None:
+            for k, v in memo.items():
+                req.memo.fields[k].CopyFrom((await self._data_converter.encode([v]))[0])
+
+        # Encode search attributes
+        if search_attributes is not None:
+            temporalio.converter.encode_search_attributes(
+                search_attributes, req.search_attributes
+            )
+
+        try:
+            resp_bytes = await self._bridge.create_schedule(req.SerializeToString())
+        except RuntimeError as e:
+            err_str = str(e)
+            if (
+                "ALREADY_EXISTS" in err_str
+                or "already exists" in err_str
+                or "already running" in err_str
+            ):
+                raise ScheduleAlreadyRunningError() from e
+            raise
+
+        return ScheduleHandle(self, id)
+
+    def get_schedule_handle(self, id: str) -> ScheduleHandle:
+        """Get a handle to an existing schedule.
+
+        Args:
+            id: Schedule ID.
+
+        Returns:
+            Handle to the schedule.
+        """
+        return ScheduleHandle(self, id)
+
+    async def list_schedules(
+        self,
+        *,
+        query: Optional[str] = None,
+    ) -> list[ScheduleListEntry]:
+        """List schedules.
+
+        Args:
+            query: Optional query filter.
+
+        Returns:
+            List of schedule entries.
+        """
+        from temporalio.api.workflowservice.v1 import (
+            ListSchedulesRequest,
+            ListSchedulesResponse,
+        )
+
+        results: list[ScheduleListEntry] = []
+        next_page_token = b""
+
+        while True:
+            req = ListSchedulesRequest(
+                namespace=self._config.namespace,
+                maximum_page_size=100,
+                next_page_token=next_page_token,
+                query=query or "",
+            )
+            resp_bytes = await self._bridge.list_schedules(req.SerializeToString())
+            resp = ListSchedulesResponse()
+            resp.ParseFromString(resp_bytes)
+
+            for entry in resp.schedules:
+                # Extract basic info
+                wf_type = None
+                if entry.info.HasField("workflow_type"):
+                    wf_type = entry.info.workflow_type.name
+
+                paused = False
+                note = None
+                if entry.HasField("info"):
+                    paused = entry.info.paused
+                    note = entry.info.notes or None
+
+                # Recent actions
+                recent_actions = []
+                for ra in entry.info.recent_actions:
+                    from temporalio_trio.client._schedule import (
+                        ScheduleActionExecutionStartWorkflow,
+                        ScheduleActionResult,
+                    )
+
+                    sched_at = ra.schedule_time.ToDatetime().replace(
+                        tzinfo=timezone.utc
+                    )
+                    started_at = ra.actual_time.ToDatetime().replace(
+                        tzinfo=timezone.utc
+                    )
+                    exec_info = ScheduleActionExecutionStartWorkflow(
+                        workflow_id=ra.start_workflow_result.workflow_id,
+                        first_execution_run_id=ra.start_workflow_result.run_id,
+                    )
+                    recent_actions.append(
+                        ScheduleActionResult(
+                            scheduled_at=sched_at,
+                            started_at=started_at,
+                            action=exec_info,
+                        )
+                    )
+
+                # Next action times
+                next_times = [
+                    t.ToDatetime().replace(tzinfo=timezone.utc)
+                    for t in entry.info.future_action_times
+                ]
+
+                results.append(
+                    ScheduleListEntry(
+                        id=entry.schedule_id,
+                        workflow_type=wf_type,
+                        paused=paused,
+                        note=note,
+                        recent_actions=recent_actions,
+                        next_action_times=next_times,
+                    )
+                )
+
+            if resp.next_page_token:
+                next_page_token = resp.next_page_token
+            else:
+                break
+
+        return results
 
     async def close(self) -> None:
         """Close the client and release resources.
