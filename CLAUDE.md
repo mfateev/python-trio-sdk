@@ -521,6 +521,23 @@ When adding support for new Temporal features (queries, signals, activities, tim
 5. E2E test passes
 ```
 
+### Rule 3: Port All Related Tests from sdk-python (CRITICAL)
+
+**When implementing any gap or feature, ALL tests for that feature must be ported from sdk-python.** Do not consider a feature complete until the corresponding sdk-python tests have been adapted and are passing.
+
+**Process:**
+1. Find the relevant test files in `/home/dev/sdk-python/tests/` for the feature you're implementing
+2. Port every test case, adapting only for trio-vs-asyncio differences (e.g., `trio.sleep` vs `asyncio.sleep`, `@pytest.mark.trio` vs `@pytest.mark.asyncio`)
+3. Keep test names, structure, and assertions as close to sdk-python as possible
+4. If a test relies on a feature not yet implemented (e.g., time-skipping), document it as a skip with a clear reason
+5. Run the full test suite to verify no regressions
+
+**Why this matters:**
+- sdk-python tests cover edge cases and regressions discovered in production
+- Porting tests ensures behavioral parity, not just API parity
+- Missing tests lead to subtle bugs that surface only under specific conditions
+- Tests ARE the specification — matching the API without matching the tests is incomplete
+
 ### Bridge Pattern Test Location
 
 All bridge pattern tests go in `tests/bridge_patterns/`:
