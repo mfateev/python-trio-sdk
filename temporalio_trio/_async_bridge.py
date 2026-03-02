@@ -1400,6 +1400,29 @@ class TrioBridgeWrapper:
 
         return result_container[0]
 
+    # --- Build ID compatibility (deprecated/legacy) ---
+
+    async def update_worker_build_id_compatibility(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "update_worker_build_id_compatibility", request_bytes, timeout
+        )
+
+    async def get_worker_build_id_compatibility(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "get_worker_build_id_compatibility", request_bytes, timeout
+        )
+
+    async def get_worker_task_reachability(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "get_worker_task_reachability", request_bytes, timeout
+        )
+
     # --- Multi-operation (update-with-start) ---
 
     async def execute_multi_operation(

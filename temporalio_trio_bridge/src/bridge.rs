@@ -961,6 +961,31 @@ impl TrioAsyncBridge {
                 }
             }
 
+            // Build ID compatibility (deprecated/legacy)
+            "update_worker_build_id_compatibility" => {
+                let client = &*core_client;
+                match client.update_worker_build_id_compatibility(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "get_worker_build_id_compatibility" => {
+                let client = &*core_client;
+                match client.get_worker_build_id_compatibility(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "get_worker_task_reachability" => {
+                let client = &*core_client;
+                match client.get_worker_task_reachability(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
             // Multi-operation (update-with-start)
             "execute_multi_operation" => {
                 let client = &*core_client;

@@ -13,8 +13,14 @@ from temporalio.api.workflowservice.v1 import (
 from temporalio.converter import DataConverter
 
 from temporalio_trio.client import (
+    BuildIdOpAddNewDefault,
+    BuildIdVersionSet,
     Client,
+    HttpConnectProxyConfig,
+    KeepAliveConfig,
     TLSConfig,
+    WithStartWorkflowOperation,
+    WorkerBuildIdVersionSets,
     WorkflowFailureError,
     WorkflowHandle,
     WorkflowUpdateHandle,
@@ -657,3 +663,59 @@ async def test_workflow_update_stage_values():
     assert WorkflowUpdateStage.ADMITTED == 1
     assert WorkflowUpdateStage.ACCEPTED == 2
     assert WorkflowUpdateStage.COMPLETED == 3
+
+
+@pytest.mark.trio
+async def test_keep_alive_config():
+    """Test KeepAliveConfig defaults and creation."""
+    config = KeepAliveConfig()
+    assert config.interval_millis == 30000
+    assert config.timeout_millis == 15000
+
+    custom = KeepAliveConfig(interval_millis=10000, timeout_millis=5000)
+    assert custom.interval_millis == 10000
+    assert custom.timeout_millis == 5000
+
+
+@pytest.mark.trio
+async def test_http_connect_proxy_config():
+    """Test HttpConnectProxyConfig creation."""
+    config = HttpConnectProxyConfig(target_host="proxy.example.com:8080")
+    assert config.target_host == "proxy.example.com:8080"
+    assert config.basic_auth is None
+
+    config_auth = HttpConnectProxyConfig(
+        target_host="proxy.example.com:8080",
+        basic_auth=("user", "pass"),
+    )
+    assert config_auth.basic_auth == ("user", "pass")
+
+
+@pytest.mark.trio
+async def test_build_id_types():
+    """Test build ID related type constructors."""
+    op = BuildIdOpAddNewDefault(build_id="v1")
+    assert op.build_id == "v1"
+
+    vs = BuildIdVersionSet(build_ids=["v1", "v2"])
+    assert vs.default == "v2"
+
+    sets = WorkerBuildIdVersionSets(
+        version_sets=[
+            BuildIdVersionSet(build_ids=["v1"]),
+            BuildIdVersionSet(build_ids=["v2", "v3"]),
+        ]
+    )
+    assert sets.default_build_id == "v3"
+    assert sets.default_set.default == "v3"
+
+
+@pytest.mark.trio
+async def test_with_start_requires_conflict_policy():
+    """Test WithStartWorkflowOperation requires id_conflict_policy."""
+    with pytest.raises(ValueError, match="id_conflict_policy"):
+        WithStartWorkflowOperation(
+            "MyWorkflow",
+            id="wf-123",
+            task_queue="queue",
+        )
