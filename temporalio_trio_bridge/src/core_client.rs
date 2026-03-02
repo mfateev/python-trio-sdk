@@ -520,6 +520,18 @@ impl CoreClientHandle {
         Ok(response.into_inner().encode_to_vec())
     }
 
+    // --- Multi-operation (update-with-start) ---
+
+    pub async fn execute_multi_operation(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::ExecuteMultiOperationRequest;
+        let request = ExecuteMultiOperationRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.execute_multi_operation(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("execute_multi_operation failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
     // --- Schedule operations (protobuf passthrough) ---
 
     pub async fn create_schedule(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {

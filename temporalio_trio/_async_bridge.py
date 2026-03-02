@@ -1400,6 +1400,15 @@ class TrioBridgeWrapper:
 
         return result_container[0]
 
+    # --- Multi-operation (update-with-start) ---
+
+    async def execute_multi_operation(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "execute_multi_operation", request_bytes, timeout
+        )
+
     # --- Schedule operations (protobuf passthrough) ---
 
     async def create_schedule(

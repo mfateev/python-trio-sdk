@@ -58,6 +58,7 @@ from ._schedule import (
     ScheduleUpdate,
     ScheduleUpdateInput,
 )
+from ._with_start import WithStartWorkflowOperation
 from ._workflow_handle import (
     WorkflowContinuedAsNewError,
     WorkflowExecutionDescription,
@@ -97,6 +98,7 @@ __all__ = [
     "ScheduleUpdate",
     "ScheduleUpdateInput",
     "TLSConfig",
+    "WithStartWorkflowOperation",
     "WorkflowContinuedAsNewError",
     "WorkflowExecutionDescription",
     "WorkflowExecutionInfo",

@@ -46,7 +46,13 @@ from ._schedule import (
     ScheduleHandle,
     ScheduleListEntry,
 )
-from ._workflow_handle import WorkflowExecutionStatus, WorkflowHandle
+from ._with_start import WithStartWorkflowOperation
+from ._workflow_handle import (
+    WorkflowExecutionStatus,
+    WorkflowHandle,
+    WorkflowUpdateHandle,
+    WorkflowUpdateStage,
+)
 
 
 @dataclass
@@ -665,6 +671,238 @@ class Client:
         response.ParseFromString(response_bytes)
 
         return response.count
+
+    async def execute_update_with_start_workflow(
+        self,
+        update: str,
+        arg: Any = temporalio.common._arg_unset,
+        *,
+        start_workflow_operation: WithStartWorkflowOperation,
+        args: Sequence[Any] = [],
+        id: Optional[str] = None,
+        result_type: Optional[Type] = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
+    ) -> Any:
+        """Start a workflow and send an update atomically, waiting for completion.
+
+        Args:
+            update: Update name.
+            arg: Single argument to the update.
+            start_workflow_operation: Workflow start parameters.
+            args: Multiple arguments to the update.
+            id: Optional update ID.
+            result_type: Result type hint.
+            rpc_metadata: Per-call metadata.
+            rpc_timeout: Per-call timeout.
+
+        Returns:
+            The result of the update handler.
+        """
+        handle = await self.start_update_with_start_workflow(
+            update,
+            arg,
+            start_workflow_operation=start_workflow_operation,
+            args=args,
+            id=id,
+            result_type=result_type,
+            wait_for_stage=WorkflowUpdateStage.COMPLETED,
+            rpc_metadata=rpc_metadata,
+            rpc_timeout=rpc_timeout,
+        )
+        return handle.result_value
+
+    async def start_update_with_start_workflow(
+        self,
+        update: str,
+        arg: Any = temporalio.common._arg_unset,
+        *,
+        start_workflow_operation: WithStartWorkflowOperation,
+        wait_for_stage: WorkflowUpdateStage = WorkflowUpdateStage.ACCEPTED,
+        args: Sequence[Any] = [],
+        id: Optional[str] = None,
+        result_type: Optional[Type] = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
+    ) -> WorkflowUpdateHandle:
+        """Start a workflow and send an update atomically.
+
+        Args:
+            update: Update name.
+            arg: Single argument to the update.
+            start_workflow_operation: Workflow start parameters.
+            wait_for_stage: Stage to wait for.
+            args: Multiple arguments to the update.
+            id: Optional update ID.
+            result_type: Result type hint.
+            rpc_metadata: Per-call metadata.
+            rpc_timeout: Per-call timeout.
+
+        Returns:
+            Handle to the update.
+        """
+        if start_workflow_operation._used:
+            raise RuntimeError("WithStartWorkflowOperation cannot be reused")
+        start_workflow_operation._used = True
+
+        update_name = update if isinstance(update, str) else update.__name__
+        resolved_args = temporalio.common._arg_or_args(arg, args)
+        update_id = id or str(uuid.uuid4())
+
+        # Build the start workflow request
+        op = start_workflow_operation
+        input_payloads = None
+        if op._args:
+            payloads_list = await self._data_converter.encode(list(op._args))
+            input_payloads = Payloads(payloads=payloads_list)
+
+        from temporalio.api.common.v1 import WorkflowExecution
+        from temporalio.api.enums.v1 import UpdateWorkflowExecutionLifecycleStage
+        from temporalio.api.update.v1 import (
+            Input as UpdateInput,
+        )
+        from temporalio.api.update.v1 import (
+            Meta as UpdateMeta,
+        )
+        from temporalio.api.update.v1 import (
+            Request as UpdateRequest,
+        )
+        from temporalio.api.update.v1 import (
+            WaitPolicy,
+        )
+        from temporalio.api.workflowservice.v1 import (
+            ExecuteMultiOperationRequest,
+            ExecuteMultiOperationResponse,
+            StartWorkflowExecutionRequest,
+            UpdateWorkflowExecutionRequest,
+        )
+
+        start_req = StartWorkflowExecutionRequest(
+            namespace=self._config.namespace,
+            workflow_id=op._id,
+            workflow_type=WorkflowType(name=op._workflow),
+            task_queue=TaskQueue(name=op._task_queue),
+            input=input_payloads,
+            identity=self._config.identity or "",
+            workflow_id_reuse_policy=op._id_reuse_policy,
+            workflow_id_conflict_policy=WorkflowIdConflictPolicy.ValueType(
+                int(op._id_conflict_policy)
+            ),
+            request_id=str(uuid.uuid4()),
+        )
+
+        # Timeouts
+        if op._execution_timeout is not None:
+            start_req.workflow_execution_timeout.CopyFrom(
+                self._duration_to_proto(op._execution_timeout)
+            )
+        if op._run_timeout is not None:
+            start_req.workflow_run_timeout.CopyFrom(
+                self._duration_to_proto(op._run_timeout)
+            )
+        if op._task_timeout is not None:
+            start_req.workflow_task_timeout.CopyFrom(
+                self._duration_to_proto(op._task_timeout)
+            )
+        if op._retry_policy is not None:
+            op._retry_policy.apply_to_proto(start_req.retry_policy)
+        if op._cron_schedule:
+            start_req.cron_schedule = op._cron_schedule
+        if op._memo is not None:
+            for k, v in op._memo.items():
+                start_req.memo.fields[k].CopyFrom(
+                    (await self._data_converter.encode([v]))[0]
+                )
+        if op._search_attributes is not None:
+            temporalio.converter.encode_search_attributes(
+                op._search_attributes, start_req.search_attributes
+            )
+        if op._start_delay is not None:
+            if isinstance(op._start_delay, timedelta):
+                start_req.workflow_start_delay.FromTimedelta(op._start_delay)
+            else:
+                start_req.workflow_start_delay.FromTimedelta(
+                    timedelta(seconds=op._start_delay)
+                )
+        if op._priority is not None:
+            start_req.priority.CopyFrom(op._priority._to_proto())
+
+        # Build update request
+        update_payloads = None
+        if resolved_args:
+            payloads_list = await self._data_converter.encode(resolved_args)
+            update_payloads = Payloads(payloads=payloads_list)
+
+        # Map wait_for_stage to lifecycle stage
+        lifecycle_stage = (
+            UpdateWorkflowExecutionLifecycleStage.UPDATE_WORKFLOW_EXECUTION_LIFECYCLE_STAGE_ACCEPTED
+            if wait_for_stage == WorkflowUpdateStage.ACCEPTED
+            else UpdateWorkflowExecutionLifecycleStage.UPDATE_WORKFLOW_EXECUTION_LIFECYCLE_STAGE_COMPLETED
+        )
+
+        update_req = UpdateWorkflowExecutionRequest(
+            namespace=self._config.namespace,
+            workflow_execution=WorkflowExecution(
+                workflow_id=op._id,
+            ),
+            request=UpdateRequest(
+                meta=UpdateMeta(
+                    update_id=update_id,
+                    identity=self._config.identity or "",
+                ),
+                input=UpdateInput(
+                    name=update_name,
+                    args=update_payloads,
+                ),
+            ),
+            wait_policy=WaitPolicy(lifecycle_stage=lifecycle_stage),
+        )
+
+        # Build ExecuteMultiOperationRequest
+        multi_req = ExecuteMultiOperationRequest(
+            namespace=self._config.namespace,
+            operations=[
+                ExecuteMultiOperationRequest.Operation(
+                    start_workflow=start_req,
+                ),
+                ExecuteMultiOperationRequest.Operation(
+                    update_workflow=update_req,
+                ),
+            ],
+        )
+
+        resp_bytes = await self._bridge.execute_multi_operation(
+            multi_req.SerializeToString()
+        )
+        multi_resp = ExecuteMultiOperationResponse()
+        multi_resp.ParseFromString(resp_bytes)
+
+        # Parse start response
+        start_response = multi_resp.responses[0].start_workflow
+
+        # Parse update response
+        update_response = multi_resp.responses[1].update_workflow
+
+        # Extract update result
+        result_value = None
+        if update_response.HasField("outcome"):
+            outcome = update_response.outcome
+            if outcome.HasField("success"):
+                if outcome.success.payloads:
+                    decoded = self._data_converter.payload_converter.from_payloads(
+                        outcome.success.payloads
+                    )
+                    result_value = decoded[0] if decoded else None
+            elif outcome.HasField("failure"):
+                cause = await self._data_converter.decode_failure(outcome.failure)
+                raise RuntimeError(f"Update failed: {cause}")
+
+        return WorkflowUpdateHandle(
+            id=update_id,
+            workflow_id=op._id,
+            result_value=result_value,
+            _client=self,
+        )
 
     async def create_schedule(
         self,

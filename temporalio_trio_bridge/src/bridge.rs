@@ -961,6 +961,15 @@ impl TrioAsyncBridge {
                 }
             }
 
+            // Multi-operation (update-with-start)
+            "execute_multi_operation" => {
+                let client = &*core_client;
+                match client.execute_multi_operation(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
             // Schedule operations (protobuf passthrough)
             "create_schedule" => {
                 let client = &*core_client;
