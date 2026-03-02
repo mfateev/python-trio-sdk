@@ -1,12 +1,27 @@
 use anyhow::{anyhow, Result};
+use base64::Engine;
 use prost::Message;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
-use temporalio_client::{ClientOptions, WorkflowService};
+use temporalio_client::{ClientOptions, ClientTlsOptions, TlsOptions, WorkflowService};
 use temporalio_sdk_core::CoreRuntime;
 use tokio::sync::Mutex;
 use tonic;
 use url::Url;
+
+/// TLS configuration received from Python (base64-encoded cert bytes).
+#[derive(serde::Deserialize)]
+pub struct TlsInitConfig {
+    /// Base64-encoded root CA certificate (PEM bytes).
+    pub server_root_ca_cert: Option<String>,
+    /// TLS domain override.
+    pub domain: Option<String>,
+    /// Base64-encoded client certificate (PEM bytes) for mTLS.
+    pub client_cert: Option<String>,
+    /// Base64-encoded client private key (PEM bytes) for mTLS.
+    pub client_private_key: Option<String>,
+}
 
 /// Configuration for initializing the Core Client
 #[derive(serde::Deserialize)]
@@ -15,6 +30,12 @@ pub struct ClientInitConfig {
     pub namespace: String,
     #[serde(default)]
     pub identity: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub tls_config: Option<TlsInitConfig>,
+    #[serde(default)]
+    pub rpc_metadata: Option<HashMap<String, String>>,
 }
 
 type ClientType = temporalio_sdk_core::RetryClient<temporalio_client::ConfiguredClient<temporalio_client::TemporalServiceClient>>;
@@ -85,6 +106,41 @@ impl CoreClientHandle {
         let target_url =
             Url::from_str(&config.target_url).map_err(|e| anyhow!("Invalid target URL: {}", e))?;
 
+        // Build TLS options from config
+        let tls_options = if let Some(tls_cfg) = &config.tls_config {
+            let b64 = base64::engine::general_purpose::STANDARD;
+            let server_root_ca_cert = tls_cfg
+                .server_root_ca_cert
+                .as_ref()
+                .map(|s| b64.decode(s))
+                .transpose()
+                .map_err(|e| anyhow!("Invalid base64 for server_root_ca_cert: {}", e))?;
+
+            let client_tls_options = match (&tls_cfg.client_cert, &tls_cfg.client_private_key) {
+                (Some(cert_b64), Some(key_b64)) => {
+                    let client_cert = b64
+                        .decode(cert_b64)
+                        .map_err(|e| anyhow!("Invalid base64 for client_cert: {}", e))?;
+                    let client_private_key = b64
+                        .decode(key_b64)
+                        .map_err(|e| anyhow!("Invalid base64 for client_private_key: {}", e))?;
+                    Some(ClientTlsOptions {
+                        client_cert,
+                        client_private_key,
+                    })
+                }
+                _ => None,
+            };
+
+            Some(TlsOptions {
+                server_root_ca_cert,
+                domain: tls_cfg.domain.clone(),
+                client_tls_options,
+            })
+        } else {
+            None
+        };
+
         // Create client options and connect (using bon builder)
         let client_options = ClientOptions::builder()
             .target_url(target_url)
@@ -95,6 +151,9 @@ impl CoreClientHandle {
             } else {
                 config.identity.clone()
             })
+            .maybe_tls_options(tls_options)
+            .maybe_api_key(config.api_key.clone())
+            .maybe_headers(config.rpc_metadata.clone())
             .build();
 
         // Connect to Temporal server

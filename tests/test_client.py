@@ -11,7 +11,7 @@ from temporalio.api.workflowservice.v1 import (
 )
 from temporalio.converter import DataConverter
 
-from temporalio_trio.client import Client, WorkflowFailureError, WorkflowHandle
+from temporalio_trio.client import Client, TLSConfig, WorkflowFailureError, WorkflowHandle
 
 
 @pytest.fixture
@@ -41,6 +41,9 @@ async def test_client_connect(mock_bridge):
         target_url="http://localhost:7233",
         namespace="test-namespace",
         identity="test-client",
+        api_key=None,
+        tls_config=None,
+        rpc_metadata=None,
     )
 
 
@@ -408,3 +411,91 @@ async def test_cancel_passes_first_execution_run_id(mock_bridge):
         first_execution_run_id="run-xyz",
         timeout=None,
     )
+
+
+@pytest.mark.trio
+async def test_tls_enabled_by_default_when_api_key_provided(mock_bridge):
+    """Test that TLS is enabled by default when API key is provided and tls is not configured."""
+    client = await Client.connect(
+        "localhost:7233",
+        api_key="test-api-key",
+    )
+    # TLS should be auto-enabled when api_key is provided and tls not explicitly set
+    mock_bridge.initialize_client.assert_called_once()
+    call_kwargs = mock_bridge.initialize_client.call_args.kwargs
+    assert call_kwargs["target_url"] == "https://localhost:7233"
+    assert call_kwargs["tls_config"] is not None
+    assert call_kwargs["api_key"] == "test-api-key"
+
+
+@pytest.mark.trio
+async def test_tls_can_be_explicitly_disabled_with_api_key(mock_bridge):
+    """Test that TLS can be explicitly disabled even when API key is provided."""
+    client = await Client.connect(
+        "localhost:7233",
+        api_key="test-api-key",
+        tls=False,
+    )
+    # TLS should remain disabled when explicitly set to False
+    call_kwargs = mock_bridge.initialize_client.call_args.kwargs
+    assert call_kwargs["target_url"] == "http://localhost:7233"
+    assert call_kwargs["tls_config"] is None
+    assert call_kwargs["api_key"] == "test-api-key"
+
+
+@pytest.mark.trio
+async def test_tls_disabled_by_default_when_no_api_key(mock_bridge):
+    """Test that TLS is disabled by default when no API key is provided."""
+    client = await Client.connect("localhost:7233")
+    call_kwargs = mock_bridge.initialize_client.call_args.kwargs
+    assert call_kwargs["target_url"] == "http://localhost:7233"
+    assert call_kwargs["tls_config"] is None
+
+
+@pytest.mark.trio
+async def test_tls_explicit_config_preserved(mock_bridge):
+    """Test that explicit TLS configuration is preserved regardless of API key."""
+    import base64
+
+    tls_config = TLSConfig(
+        server_root_ca_cert=b"test-cert",
+        domain="test-domain",
+    )
+    client = await Client.connect(
+        "localhost:7233",
+        api_key="test-api-key",
+        tls=tls_config,
+    )
+    call_kwargs = mock_bridge.initialize_client.call_args.kwargs
+    assert call_kwargs["target_url"] == "https://localhost:7233"
+    assert call_kwargs["tls_config"] is not None
+    assert call_kwargs["tls_config"]["server_root_ca_cert"] == base64.b64encode(
+        b"test-cert"
+    ).decode("ascii")
+    assert call_kwargs["tls_config"]["domain"] == "test-domain"
+    assert call_kwargs["api_key"] == "test-api-key"
+
+
+@pytest.mark.trio
+async def test_rpc_metadata_propagated(mock_bridge):
+    """Test that rpc_metadata is forwarded to the bridge."""
+    client = await Client.connect(
+        "localhost:7233",
+        rpc_metadata={"x-custom-header": "value1"},
+    )
+    call_kwargs = mock_bridge.initialize_client.call_args.kwargs
+    assert call_kwargs["rpc_metadata"] == {"x-custom-header": "value1"}
+
+
+@pytest.mark.trio
+async def test_api_key_property(mock_bridge):
+    """Test that Client.api_key returns the configured value."""
+    client = await Client.connect(
+        "localhost:7233",
+        api_key="my-secret-key",
+    )
+    assert client.api_key == "my-secret-key"
+
+    # Without api_key
+    client2 = await Client.connect("localhost:7233")
+    assert client2.api_key is None

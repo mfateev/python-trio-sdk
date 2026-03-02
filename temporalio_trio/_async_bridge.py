@@ -372,6 +372,9 @@ class TrioBridgeWrapper:
         target_url: str,
         namespace: str,
         identity: Optional[str] = None,
+        api_key: Optional[str] = None,
+        tls_config: Optional[dict] = None,
+        rpc_metadata: Optional[dict[str, str]] = None,
         timeout: Optional[float] = None,
     ) -> None:
         """Initialize the bridge client with Temporal configuration.
@@ -383,6 +386,9 @@ class TrioBridgeWrapper:
             target_url: Temporal server URL (e.g., "localhost:7233")
             namespace: Temporal namespace
             identity: Client identity (optional, defaults to "trio-client")
+            api_key: API key for Temporal Cloud authentication
+            tls_config: TLS configuration dict (base64-encoded cert fields)
+            rpc_metadata: Headers to include on every RPC call
             timeout: Optional timeout in seconds
 
         Raises:
@@ -401,11 +407,17 @@ class TrioBridgeWrapper:
 
         import json
 
-        config = {
+        config: dict = {
             "target_url": target_url,
             "namespace": namespace,
             "identity": identity or "",
         }
+        if api_key is not None:
+            config["api_key"] = api_key
+        if tls_config is not None:
+            config["tls_config"] = tls_config
+        if rpc_metadata is not None:
+            config["rpc_metadata"] = rpc_metadata
 
         event = trio.Event()
         error_container: list = []
