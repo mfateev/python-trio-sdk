@@ -55,6 +55,31 @@ from ._workflow_handle import (
 )
 
 
+@dataclass(frozen=True)
+class KeepAliveConfig:
+    """HTTP2 keep alive configuration."""
+
+    interval_millis: int = 30000
+    """Interval between keep alive pings in milliseconds."""
+
+    timeout_millis: int = 15000
+    """Timeout for keep alive response in milliseconds."""
+
+
+KeepAliveConfig.default = KeepAliveConfig()  # type: ignore[attr-defined]
+
+
+@dataclass(frozen=True)
+class HttpConnectProxyConfig:
+    """HTTP CONNECT proxy configuration."""
+
+    target_host: str
+    """Host:port for the HTTP CONNECT proxy."""
+
+    basic_auth: Optional[tuple[str, str]] = None
+    """Optional (user, password) for basic auth."""
+
+
 @dataclass
 class TLSConfig:
     """TLS configuration for connecting to Temporal server."""
@@ -138,6 +163,147 @@ class WorkflowExecutionInfo:
     """When the workflow was closed, if closed."""
 
 
+# --- Build ID types (deprecated/legacy) ---
+
+
+class BuildIdOp:
+    """Base class for build ID operations (deprecated)."""
+
+    def _as_partial_proto(self) -> Any:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class BuildIdOpAddNewDefault(BuildIdOp):
+    """Add a new default build ID set (deprecated)."""
+
+    build_id: str
+
+    def _as_partial_proto(self) -> Any:
+        from temporalio.api.workflowservice.v1 import (
+            UpdateWorkerBuildIdCompatibilityRequest,
+        )
+
+        return UpdateWorkerBuildIdCompatibilityRequest(
+            add_new_build_id_in_new_default_set=self.build_id,
+        )
+
+
+@dataclass(frozen=True)
+class BuildIdOpAddNewCompatible(BuildIdOp):
+    """Add a new compatible build ID (deprecated)."""
+
+    build_id: str
+    existing_compatible_build_id: str
+    promote_set: bool = False
+
+    def _as_partial_proto(self) -> Any:
+        from temporalio.api.workflowservice.v1 import (
+            UpdateWorkerBuildIdCompatibilityRequest,
+        )
+
+        req = UpdateWorkerBuildIdCompatibilityRequest()
+        req.add_new_compatible_build_id.new_build_id = self.build_id
+        req.add_new_compatible_build_id.existing_compatible_build_id = (
+            self.existing_compatible_build_id
+        )
+        req.add_new_compatible_build_id.make_set_default = self.promote_set
+        return req
+
+
+@dataclass(frozen=True)
+class BuildIdOpPromoteSetByBuildId(BuildIdOp):
+    """Promote a build ID set to default (deprecated)."""
+
+    build_id: str
+
+    def _as_partial_proto(self) -> Any:
+        from temporalio.api.workflowservice.v1 import (
+            UpdateWorkerBuildIdCompatibilityRequest,
+        )
+
+        return UpdateWorkerBuildIdCompatibilityRequest(
+            promote_set_by_build_id=self.build_id,
+        )
+
+
+@dataclass(frozen=True)
+class BuildIdOpPromoteBuildIdWithinSet(BuildIdOp):
+    """Promote a build ID within its set (deprecated)."""
+
+    build_id: str
+
+    def _as_partial_proto(self) -> Any:
+        from temporalio.api.workflowservice.v1 import (
+            UpdateWorkerBuildIdCompatibilityRequest,
+        )
+
+        return UpdateWorkerBuildIdCompatibilityRequest(
+            promote_build_id_within_set=self.build_id,
+        )
+
+
+@dataclass(frozen=True)
+class BuildIdOpMergeSets(BuildIdOp):
+    """Merge two build ID sets (deprecated)."""
+
+    primary_build_id: str
+    secondary_build_id: str
+
+    def _as_partial_proto(self) -> Any:
+        from temporalio.api.workflowservice.v1 import (
+            UpdateWorkerBuildIdCompatibilityRequest,
+        )
+
+        req = UpdateWorkerBuildIdCompatibilityRequest()
+        req.merge_sets.primary_set_build_id = self.primary_build_id
+        req.merge_sets.secondary_set_build_id = self.secondary_build_id
+        return req
+
+
+@dataclass(frozen=True)
+class BuildIdVersionSet:
+    """A set of compatible build IDs (deprecated)."""
+
+    build_ids: Sequence[str]
+
+    @property
+    def default(self) -> str:
+        """Default (latest) build ID in this set."""
+        return self.build_ids[-1]
+
+
+@dataclass(frozen=True)
+class WorkerBuildIdVersionSets:
+    """Build ID version sets for a task queue (deprecated)."""
+
+    version_sets: Sequence[BuildIdVersionSet]
+
+    @property
+    def default_set(self) -> BuildIdVersionSet:
+        """Default (latest) version set."""
+        return self.version_sets[-1]
+
+    @property
+    def default_build_id(self) -> str:
+        """Default build ID."""
+        return self.default_set.default
+
+
+@dataclass(frozen=True)
+class BuildIdReachability:
+    """Reachability information for a build ID (deprecated)."""
+
+    task_queue_reachability: Mapping[str, Sequence[int]]
+
+
+@dataclass(frozen=True)
+class WorkerTaskReachability:
+    """Task reachability for build IDs (deprecated)."""
+
+    build_id_reachability: Mapping[str, BuildIdReachability]
+
+
 class Client:
     """Temporal client for Trio async runtime.
 
@@ -188,6 +354,8 @@ class Client:
             temporalio.common.QueryRejectCondition
         ] = None,
         retry_config: Any = None,
+        keep_alive_config: Optional[KeepAliveConfig] = None,
+        http_connect_proxy_config: Optional[HttpConnectProxyConfig] = None,
         lazy: bool = False,
     ) -> "Client":
         """Connect to Temporal server.
@@ -288,6 +456,7 @@ class Client:
         start_signal_args: Sequence[Any] = [],
         request_eager_start: bool = False,
         priority: temporalio.common.Priority = temporalio.common.Priority.default,
+        versioning_override: Optional[temporalio.common.VersioningOverride] = None,
         rpc_metadata: Mapping[str, str] = {},
         rpc_timeout: Optional[timedelta] = None,
     ) -> WorkflowHandle:
@@ -496,6 +665,7 @@ class Client:
         start_signal_args: Sequence[Any] = [],
         request_eager_start: bool = False,
         priority: temporalio.common.Priority = temporalio.common.Priority.default,
+        versioning_override: Optional[temporalio.common.VersioningOverride] = None,
         rpc_metadata: Mapping[str, str] = {},
         rpc_timeout: Optional[timedelta] = None,
     ) -> Any:
@@ -541,6 +711,7 @@ class Client:
             start_signal_args=start_signal_args,
             request_eager_start=request_eager_start,
             priority=priority,
+            versioning_override=versioning_override,
             rpc_metadata=rpc_metadata,
             rpc_timeout=rpc_timeout,
         )
@@ -1096,6 +1267,126 @@ class Client:
                 break
 
         return results
+
+    async def update_worker_build_id_compatibility(
+        self,
+        task_queue: str,
+        operation: BuildIdOp,
+        *,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
+    ) -> None:
+        """Update worker build ID compatibility sets.
+
+        .. deprecated:: Legacy API
+            Use the Worker Versioning feature instead.
+
+        Args:
+            task_queue: The task queue to update.
+            operation: The build ID operation to perform.
+            rpc_metadata: Per-call metadata.
+            rpc_timeout: Per-call timeout.
+        """
+        req = operation._as_partial_proto()
+        req.namespace = self._config.namespace
+        req.task_queue = task_queue
+        await self._bridge.update_worker_build_id_compatibility(req.SerializeToString())
+
+    async def get_worker_build_id_compatibility(
+        self,
+        task_queue: str,
+        *,
+        max_sets: Optional[int] = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
+    ) -> WorkerBuildIdVersionSets:
+        """Get worker build ID compatibility sets.
+
+        .. deprecated:: Legacy API
+            Use the Worker Versioning feature instead.
+
+        Args:
+            task_queue: The task queue to query.
+            max_sets: Maximum number of sets to return.
+            rpc_metadata: Per-call metadata.
+            rpc_timeout: Per-call timeout.
+
+        Returns:
+            The version sets for the task queue.
+        """
+        from temporalio.api.workflowservice.v1 import (
+            GetWorkerBuildIdCompatibilityRequest,
+            GetWorkerBuildIdCompatibilityResponse,
+        )
+
+        req = GetWorkerBuildIdCompatibilityRequest(
+            namespace=self._config.namespace,
+            task_queue=task_queue,
+        )
+        if max_sets is not None:
+            req.max_sets = max_sets
+
+        resp_bytes = await self._bridge.get_worker_build_id_compatibility(
+            req.SerializeToString()
+        )
+        resp = GetWorkerBuildIdCompatibilityResponse()
+        resp.ParseFromString(resp_bytes)
+
+        return WorkerBuildIdVersionSets(
+            version_sets=[
+                BuildIdVersionSet(build_ids=list(vs.build_ids))
+                for vs in resp.major_version_sets
+            ]
+        )
+
+    async def get_worker_task_reachability(
+        self,
+        build_ids: Sequence[str],
+        *,
+        task_queues: Sequence[str] = [],
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
+    ) -> WorkerTaskReachability:
+        """Get worker task reachability for build IDs.
+
+        .. deprecated:: Legacy API
+            Use the Worker Versioning feature instead.
+
+        Args:
+            build_ids: Build IDs to check reachability for.
+            task_queues: Task queues to check. Empty means all.
+            rpc_metadata: Per-call metadata.
+            rpc_timeout: Per-call timeout.
+
+        Returns:
+            Reachability information per build ID.
+        """
+        from temporalio.api.workflowservice.v1 import (
+            GetWorkerTaskReachabilityRequest,
+            GetWorkerTaskReachabilityResponse,
+        )
+
+        req = GetWorkerTaskReachabilityRequest(
+            namespace=self._config.namespace,
+            build_ids=list(build_ids),
+            task_queues=list(task_queues),
+        )
+        resp_bytes = await self._bridge.get_worker_task_reachability(
+            req.SerializeToString()
+        )
+        resp = GetWorkerTaskReachabilityResponse()
+        resp.ParseFromString(resp_bytes)
+
+        result: dict[str, BuildIdReachability] = {}
+        for entry in resp.build_id_reachability:
+            tq_reachability: dict[str, list[int]] = {}
+            for tq_entry in entry.task_queue_reachability:
+                tq_reachability[tq_entry.task_queue] = list(tq_entry.reachability)
+            result[entry.build_id] = BuildIdReachability(
+                task_queue_reachability=tq_reachability,
+            )
+
+        return WorkerTaskReachability(build_id_reachability=result)
 
     async def close(self) -> None:
         """Close the client and release resources.

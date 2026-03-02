@@ -520,6 +520,38 @@ impl CoreClientHandle {
         Ok(response.into_inner().encode_to_vec())
     }
 
+    // --- Build ID compatibility (deprecated/legacy, protobuf passthrough) ---
+
+    pub async fn update_worker_build_id_compatibility(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::UpdateWorkerBuildIdCompatibilityRequest;
+        let request = UpdateWorkerBuildIdCompatibilityRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.update_worker_build_id_compatibility(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("update_worker_build_id_compatibility failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn get_worker_build_id_compatibility(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::GetWorkerBuildIdCompatibilityRequest;
+        let request = GetWorkerBuildIdCompatibilityRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.get_worker_build_id_compatibility(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("get_worker_build_id_compatibility failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn get_worker_task_reachability(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::GetWorkerTaskReachabilityRequest;
+        let request = GetWorkerTaskReachabilityRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.get_worker_task_reachability(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("get_worker_task_reachability failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
     // --- Multi-operation (update-with-start) ---
 
     pub async fn execute_multi_operation(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
