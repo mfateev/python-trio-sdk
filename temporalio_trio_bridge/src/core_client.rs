@@ -223,6 +223,8 @@ impl CoreClientHandle {
         workflow_id: String,
         run_id: Option<String>,
         next_page_token: Vec<u8>,
+        event_filter_type: Option<i32>,
+        skip_archival: Option<bool>,
     ) -> Result<Vec<u8>> {
         let (mut client, ns) = self.get_client().await?;
 
@@ -236,8 +238,8 @@ impl CoreClientHandle {
                 run_id: run_id.unwrap_or_default(),
             }),
             wait_new_event: false,
-            history_event_filter_type: 0,
-            skip_archival: true,
+            history_event_filter_type: event_filter_type.unwrap_or(0),
+            skip_archival: skip_archival.unwrap_or(true),
             next_page_token,
             ..Default::default()
         };
@@ -430,6 +432,22 @@ impl CoreClientHandle {
             .map_err(|e| anyhow!("Failed to signal workflow: {}", e))?;
 
         Ok(())
+    }
+
+    /// Signal-with-start a workflow execution (protobuf passthrough)
+    pub async fn signal_with_start_workflow_execution(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+
+        use temporalio_common::protos::temporal::api::workflowservice::v1::SignalWithStartWorkflowExecutionRequest;
+        let request = SignalWithStartWorkflowExecutionRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode signal_with_start request: {}", e))?;
+
+        let response = client
+            .signal_with_start_workflow_execution(tonic::Request::new(request))
+            .await
+            .map_err(|e| anyhow!("Failed to signal_with_start workflow: {}", e))?;
+
+        Ok(response.into_inner().encode_to_vec())
     }
 
     /// Update a workflow execution

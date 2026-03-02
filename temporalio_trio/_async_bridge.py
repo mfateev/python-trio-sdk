@@ -22,7 +22,7 @@ This approach provides true async on both sides without blocking threads.
 from __future__ import annotations
 
 import enum
-from typing import Optional
+from typing import Any, Optional
 
 import trio
 
@@ -656,6 +656,8 @@ class TrioBridgeWrapper:
         run_id: Optional[str] = None,
         next_page_token: bytes = b"",
         timeout: Optional[float] = None,
+        event_filter_type: Optional[int] = None,
+        skip_archival: Optional[bool] = None,
     ) -> bytes:
         """Get workflow execution history (all events).
 
@@ -667,6 +669,8 @@ class TrioBridgeWrapper:
             run_id: Optional run ID
             next_page_token: Token for pagination (empty for first page)
             timeout: Optional timeout in seconds
+            event_filter_type: Optional filter for event types (0=all, 1=close, 2=all)
+            skip_archival: Optional flag to skip archival
 
         Returns:
             Serialized GetWorkflowExecutionHistoryResponse (protobuf)
@@ -680,11 +684,15 @@ class TrioBridgeWrapper:
 
         import json
 
-        request_data = {
+        request_data: dict[str, Any] = {
             "workflow_id": workflow_id,
             "run_id": run_id,
             "next_page_token": list(next_page_token) if next_page_token else [],
         }
+        if event_filter_type is not None:
+            request_data["event_filter_type"] = event_filter_type
+        if skip_archival is not None:
+            request_data["skip_archival"] = skip_archival
 
         event = trio.Event()
         result_container: list = []

@@ -671,6 +671,60 @@ class Client:
         """Get the API key for this client."""
         return self._config.api_key
 
+    @api_key.setter
+    def api_key(self, value: Optional[str]) -> None:
+        """Set the API key for this client.
+
+        Note: This updates the config but does not change the active
+        connection. A new connection would need to be established for
+        the change to take effect on RPC calls.
+        """
+        self._config.api_key = value
+
+    @property
+    def rpc_metadata(self) -> Mapping[str, str]:
+        """Get the RPC metadata for this client."""
+        return self._config.rpc_metadata
+
+    @rpc_metadata.setter
+    def rpc_metadata(self, value: Mapping[str, str]) -> None:
+        """Set the RPC metadata for this client.
+
+        Note: This updates the config but does not change the active
+        connection headers. A new connection would need to be established
+        for the change to take effect on RPC calls.
+        """
+        self._config.rpc_metadata = value
+
+    def get_workflow_handle_for(
+        self,
+        workflow: Any,
+        workflow_id: str,
+        *,
+        run_id: Optional[str] = None,
+        first_execution_run_id: Optional[str] = None,
+    ) -> WorkflowHandle:
+        """Get a typed handle to an existing workflow.
+
+        This is the same as :py:meth:`get_workflow_handle` but accepts a
+        workflow class/function for type hinting purposes.
+
+        Args:
+            workflow: The workflow class or function (used for type inference).
+            workflow_id: Workflow ID.
+            run_id: Optional run ID (if not provided, uses latest run).
+            first_execution_run_id: First execution run ID for
+                cancel/terminate operations on workflow chains.
+
+        Returns:
+            WorkflowHandle for the workflow.
+        """
+        return self.get_workflow_handle(
+            workflow_id,
+            run_id=run_id,
+            first_execution_run_id=first_execution_run_id,
+        )
+
     @staticmethod
     def _duration_to_proto(
         duration: Union[timedelta, float, None],

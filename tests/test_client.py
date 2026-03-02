@@ -7,11 +7,19 @@ import trio
 from temporalio.api.enums.v1 import EventType
 from temporalio.api.workflowservice.v1 import (
     GetWorkflowExecutionHistoryResponse,
+    SignalWithStartWorkflowExecutionResponse,
     StartWorkflowExecutionResponse,
 )
 from temporalio.converter import DataConverter
 
-from temporalio_trio.client import Client, TLSConfig, WorkflowFailureError, WorkflowHandle
+from temporalio_trio.client import (
+    Client,
+    TLSConfig,
+    WorkflowFailureError,
+    WorkflowHandle,
+    WorkflowUpdateHandle,
+    WorkflowUpdateStage,
+)
 
 
 @pytest.fixture
@@ -499,3 +507,153 @@ async def test_api_key_property(mock_bridge):
     # Without api_key
     client2 = await Client.connect("localhost:7233")
     assert client2.api_key is None
+
+
+@pytest.mark.trio
+async def test_signal_with_start_workflow(mock_bridge):
+    """Test signal-with-start sends request via signal_with_start bridge op."""
+    response = SignalWithStartWorkflowExecutionResponse(run_id="run-sws")
+    mock_bridge.signal_with_start_workflow_execution.return_value = (
+        response.SerializeToString()
+    )
+
+    client = await Client.connect("localhost:7233")
+    handle = await client.start_workflow(
+        "MyWorkflow",
+        "arg1",
+        id="wf-sws",
+        task_queue="my-queue",
+        start_signal="my-signal",
+        start_signal_args=["signal-arg"],
+    )
+
+    assert handle.workflow_id == "wf-sws"
+    assert handle.run_id is None
+    # signal-with-start does NOT set first_execution_run_id (matching sdk-python)
+    assert handle.first_execution_run_id is None
+    assert handle.result_run_id == "run-sws"
+    mock_bridge.signal_with_start_workflow_execution.assert_called_once()
+
+
+@pytest.mark.trio
+async def test_api_key_setter(mock_bridge):
+    """Test that Client.api_key setter updates the config."""
+    client = await Client.connect("localhost:7233", api_key="initial-key")
+    assert client.api_key == "initial-key"
+
+    client.api_key = "new-key"
+    assert client.api_key == "new-key"
+
+    client.api_key = None
+    assert client.api_key is None
+
+
+@pytest.mark.trio
+async def test_rpc_metadata_setter(mock_bridge):
+    """Test that Client.rpc_metadata setter updates the config."""
+    client = await Client.connect("localhost:7233", rpc_metadata={"key1": "val1"})
+    assert client.rpc_metadata == {"key1": "val1"}
+
+    client.rpc_metadata = {"key2": "val2", "key3": "val3"}
+    assert client.rpc_metadata == {"key2": "val2", "key3": "val3"}
+
+
+@pytest.mark.trio
+async def test_get_workflow_handle_for(mock_bridge):
+    """Test get_workflow_handle_for returns a proper handle."""
+    client = await Client.connect("localhost:7233")
+    handle = client.get_workflow_handle_for(
+        "SomeWorkflowClass",
+        "wf-typed",
+        run_id="run-typed",
+        first_execution_run_id="first-run",
+    )
+
+    assert isinstance(handle, WorkflowHandle)
+    assert handle.workflow_id == "wf-typed"
+    assert handle.run_id == "run-typed"
+    assert handle.first_execution_run_id == "first-run"
+
+
+@pytest.mark.trio
+async def test_workflow_handle_first_execution_run_id(mock_bridge):
+    """Test WorkflowHandle.first_execution_run_id property."""
+    response = StartWorkflowExecutionResponse(run_id="run-first")
+    mock_bridge.start_workflow_execution.return_value = response.SerializeToString()
+
+    client = await Client.connect("localhost:7233")
+    handle = await client.start_workflow("MyWorkflow", id="wf-123", task_queue="q")
+
+    assert handle.first_execution_run_id == "run-first"
+
+
+@pytest.mark.trio
+async def test_workflow_handle_result_run_id(mock_bridge):
+    """Test WorkflowHandle.result_run_id property."""
+    response = StartWorkflowExecutionResponse(run_id="run-result")
+    mock_bridge.start_workflow_execution.return_value = response.SerializeToString()
+
+    client = await Client.connect("localhost:7233")
+    handle = await client.start_workflow("MyWorkflow", id="wf-123", task_queue="q")
+
+    assert handle.result_run_id == "run-result"
+
+
+@pytest.mark.trio
+async def test_get_update_handle(mock_bridge):
+    """Test WorkflowHandle.get_update_handle returns an update handle."""
+    client = await Client.connect("localhost:7233")
+    wf_handle = client.get_workflow_handle("wf-123")
+
+    update_handle = wf_handle.get_update_handle("update-id-1")
+
+    assert isinstance(update_handle, WorkflowUpdateHandle)
+    assert update_handle.id == "update-id-1"
+    assert update_handle.workflow_id == "wf-123"
+
+
+@pytest.mark.trio
+async def test_get_update_handle_for(mock_bridge):
+    """Test WorkflowHandle.get_update_handle_for returns an update handle."""
+    client = await Client.connect("localhost:7233")
+    wf_handle = client.get_workflow_handle("wf-123")
+
+    update_handle = wf_handle.get_update_handle_for("SomeUpdate", id="update-id-2")
+
+    assert isinstance(update_handle, WorkflowUpdateHandle)
+    assert update_handle.id == "update-id-2"
+    assert update_handle.workflow_id == "wf-123"
+
+
+@pytest.mark.trio
+async def test_fetch_history_events_with_filter(mock_bridge):
+    """Test fetch_history_events passes event_filter_type and skip_archival."""
+    history_response = GetWorkflowExecutionHistoryResponse()
+    event = history_response.history.events.add()
+    event.event_type = EventType.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED
+
+    mock_bridge.get_workflow_execution_history.return_value = (
+        history_response.SerializeToString()
+    )
+
+    client = await Client.connect("localhost:7233")
+    handle = client.get_workflow_handle("wf-123")
+
+    events = await handle.fetch_history_events(
+        event_filter_type=2,
+        skip_archival=False,
+    )
+
+    assert len(events) == 1
+    mock_bridge.get_workflow_execution_history.assert_called_once()
+    call_kwargs = mock_bridge.get_workflow_execution_history.call_args.kwargs
+    assert call_kwargs["event_filter_type"] == 2
+    assert call_kwargs["skip_archival"] is False
+
+
+@pytest.mark.trio
+async def test_workflow_update_stage_values():
+    """Test WorkflowUpdateStage enum values."""
+    assert WorkflowUpdateStage.ADMITTED == 1
+    assert WorkflowUpdateStage.ACCEPTED == 2
+    assert WorkflowUpdateStage.COMPLETED == 3
