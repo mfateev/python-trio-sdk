@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 import temporalio.common
@@ -59,6 +61,8 @@ class AsyncActivityHandle:
     async def heartbeat(
         self,
         *details: Any,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> None:
         """Record a heartbeat for the async activity.
 
@@ -113,6 +117,9 @@ class AsyncActivityHandle:
     async def complete(
         self,
         result: Any = temporalio.common._arg_unset,
+        *,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> None:
         """Complete the async activity with a result.
 
@@ -157,6 +164,8 @@ class AsyncActivityHandle:
         error: Exception,
         *,
         last_heartbeat_details: Sequence[Any] = [],
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> None:
         """Fail the async activity with an error.
 
@@ -205,6 +214,8 @@ class AsyncActivityHandle:
     async def report_cancellation(
         self,
         *details: Any,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> None:
         """Report that the async activity has been cancelled.
 

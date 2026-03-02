@@ -282,6 +282,8 @@ class Client:
         start_signal_args: Sequence[Any] = [],
         request_eager_start: bool = False,
         priority: temporalio.common.Priority = temporalio.common.Priority.default,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> WorkflowHandle:
         """Start a workflow execution.
 
@@ -488,6 +490,8 @@ class Client:
         start_signal_args: Sequence[Any] = [],
         request_eager_start: bool = False,
         priority: temporalio.common.Priority = temporalio.common.Priority.default,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> Any:
         """Start a workflow and wait for its result.
 
@@ -531,6 +535,8 @@ class Client:
             start_signal_args=start_signal_args,
             request_eager_start=request_eager_start,
             priority=priority,
+            rpc_metadata=rpc_metadata,
+            rpc_timeout=rpc_timeout,
         )
         return await handle.result()
 
@@ -567,6 +573,9 @@ class Client:
     async def list_workflows(
         self,
         query: str = "",
+        *,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> list[WorkflowExecutionInfo]:
         """List workflow executions matching a query.
 
@@ -626,6 +635,9 @@ class Client:
     async def count_workflows(
         self,
         query: str = "",
+        *,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> int:
         """Count workflow executions matching a query.
 
@@ -665,6 +677,8 @@ class Client:
         search_attributes: Optional[
             Union[temporalio.common.SearchAttributes, dict[str, Any]]
         ] = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> ScheduleHandle:
         """Create a schedule.
 
@@ -753,6 +767,8 @@ class Client:
         self,
         *,
         query: Optional[str] = None,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
     ) -> list[ScheduleListEntry]:
         """List schedules.
 
