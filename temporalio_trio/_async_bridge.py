@@ -1351,6 +1351,113 @@ class TrioBridgeWrapper:
 
         return result_container[0]
 
+    async def _protobuf_passthrough(
+        self,
+        operation: str,
+        request_bytes: bytes,
+        timeout: Optional[float] = None,
+    ) -> bytes:
+        """Generic protobuf passthrough to the Rust bridge.
+
+        Sends raw protobuf bytes as the operation data and returns the
+        response bytes. Used by async activity operations and other
+        simple passthrough operations.
+        """
+        self._check_running()
+
+        event = trio.Event()
+        result_container: list[bytes] = []
+        error_container: list[Exception] = []
+
+        def deliver_result(result) -> None:  # type: ignore[no-untyped-def]
+            try:
+                if result.success:
+                    data_bytes = result.get_data()
+                    if data_bytes is None:
+                        result_container.append(b"")
+                    else:
+                        result_container.append(bytes(data_bytes))
+                else:
+                    error_msg = result.error or "Unknown error"
+                    error_container.append(RuntimeError(error_msg))
+            except Exception as e:
+                error_container.append(e)
+            finally:
+                trio.from_thread.run_sync(event.set, trio_token=self._trio_token)
+
+        self._rust_bridge.send_request(operation, request_bytes, deliver_result)
+
+        if timeout is not None:
+            with trio.move_on_after(timeout) as cancel_scope:
+                await event.wait()
+            if cancel_scope.cancelled_caught:
+                raise trio.TooSlowError(f"{operation} timed out")
+        else:
+            await event.wait()
+
+        if error_container:
+            raise error_container[0]
+
+        return result_container[0]
+
+    # --- Async activity operations (protobuf passthrough) ---
+
+    async def record_activity_task_heartbeat(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "record_activity_task_heartbeat", request_bytes, timeout
+        )
+
+    async def record_activity_task_heartbeat_by_id(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "record_activity_task_heartbeat_by_id", request_bytes, timeout
+        )
+
+    async def respond_activity_task_completed(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "respond_activity_task_completed", request_bytes, timeout
+        )
+
+    async def respond_activity_task_completed_by_id(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "respond_activity_task_completed_by_id", request_bytes, timeout
+        )
+
+    async def respond_activity_task_failed(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "respond_activity_task_failed", request_bytes, timeout
+        )
+
+    async def respond_activity_task_failed_by_id(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "respond_activity_task_failed_by_id", request_bytes, timeout
+        )
+
+    async def respond_activity_task_canceled(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "respond_activity_task_canceled", request_bytes, timeout
+        )
+
+    async def respond_activity_task_canceled_by_id(
+        self, request_bytes: bytes, timeout: Optional[float] = None
+    ) -> bytes:
+        return await self._protobuf_passthrough(
+            "respond_activity_task_canceled_by_id", request_bytes, timeout
+        )
+
     async def poll_activity_task(
         self,
         worker_id: Optional[str] = None,

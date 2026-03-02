@@ -35,6 +35,10 @@ from temporalio.common import RetryPolicy, SearchAttributes
 from temporalio.converter import DataConverter
 
 from .._async_bridge import TrioBridgeWrapper
+from ._async_activity_handle import (
+    AsyncActivityHandle,
+    AsyncActivityIDReference,
+)
 from ._workflow_handle import WorkflowExecutionStatus, WorkflowHandle
 
 
@@ -724,6 +728,49 @@ class Client:
             run_id=run_id,
             first_execution_run_id=first_execution_run_id,
         )
+
+    def get_async_activity_handle(
+        self,
+        *,
+        task_token: Optional[bytes] = None,
+        workflow_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        activity_id: Optional[str] = None,
+    ) -> AsyncActivityHandle:
+        """Get a handle to complete an async activity externally.
+
+        Either ``task_token`` or (``activity_id`` with optional
+        ``workflow_id`` and ``run_id``) must be provided.
+
+        Args:
+            task_token: Task token from the activity.
+            workflow_id: Workflow ID for the activity.
+            run_id: Run ID for the activity.
+            activity_id: Activity ID.
+
+        Returns:
+            Handle for completing/failing/heartbeating the activity.
+
+        Raises:
+            ValueError: If parameters are invalid.
+        """
+        if task_token is not None:
+            if workflow_id is not None or activity_id is not None:
+                raise ValueError(
+                    "Cannot specify both task_token and workflow_id/activity_id"
+                )
+            return AsyncActivityHandle(self, task_token)
+        elif activity_id is not None:
+            return AsyncActivityHandle(
+                self,
+                AsyncActivityIDReference(
+                    workflow_id=workflow_id,
+                    run_id=run_id,
+                    activity_id=activity_id,
+                ),
+            )
+        else:
+            raise ValueError("Must specify either task_token or activity_id")
 
     @staticmethod
     def _duration_to_proto(

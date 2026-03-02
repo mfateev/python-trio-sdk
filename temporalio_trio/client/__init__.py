@@ -30,6 +30,11 @@ Example:
     trio.run(main)
 """
 
+from ._async_activity_handle import (
+    AsyncActivityCancelledError,
+    AsyncActivityHandle,
+    AsyncActivityIDReference,
+)
 from ._client import Client, ClientConfig, TLSConfig, WorkflowExecutionInfo
 from ._workflow_handle import (
     WorkflowContinuedAsNewError,
@@ -44,6 +49,9 @@ from ._workflow_handle import (
 )
 
 __all__ = [
+    "AsyncActivityCancelledError",
+    "AsyncActivityHandle",
+    "AsyncActivityIDReference",
     "Client",
     "ClientConfig",
     "TLSConfig",

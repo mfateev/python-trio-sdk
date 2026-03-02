@@ -322,6 +322,7 @@ class TrioActivityWorker:
         )
         # Init sets context.info and context.heartbeat to go through the chain
         inbound_impl.init(outbound_impl)
+        will_complete_async = False
         try:
             async with trio.open_nursery() as nursery:
                 # Create a separate cancel scope for the activity itself
@@ -350,7 +351,15 @@ class TrioActivityWorker:
                 except BaseException as e:
                     err = e
 
-                if activity_scope.cancelled_caught or isinstance(err, trio.Cancelled):
+                # Check for async completion - activity will be completed
+                # externally, so we should NOT send a completion to the server.
+                if isinstance(err, activity._CompleteAsyncError):
+                    logger.debug(
+                        f"Activity {activity_type} will be completed asynchronously"
+                    )
+                    will_complete_async = True
+                    nursery.cancel_scope.cancel()
+                elif activity_scope.cancelled_caught or isinstance(err, trio.Cancelled):
                     # Activity was cancelled
                     if running.cancelled_due_to_heartbeat_error:
                         # Heartbeat error -> FAILED (matches SDK)
@@ -399,13 +408,14 @@ class TrioActivityWorker:
                 nursery.cancel_scope.cancel()
         finally:
             running.done = True
-            try:
-                await self._bridge.complete_activity_task(
-                    completion.SerializeToString(),
-                    worker_id=self._worker_id,
-                )
-            except Exception:
-                logger.exception("Failed completing activity task")
+            if not will_complete_async:
+                try:
+                    await self._bridge.complete_activity_task(
+                        completion.SerializeToString(),
+                        worker_id=self._worker_id,
+                    )
+                except Exception:
+                    logger.exception("Failed completing activity task")
             activity._Context.reset(token)
             del self._running_activities[task_token]
             await heartbeat_send.aclose()

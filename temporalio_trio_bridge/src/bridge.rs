@@ -961,6 +961,71 @@ impl TrioAsyncBridge {
                 }
             }
 
+            // Async activity operations (protobuf passthrough)
+            "record_activity_task_heartbeat" => {
+                let client = &*core_client;
+                match client.record_activity_task_heartbeat(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "record_activity_task_heartbeat_by_id" => {
+                let client = &*core_client;
+                match client.record_activity_task_heartbeat_by_id(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "respond_activity_task_completed" => {
+                let client = &*core_client;
+                match client.respond_activity_task_completed(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "respond_activity_task_completed_by_id" => {
+                let client = &*core_client;
+                match client.respond_activity_task_completed_by_id(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "respond_activity_task_failed" => {
+                let client = &*core_client;
+                match client.respond_activity_task_failed(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "respond_activity_task_failed_by_id" => {
+                let client = &*core_client;
+                match client.respond_activity_task_failed_by_id(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "respond_activity_task_canceled" => {
+                let client = &*core_client;
+                match client.respond_activity_task_canceled(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
+            "respond_activity_task_canceled_by_id" => {
+                let client = &*core_client;
+                match client.respond_activity_task_canceled_by_id(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
+                    Err(e) => RequestResult::error(request.request_id.clone(), format!("{}", e)),
+                }
+            }
+
             // Replay worker operations
             "initialize_replay_worker" => {
                 let config: ReplayWorkerInitConfig = match serde_json::from_slice(&request.data) {

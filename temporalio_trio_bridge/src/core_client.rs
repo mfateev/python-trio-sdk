@@ -520,6 +520,88 @@ impl CoreClientHandle {
         Ok(response.into_inner().encode_to_vec())
     }
 
+    // --- Async activity operations (protobuf passthrough) ---
+
+    pub async fn record_activity_task_heartbeat(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::RecordActivityTaskHeartbeatRequest;
+        let request = RecordActivityTaskHeartbeatRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.record_activity_task_heartbeat(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("record_activity_task_heartbeat failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn record_activity_task_heartbeat_by_id(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::RecordActivityTaskHeartbeatByIdRequest;
+        let request = RecordActivityTaskHeartbeatByIdRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.record_activity_task_heartbeat_by_id(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("record_activity_task_heartbeat_by_id failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn respond_activity_task_completed(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::RespondActivityTaskCompletedRequest;
+        let request = RespondActivityTaskCompletedRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.respond_activity_task_completed(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("respond_activity_task_completed failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn respond_activity_task_completed_by_id(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::RespondActivityTaskCompletedByIdRequest;
+        let request = RespondActivityTaskCompletedByIdRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.respond_activity_task_completed_by_id(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("respond_activity_task_completed_by_id failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn respond_activity_task_failed(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::RespondActivityTaskFailedRequest;
+        let request = RespondActivityTaskFailedRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.respond_activity_task_failed(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("respond_activity_task_failed failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn respond_activity_task_failed_by_id(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::RespondActivityTaskFailedByIdRequest;
+        let request = RespondActivityTaskFailedByIdRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.respond_activity_task_failed_by_id(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("respond_activity_task_failed_by_id failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn respond_activity_task_canceled(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::RespondActivityTaskCanceledRequest;
+        let request = RespondActivityTaskCanceledRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.respond_activity_task_canceled(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("respond_activity_task_canceled failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
+    pub async fn respond_activity_task_canceled_by_id(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>> {
+        let (mut client, _ns) = self.get_client().await?;
+        use temporalio_common::protos::temporal::api::workflowservice::v1::RespondActivityTaskCanceledByIdRequest;
+        let request = RespondActivityTaskCanceledByIdRequest::decode(&request_bytes[..])
+            .map_err(|e| anyhow!("Failed to decode: {}", e))?;
+        let response = client.respond_activity_task_canceled_by_id(tonic::Request::new(request)).await
+            .map_err(|e| anyhow!("respond_activity_task_canceled_by_id failed: {}", e))?;
+        Ok(response.into_inner().encode_to_vec())
+    }
+
     /// Get the inner configured client for use by a worker.
     ///
     /// This clones the `RetryClient` and extracts its inner `ConfiguredClient`.
