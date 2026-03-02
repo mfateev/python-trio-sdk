@@ -30,7 +30,7 @@ Example:
     trio.run(main)
 """
 
-from ._client import Client, ClientConfig, WorkflowExecutionInfo
+from ._client import Client, ClientConfig, TLSConfig, WorkflowExecutionInfo
 from ._workflow_handle import (
     WorkflowContinuedAsNewError,
     WorkflowExecutionDescription,
@@ -44,6 +44,7 @@ from ._workflow_handle import (
 __all__ = [
     "Client",
     "ClientConfig",
+    "TLSConfig",
     "WorkflowContinuedAsNewError",
     "WorkflowExecutionDescription",
     "WorkflowExecutionInfo",

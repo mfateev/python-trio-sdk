@@ -21,6 +21,7 @@ prost = "0.14"
 tonic = "0.14"
 url = "2.2"
 anyhow = "1.0"
+base64 = "0.22"
 
 # SDK Core (path dependencies to submodule)
 temporalio-sdk-core = { version = "0.1.0", path = "../sdk-core/crates/sdk-core" }

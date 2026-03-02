@@ -6,6 +6,7 @@ It uses the TrioBridgeWrapper to communicate with SDK Core via the Rust bridge.
 
 from __future__ import annotations
 
+import base64
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -38,6 +39,45 @@ from ._workflow_handle import WorkflowExecutionStatus, WorkflowHandle
 
 
 @dataclass
+class TLSConfig:
+    """TLS configuration for connecting to Temporal server."""
+
+    server_root_ca_cert: Optional[bytes] = None
+    """Root CA to validate the server certificate against."""
+
+    domain: Optional[str] = None
+    """TLS domain."""
+
+    client_cert: Optional[bytes] = None
+    """Client certificate for mTLS.
+
+    This must be combined with :py:attr:`client_private_key`."""
+
+    client_private_key: Optional[bytes] = None
+    """Client private key for mTLS.
+
+    This must be combined with :py:attr:`client_cert`."""
+
+
+def _tls_config_to_dict(tls_config: TLSConfig) -> dict[str, Any]:
+    """Convert TLSConfig to a dict with base64-encoded byte fields for JSON."""
+    d: dict[str, Any] = {}
+    if tls_config.server_root_ca_cert is not None:
+        d["server_root_ca_cert"] = base64.b64encode(
+            tls_config.server_root_ca_cert
+        ).decode("ascii")
+    if tls_config.domain is not None:
+        d["domain"] = tls_config.domain
+    if tls_config.client_cert is not None:
+        d["client_cert"] = base64.b64encode(tls_config.client_cert).decode("ascii")
+    if tls_config.client_private_key is not None:
+        d["client_private_key"] = base64.b64encode(
+            tls_config.client_private_key
+        ).decode("ascii")
+    return d
+
+
+@dataclass
 class ClientConfig:
     """Configuration for connecting to Temporal server."""
 
@@ -45,7 +85,8 @@ class ClientConfig:
     namespace: str = "default"
     identity: Optional[str] = None
     data_converter: Optional[DataConverter] = None
-    tls: bool = False
+    tls: Union[bool, TLSConfig, None] = None
+    api_key: Optional[str] = None
     rpc_metadata: Mapping[str, str] = field(default_factory=dict)
     default_workflow_query_reject_condition: Optional[
         temporalio.common.QueryRejectCondition
@@ -123,7 +164,8 @@ class Client:
         namespace: str = "default",
         identity: Optional[str] = None,
         data_converter: Optional[DataConverter] = None,
-        tls: bool = False,
+        tls: Union[bool, TLSConfig, None] = None,
+        api_key: Optional[str] = None,
         rpc_metadata: Mapping[str, str] = {},
         default_workflow_query_reject_condition: Optional[
             temporalio.common.QueryRejectCondition
@@ -138,10 +180,13 @@ class Client:
             namespace: Temporal namespace (default: "default")
             identity: Client identity (default: auto-generated)
             data_converter: Data converter for payload serialization
-            tls: If True, use ``https://`` scheme instead of ``http://``.
-                Full TLS configuration is not yet implemented.
-            rpc_metadata: Headers to include on every RPC call. Not yet
-                propagated to the bridge (stored for future use).
+            tls: If ``True``, use TLS with default settings. If a
+                :py:class:`TLSConfig`, use that configuration. If ``False``,
+                explicitly disable TLS. If ``None`` (default), TLS is
+                auto-enabled when ``api_key`` is set.
+            api_key: API key for Temporal Cloud. When set and ``tls`` is
+                ``None``, TLS is automatically enabled.
+            rpc_metadata: Headers to include on every RPC call.
             default_workflow_query_reject_condition: Default rejection
                 condition for workflow queries when not set per-query.
                 See :py:meth:`WorkflowHandle.query` for details.
@@ -157,9 +202,22 @@ class Client:
         Example:
             client = await Client.connect("localhost:7233", namespace="default")
         """
+        # Auto-enable TLS when api_key is set and tls is not explicitly configured
+        if tls is None and api_key is not None:
+            tls = True
+
+        # Determine scheme and tls_config_dict for the bridge
+        use_tls = isinstance(tls, TLSConfig) or tls is True
+        tls_config_dict: Optional[dict[str, Any]] = None
+        if isinstance(tls, TLSConfig):
+            tls_config_dict = _tls_config_to_dict(tls)
+        elif tls is True:
+            # TLS enabled with default (empty) config
+            tls_config_dict = {}
+
         # Ensure URL has scheme - target_url might be just "localhost:7233"
         if not target_url.startswith(("http://", "https://")):
-            scheme = "https" if tls else "http"
+            scheme = "https" if use_tls else "http"
             target_url = f"{scheme}://{target_url}"
 
         config = ClientConfig(
@@ -168,6 +226,7 @@ class Client:
             identity=identity or f"trio-client-{uuid.uuid4()}",
             data_converter=data_converter,
             tls=tls,
+            api_key=api_key,
             rpc_metadata=rpc_metadata,
             default_workflow_query_reject_condition=default_workflow_query_reject_condition,
             retry_config=retry_config,
@@ -180,6 +239,9 @@ class Client:
             target_url=config.target_url,
             namespace=config.namespace,
             identity=config.identity,
+            api_key=api_key,
+            tls_config=tls_config_dict,
+            rpc_metadata=dict(rpc_metadata) if rpc_metadata else None,
         )
 
         return cls(bridge=bridge, config=config)
@@ -604,6 +666,11 @@ class Client:
         """Get the identity for this client."""
         return self._config.identity or ""
 
+    @property
+    def api_key(self) -> Optional[str]:
+        """Get the API key for this client."""
+        return self._config.api_key
+
     @staticmethod
     def _duration_to_proto(
         duration: Union[timedelta, float, None],
@@ -623,4 +690,4 @@ class Client:
         return Duration(seconds=seconds, nanos=nanos)
 
 
-__all__ = ["Client", "ClientConfig", "WorkflowExecutionInfo"]
+__all__ = ["Client", "ClientConfig", "TLSConfig", "WorkflowExecutionInfo"]
