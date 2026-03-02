@@ -286,6 +286,59 @@ class WorkflowHandle:
         """Get run ID (None if tracking latest run)."""
         return self._run_id
 
+    @property
+    def first_execution_run_id(self) -> Optional[str]:
+        """Get first execution run ID.
+
+        This is the run ID of the first execution in the workflow chain.
+        Used by cancel/terminate to target the correct workflow chain.
+        """
+        return self._first_execution_run_id
+
+    @property
+    def result_run_id(self) -> Optional[str]:
+        """Get the result run ID.
+
+        This is the run ID used when waiting for a result. It may differ
+        from ``run_id`` when following continue-as-new chains.
+        """
+        return self._result_run_id
+
+    def get_update_handle(
+        self,
+        id: str,
+    ) -> "WorkflowUpdateHandle":
+        """Get a handle to a workflow update by its ID.
+
+        Args:
+            id: The update ID.
+
+        Returns:
+            A handle to the update.
+        """
+        return WorkflowUpdateHandle(
+            id=id,
+            workflow_id=self._workflow_id,
+            _client=self._client,
+        )
+
+    def get_update_handle_for(
+        self,
+        update: Any,
+        *,
+        id: str,
+    ) -> "WorkflowUpdateHandle":
+        """Get a typed handle to a workflow update.
+
+        Args:
+            update: The update definition (used for type hints).
+            id: The update ID.
+
+        Returns:
+            A handle to the update.
+        """
+        return self.get_update_handle(id=id)
+
     async def result(
         self, *, follow_runs: bool = True, timeout: Optional[float] = None
     ) -> Any:
@@ -825,12 +878,22 @@ class WorkflowHandle:
             events=events,
         )
 
-    async def fetch_history_events(self) -> list[Any]:
+    async def fetch_history_events(
+        self,
+        *,
+        event_filter_type: Optional[int] = None,
+        skip_archival: Optional[bool] = None,
+    ) -> list[Any]:
         """Get workflow history events.
 
         Returns all history events for the workflow execution. If the workflow
         has a large history, this will automatically paginate through all pages
         to collect all events.
+
+        Args:
+            event_filter_type: Optional filter for event types.
+                0 = all events, 1 = close events only, 2 = all events.
+            skip_archival: If True, skip checking archival storage.
 
         Returns:
             List of history events (protobuf HistoryEvent objects).
@@ -848,6 +911,8 @@ class WorkflowHandle:
                 workflow_id=self._workflow_id,
                 run_id=self._run_id,
                 next_page_token=next_page_token,
+                event_filter_type=event_filter_type,
+                skip_archival=skip_archival,
             )
 
             response = GetWorkflowExecutionHistoryResponse()

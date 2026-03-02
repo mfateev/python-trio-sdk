@@ -699,6 +699,10 @@ impl TrioAsyncBridge {
                     run_id: Option<String>,
                     #[serde(default)]
                     next_page_token: Vec<u8>,
+                    #[serde(default)]
+                    event_filter_type: Option<i32>,
+                    #[serde(default)]
+                    skip_archival: Option<bool>,
                 }
 
                 let req: GetHistoryRequest = match serde_json::from_slice(&request.data) {
@@ -713,7 +717,7 @@ impl TrioAsyncBridge {
 
                 let client = &*core_client;
                 match client
-                    .get_workflow_execution_history(req.workflow_id, req.run_id, req.next_page_token)
+                    .get_workflow_execution_history(req.workflow_id, req.run_id, req.next_page_token, req.event_filter_type, req.skip_archival)
                     .await
                 {
                     Ok(bytes) => RequestResult::success(request.request_id.clone(), bytes),
@@ -908,6 +912,20 @@ impl TrioAsyncBridge {
                     Err(e) => RequestResult::error(
                         request.request_id.clone(),
                         format!("Signal workflow failed: {}", e),
+                    ),
+                }
+            }
+
+            "signal_with_start_workflow" => {
+                let client = &*core_client;
+                match client.signal_with_start_workflow_execution(request.data.clone()).await {
+                    Ok(bytes) => RequestResult::success(
+                        request.request_id.clone(),
+                        bytes,
+                    ),
+                    Err(e) => RequestResult::error(
+                        request.request_id.clone(),
+                        format!("Signal with start workflow failed: {}", e),
                     ),
                 }
             }

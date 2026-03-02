@@ -16,6 +16,7 @@ Note:
 """
 
 import time
+import uuid
 
 import pytest
 import trio
@@ -47,6 +48,23 @@ class LongRunningWorkflow:
         return f"Completed after {duration} seconds"
 
 
+@workflow.defn
+class SignalWithStartWorkflow:
+    """Workflow that waits for a signal then returns its value."""
+
+    def __init__(self) -> None:
+        self._signal_value: str | None = None
+
+    @workflow.signal
+    def my_signal(self, value: str) -> None:
+        self._signal_value = value
+
+    @workflow.run
+    async def run(self) -> str:
+        await workflow.wait_condition(lambda: self._signal_value is not None)
+        return f"signal: {self._signal_value}"
+
+
 @pytest.fixture
 async def client():
     """Create a Trio client for testing."""
@@ -66,7 +84,7 @@ async def worker_with_workflows(client):
     worker = Worker(
         client=client,
         task_queue=task_queue,
-        workflows=[GreetingWorkflow, LongRunningWorkflow],
+        workflows=[GreetingWorkflow, LongRunningWorkflow, SignalWithStartWorkflow],
     )
 
     async with trio.open_nursery() as nursery:
@@ -278,3 +296,79 @@ async def test_workflow_with_timeout(client, worker_with_workflows):
     )
 
     assert result == "Hello, Timeout Test!"
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_signal_with_start(client, worker_with_workflows):
+    """Test signal-with-start atomically starts a workflow and sends a signal."""
+    task_queue = worker_with_workflows
+    workflow_id = f"signal-with-start-{uuid.uuid4()}"
+
+    handle = await client.start_workflow(
+        SignalWithStartWorkflow,
+        id=workflow_id,
+        task_queue=task_queue,
+        start_signal="my_signal",
+        start_signal_args=["hello-sws"],
+    )
+
+    assert handle.workflow_id == workflow_id
+    result = await handle.result(timeout=15.0)
+    assert result == "signal: hello-sws"
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_workflow_handle_properties(client, worker_with_workflows):
+    """Test WorkflowHandle property accessors."""
+    task_queue = worker_with_workflows
+    workflow_id = f"handle-props-{uuid.uuid4()}"
+
+    handle = await client.start_workflow(
+        GreetingWorkflow,
+        "Test",
+        id=workflow_id,
+        task_queue=task_queue,
+    )
+
+    # Verify properties
+    assert handle.workflow_id == workflow_id
+    assert handle.run_id is None  # tracks latest run
+    assert handle.result_run_id is not None  # set from start response
+    assert handle.first_execution_run_id is not None  # set from start response
+    assert handle.first_execution_run_id == handle.result_run_id
+
+    # Wait for completion
+    result = await handle.result()
+    assert result == "Hello, Test!"
+
+    # get_workflow_handle_for returns same kind of handle
+    handle2 = client.get_workflow_handle_for(GreetingWorkflow, workflow_id)
+    assert handle2.workflow_id == workflow_id
+
+
+@pytest.mark.temporal_server
+@pytest.mark.trio
+async def test_fetch_history_events_with_params(client, worker_with_workflows):
+    """Test fetch_history_events with event_filter_type and skip_archival."""
+    task_queue = worker_with_workflows
+    workflow_id = f"history-params-{uuid.uuid4()}"
+
+    result = await client.execute_workflow(
+        GreetingWorkflow,
+        "HistoryTest",
+        id=workflow_id,
+        task_queue=task_queue,
+    )
+    assert result == "Hello, HistoryTest!"
+
+    handle = client.get_workflow_handle(workflow_id)
+
+    # Fetch all events (default)
+    all_events = await handle.fetch_history_events()
+    assert len(all_events) > 0
+
+    # Fetch with skip_archival=True
+    events_no_archive = await handle.fetch_history_events(skip_archival=True)
+    assert len(events_no_archive) > 0

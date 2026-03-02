@@ -39,6 +39,8 @@ from ._workflow_handle import (
     WorkflowHandle,
     WorkflowHistory,
     WorkflowQueryRejectedError,
+    WorkflowUpdateHandle,
+    WorkflowUpdateStage,
 )
 
 __all__ = [
@@ -53,4 +55,6 @@ __all__ = [
     "WorkflowHandle",
     "WorkflowHistory",
     "WorkflowQueryRejectedError",
+    "WorkflowUpdateHandle",
+    "WorkflowUpdateStage",
 ]
