@@ -17,6 +17,9 @@ import trio
 from temporalio.api.common.v1 import Payloads
 from temporalio.api.enums.v1 import EventType
 from temporalio.api.enums.v1 import (
+    HistoryEventFilterType as _ProtoHistoryEventFilterType,
+)
+from temporalio.api.enums.v1 import (
     WorkflowExecutionStatus as _ProtoWorkflowExecutionStatus,
 )
 from temporalio.api.workflowservice.v1 import (
@@ -54,6 +57,20 @@ class WorkflowExecutionStatus(IntEnum):
         _ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW
     )
     TIMED_OUT = int(_ProtoWorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_TIMED_OUT)
+
+
+class WorkflowHistoryEventFilterType(IntEnum):
+    """Type of history events to get for a workflow.
+
+    See :py:class:`temporalio.api.enums.v1.HistoryEventFilterType`.
+    """
+
+    ALL_EVENT = int(
+        _ProtoHistoryEventFilterType.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT
+    )
+    CLOSE_EVENT = int(
+        _ProtoHistoryEventFilterType.HISTORY_EVENT_FILTER_TYPE_CLOSE_EVENT
+    )
 
 
 @dataclass
@@ -161,6 +178,102 @@ class WorkflowHistory:
         return google.protobuf.json_format.MessageToDict(
             temporalio.api.history.v1.History(events=self.events)
         )
+
+
+class WorkflowHistoryEventAsyncIterator:
+    """Asynchronous iterator for history events of a workflow.
+
+    Most users should use ``async for`` on this iterator and not call any of the
+    methods within.
+    """
+
+    def __init__(
+        self,
+        client: Client,
+        workflow_id: str,
+        run_id: str | None,
+        page_size: int | None,
+        next_page_token: bytes | None,
+        wait_new_event: bool,
+        event_filter_type: WorkflowHistoryEventFilterType,
+        skip_archival: bool,
+        rpc_metadata: Mapping[str, str],
+        rpc_timeout: timedelta | None,
+    ) -> None:
+        self._client = client
+        self._workflow_id = workflow_id
+        self._run_id = run_id
+        self._page_size = page_size
+        self._next_page_token = next_page_token
+        self._rpc_metadata = rpc_metadata
+        self._rpc_timeout = rpc_timeout
+        self._wait_new_event = wait_new_event
+        self._event_filter_type = event_filter_type
+        self._skip_archival = skip_archival
+        self._current_page: (
+            Sequence[temporalio.api.history.v1.HistoryEvent] | None
+        ) = None
+        self._current_page_index = 0
+
+    @property
+    def current_page_index(self) -> int:
+        """Index of the entry in the current page that will be returned from
+        the next :py:meth:`__anext__` call.
+        """
+        return self._current_page_index
+
+    @property
+    def current_page(
+        self,
+    ) -> Sequence[temporalio.api.history.v1.HistoryEvent] | None:
+        """Current page, if it has been fetched yet."""
+        return self._current_page
+
+    @property
+    def next_page_token(self) -> bytes | None:
+        """Token for the next page request if any."""
+        return self._next_page_token
+
+    async def fetch_next_page(self, *, page_size: int | None = None) -> None:
+        """Fetch the next page if any.
+
+        Args:
+            page_size: Override the page size this iterator was originally
+                created with.
+        """
+        response_bytes = await self._client._bridge.get_workflow_execution_history(
+            workflow_id=self._workflow_id,
+            run_id=self._run_id,
+            next_page_token=self._next_page_token or b"",
+            event_filter_type=int(self._event_filter_type),
+            skip_archival=self._skip_archival,
+        )
+        response = GetWorkflowExecutionHistoryResponse()
+        response.ParseFromString(response_bytes)
+        self._current_page = list(response.history.events)
+        self._current_page_index = 0
+        self._next_page_token = response.next_page_token or None
+
+    def __aiter__(self) -> WorkflowHistoryEventAsyncIterator:
+        """Return self as the iterator."""
+        return self
+
+    async def __anext__(self) -> temporalio.api.history.v1.HistoryEvent:
+        """Get the next event on this iterator, fetching next page if
+        necessary.
+        """
+        while True:
+            if self._current_page is None:
+                await self.fetch_next_page()
+                continue
+            if self._current_page_index >= len(self._current_page):
+                if self._next_page_token is not None:
+                    await self.fetch_next_page()
+                    continue
+                raise StopAsyncIteration
+            ret = self._current_page[self._current_page_index]
+            self._current_page_index += 1
+            return ret
 
 
 class WorkflowFailureError(temporalio.exceptions.TemporalError):
@@ -882,76 +995,73 @@ class WorkflowHandle:
             raw_description=resp,
         )
 
-    async def fetch_history(self) -> WorkflowHistory:
-        """Get workflow history.
-
-        Returns all history events for the workflow execution. If the workflow
-        has a large history, this will automatically paginate through all pages
-        to collect all events.
-
-        Returns:
-            WorkflowHistory with the workflow ID and all history events.
-
-        Example:
-            history = await handle.fetch_history()
-            for event in history.events:
-                print(f"Event: {event.event_type}")
-        """
-        events = await self.fetch_history_events()
-        return WorkflowHistory(
-            workflow_id=self._workflow_id,
-            events=events,
-        )
-
-    async def fetch_history_events(
+    async def fetch_history(
         self,
         *,
-        event_filter_type: Optional[int] = None,
-        skip_archival: Optional[bool] = None,
-    ) -> list[Any]:
-        """Get workflow history events.
+        event_filter_type: WorkflowHistoryEventFilterType = WorkflowHistoryEventFilterType.ALL_EVENT,
+        skip_archival: bool = False,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
+    ) -> WorkflowHistory:
+        """Get workflow history.
 
-        Returns all history events for the workflow execution. If the workflow
-        has a large history, this will automatically paginate through all pages
-        to collect all events.
+        This is a shortcut for :py:meth:`fetch_history_events` that just fetches
+        all events.
+        """
+        return WorkflowHistory(
+            workflow_id=self._workflow_id,
+            events=[
+                v
+                async for v in self.fetch_history_events(
+                    event_filter_type=event_filter_type,
+                    skip_archival=skip_archival,
+                    rpc_metadata=rpc_metadata,
+                    rpc_timeout=rpc_timeout,
+                )
+            ],
+        )
+
+    def fetch_history_events(
+        self,
+        *,
+        page_size: int | None = None,
+        next_page_token: bytes | None = None,
+        wait_new_event: bool = False,
+        event_filter_type: WorkflowHistoryEventFilterType = WorkflowHistoryEventFilterType.ALL_EVENT,
+        skip_archival: bool = False,
+        rpc_metadata: Mapping[str, str] = {},
+        rpc_timeout: Optional[timedelta] = None,
+    ) -> WorkflowHistoryEventAsyncIterator:
+        """Get workflow history events as an async iterator.
+
+        This does not make a request until the first iteration is attempted.
+        Therefore any errors will not occur until then.
 
         Args:
-            event_filter_type: Optional filter for event types.
-                0 = all events, 1 = close events only, 2 = all events.
-            skip_archival: If True, skip checking archival storage.
+            page_size: Maximum amount to fetch per request if any maximum.
+            next_page_token: A specific page token to fetch.
+            wait_new_event: Whether the event fetching request will wait for new
+                events or just return right away.
+            event_filter_type: Which events to obtain.
+            skip_archival: Whether to skip archival.
+            rpc_metadata: Headers used on each RPC call.
+            rpc_timeout: Optional RPC deadline to set for each RPC call.
 
         Returns:
-            List of history events (protobuf HistoryEvent objects).
-
-        Example:
-            events = await handle.fetch_history_events()
-            for event in events:
-                print(f"Event: {event.event_type}")
+            An async iterator that doesn't begin fetching until iterated on.
         """
-        all_events: list[Any] = []
-        next_page_token = b""
-
-        while True:
-            response_bytes = await self._client._bridge.get_workflow_execution_history(
-                workflow_id=self._workflow_id,
-                run_id=self._run_id,
-                next_page_token=next_page_token,
-                event_filter_type=event_filter_type,
-                skip_archival=skip_archival,
-            )
-
-            response = GetWorkflowExecutionHistoryResponse()
-            response.ParseFromString(response_bytes)
-
-            all_events.extend(response.history.events)
-
-            # Check for more pages
-            if response.next_page_token:
-                next_page_token = response.next_page_token
-            else:
-                break
-
-        return all_events
+        return WorkflowHistoryEventAsyncIterator(
+            client=self._client,
+            workflow_id=self._workflow_id,
+            run_id=self._run_id,
+            page_size=page_size,
+            next_page_token=next_page_token,
+            wait_new_event=wait_new_event,
+            event_filter_type=event_filter_type,
+            skip_archival=skip_archival,
+            rpc_metadata=rpc_metadata,
+            rpc_timeout=rpc_timeout,
+        )
 
     async def _try_extract_result_from_history(
         self,
