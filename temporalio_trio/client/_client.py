@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, Sequence, Type, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Optional, Sequence, Type, TypeVar, Union
 
 import temporalio.common
 import temporalio.converter
@@ -42,6 +42,7 @@ from ._async_activity_handle import (
 from ._schedule import (
     Schedule,
     ScheduleAlreadyRunningError,
+    ScheduleAsyncIterator,
     ScheduleBackfill,
     ScheduleHandle,
     ScheduleListEntry,
@@ -161,6 +162,34 @@ class WorkflowExecutionInfo:
 
     close_time: Optional[datetime]
     """When the workflow was closed, if closed."""
+
+
+@dataclass
+class WorkflowExecutionCount:
+    """Representation of a count from a count workflows call."""
+
+    count: int
+    """Approximate number of workflows matching the original query.
+
+    If the query had a group-by clause, this is simply the sum of all the
+    counts in :py:attr:`groups`.
+    """
+
+    groups: Sequence[WorkflowExecutionCountAggregationGroup]
+    """Groups if the query had a group-by clause, or empty if not."""
+
+
+@dataclass
+class WorkflowExecutionCountAggregationGroup:
+    """Aggregation group if the workflow count query had a group-by clause."""
+
+    count: int
+    """Approximate number of workflows matching the original query for this
+    group.
+    """
+
+    group_values: Sequence[Any]
+    """Search attribute values for this group."""
 
 
 # --- Build ID types (deprecated/legacy) ---
@@ -302,6 +331,125 @@ class WorkerTaskReachability:
     """Task reachability for build IDs (deprecated)."""
 
     build_id_reachability: Mapping[str, BuildIdReachability]
+
+
+class WorkflowExecutionAsyncIterator:
+    """Asynchronous iterator for :py:class:`WorkflowExecutionInfo` values.
+
+    Most users should use ``async for`` on this iterator and not call any of the
+    methods within.
+    """
+
+    def __init__(
+        self,
+        client: Client,
+        query: str | None,
+        page_size: int,
+        next_page_token: bytes | None,
+        rpc_metadata: Mapping[str, str],
+        rpc_timeout: timedelta | None,
+        limit: int | None,
+    ) -> None:
+        self._client = client
+        self._query = query
+        self._page_size = page_size
+        self._next_page_token = next_page_token
+        self._rpc_metadata = rpc_metadata
+        self._rpc_timeout = rpc_timeout
+        self._current_page: Sequence[WorkflowExecutionInfo] | None = None
+        self._current_page_index = 0
+        self._limit = limit
+        self._yielded = 0
+
+    @property
+    def current_page_index(self) -> int:
+        """Index of the entry in the current page that will be returned from
+        the next :py:meth:`__anext__` call.
+        """
+        return self._current_page_index
+
+    @property
+    def current_page(self) -> Sequence[WorkflowExecutionInfo] | None:
+        """Current page, if it has been fetched yet."""
+        return self._current_page
+
+    @property
+    def next_page_token(self) -> bytes | None:
+        """Token for the next page request if any."""
+        return self._next_page_token
+
+    async def fetch_next_page(self, *, page_size: int | None = None) -> None:
+        """Fetch the next page if any.
+
+        Args:
+            page_size: Override the page size this iterator was originally
+                created with.
+        """
+        page_size = page_size or self._page_size
+        if self._limit is not None and self._limit - self._yielded < page_size:
+            page_size = self._limit - self._yielded
+
+        request = ListWorkflowExecutionsRequest(
+            namespace=self._client._config.namespace,
+            page_size=page_size,
+            next_page_token=self._next_page_token or b"",
+            query=self._query or "",
+        )
+        response_bytes = await self._client._bridge.list_workflows(
+            request.SerializeToString()
+        )
+        response = ListWorkflowExecutionsResponse()
+        response.ParseFromString(response_bytes)
+
+        results: list[WorkflowExecutionInfo] = []
+        for info in response.executions:
+            start_time: datetime | None = None
+            if info.HasField("start_time"):
+                start_time = info.start_time.ToDatetime().replace(tzinfo=timezone.utc)
+            close_time: datetime | None = None
+            if info.HasField("close_time"):
+                close_time = info.close_time.ToDatetime().replace(tzinfo=timezone.utc)
+            status: WorkflowExecutionStatus | None = None
+            if info.status:
+                status = WorkflowExecutionStatus(info.status)
+            results.append(
+                WorkflowExecutionInfo(
+                    workflow_id=info.execution.workflow_id,
+                    run_id=info.execution.run_id,
+                    status=status,
+                    workflow_type=info.type.name,
+                    start_time=start_time,
+                    close_time=close_time,
+                )
+            )
+
+        self._current_page = results
+        self._current_page_index = 0
+        self._next_page_token = response.next_page_token or None
+
+    def __aiter__(self) -> WorkflowExecutionAsyncIterator:
+        """Return self as the iterator."""
+        return self
+
+    async def __anext__(self) -> WorkflowExecutionInfo:
+        """Get the next execution on this iterator, fetching next page if
+        necessary.
+        """
+        if self._limit is not None and self._yielded >= self._limit:
+            raise StopAsyncIteration
+        while True:
+            if self._current_page is None:
+                await self.fetch_next_page()
+                continue
+            if self._current_page_index >= len(self._current_page):
+                if self._next_page_token is not None:
+                    await self.fetch_next_page()
+                    continue
+                raise StopAsyncIteration
+            ret = self._current_page[self._current_page_index]
+            self._current_page_index += 1
+            self._yielded += 1
+            return ret
 
 
 class Client:
@@ -747,92 +895,66 @@ class Client:
             first_execution_run_id=first_execution_run_id,
         )
 
-    async def list_workflows(
+    def list_workflows(
         self,
-        query: str = "",
+        query: str | None = None,
         *,
+        limit: int | None = None,
+        page_size: int = 1000,
+        next_page_token: bytes | None = None,
         rpc_metadata: Mapping[str, str] = {},
         rpc_timeout: Optional[timedelta] = None,
-    ) -> list[WorkflowExecutionInfo]:
+    ) -> WorkflowExecutionAsyncIterator:
         """List workflow executions matching a query.
 
+        This does not make a request until the first iteration is attempted.
+        Therefore any errors will not occur until then.
+
         Args:
-            query: A Temporal visibility query string (e.g.
-                ``'WorkflowType="MyWorkflow"'``). An empty string returns all
-                workflows.
+            query: A Temporal visibility list filter. See Temporal documentation
+                concerning visibility list filters including behavior when left
+                unset.
+            limit: Maximum number of workflows to return. If unset, all
+                workflows are returned.
+            page_size: Maximum number of results for each page.
+            next_page_token: A previously obtained next page token if doing
+                pagination.
+            rpc_metadata: Headers used on each RPC call.
+            rpc_timeout: Optional RPC deadline to set for each RPC call.
 
         Returns:
-            List of :py:class:`WorkflowExecutionInfo` for matching workflows.
-
-        Example:
-            workflows = await client.list_workflows()
-            for wf in workflows:
-                print(f"{wf.workflow_id}: {wf.status}")
+            An async iterator that can be used with ``async for``.
         """
-        request = ListWorkflowExecutionsRequest(
-            namespace=self._config.namespace,
+        return WorkflowExecutionAsyncIterator(
+            client=self,
             query=query,
+            page_size=page_size,
+            next_page_token=next_page_token,
+            rpc_metadata=rpc_metadata,
+            rpc_timeout=rpc_timeout,
+            limit=limit,
         )
-        request_bytes = request.SerializeToString()
-
-        response_bytes = await self._bridge.list_workflows(request_bytes)
-
-        response = ListWorkflowExecutionsResponse()
-        response.ParseFromString(response_bytes)
-
-        results: list[WorkflowExecutionInfo] = []
-        for info in response.executions:
-            # Parse timestamps
-            start_time: Optional[datetime] = None
-            if info.HasField("start_time"):
-                start_time = info.start_time.ToDatetime().replace(tzinfo=timezone.utc)
-
-            close_time: Optional[datetime] = None
-            if info.HasField("close_time"):
-                close_time = info.close_time.ToDatetime().replace(tzinfo=timezone.utc)
-
-            # Parse status
-            status: Optional[WorkflowExecutionStatus] = None
-            if info.status:
-                status = WorkflowExecutionStatus(info.status)
-
-            results.append(
-                WorkflowExecutionInfo(
-                    workflow_id=info.execution.workflow_id,
-                    run_id=info.execution.run_id,
-                    status=status,
-                    workflow_type=info.type.name,
-                    start_time=start_time,
-                    close_time=close_time,
-                )
-            )
-
-        return results
 
     async def count_workflows(
         self,
-        query: str = "",
-        *,
+        query: str | None = None,
         rpc_metadata: Mapping[str, str] = {},
         rpc_timeout: Optional[timedelta] = None,
-    ) -> int:
+    ) -> WorkflowExecutionCount:
         """Count workflow executions matching a query.
 
         Args:
-            query: A Temporal visibility query string (e.g.
-                ``'WorkflowType="MyWorkflow"'``). An empty string counts all
-                workflows.
+            query: A Temporal visibility filter. See Temporal documentation
+                concerning visibility list filters.
+            rpc_metadata: Headers used on each RPC call.
+            rpc_timeout: Optional RPC deadline to set for each RPC call.
 
         Returns:
-            Number of matching workflows.
-
-        Example:
-            count = await client.count_workflows('WorkflowType="MyWorkflow"')
-            print(f"Found {count} workflows")
+            Count of workflows.
         """
         request = CountWorkflowExecutionsRequest(
             namespace=self._config.namespace,
-            query=query,
+            query=query or "",
         )
         request_bytes = request.SerializeToString()
 
@@ -841,7 +963,24 @@ class Client:
         response = CountWorkflowExecutionsResponse()
         response.ParseFromString(response_bytes)
 
-        return response.count
+        groups: list[WorkflowExecutionCountAggregationGroup] = []
+        for g in response.groups:
+            group_values: list[Any] = []
+            for v in g.group_values:
+                group_values.append(
+                    temporalio.converter._decode_search_attribute_value(v)
+                )
+            groups.append(
+                WorkflowExecutionCountAggregationGroup(
+                    count=g.count,
+                    group_values=group_values,
+                )
+            )
+
+        return WorkflowExecutionCount(
+            count=response.count,
+            groups=groups,
+        )
 
     async def execute_update_with_start_workflow(
         self,
@@ -1172,101 +1311,39 @@ class Client:
         """
         return ScheduleHandle(self, id)
 
-    async def list_schedules(
+    def list_schedules(
         self,
+        query: str | None = None,
         *,
-        query: Optional[str] = None,
+        page_size: int = 1000,
+        next_page_token: bytes | None = None,
         rpc_metadata: Mapping[str, str] = {},
         rpc_timeout: Optional[timedelta] = None,
-    ) -> list[ScheduleListEntry]:
+    ) -> ScheduleAsyncIterator:
         """List schedules.
 
+        This does not make a request until the first iteration is attempted.
+        Therefore any errors will not occur until then.
+
         Args:
-            query: Optional query filter.
+            query: A Temporal visibility list filter.
+            page_size: Maximum number of results for each page.
+            next_page_token: A previously obtained next page token if doing
+                pagination.
+            rpc_metadata: Headers used on each RPC call.
+            rpc_timeout: Optional RPC deadline to set for each RPC call.
 
         Returns:
-            List of schedule entries.
+            An async iterator that can be used with ``async for``.
         """
-        from temporalio.api.workflowservice.v1 import (
-            ListSchedulesRequest,
-            ListSchedulesResponse,
+        return ScheduleAsyncIterator(
+            client=self,
+            query=query,
+            page_size=page_size,
+            next_page_token=next_page_token,
+            rpc_metadata=rpc_metadata,
+            rpc_timeout=rpc_timeout,
         )
-
-        results: list[ScheduleListEntry] = []
-        next_page_token = b""
-
-        while True:
-            req = ListSchedulesRequest(
-                namespace=self._config.namespace,
-                maximum_page_size=100,
-                next_page_token=next_page_token,
-                query=query or "",
-            )
-            resp_bytes = await self._bridge.list_schedules(req.SerializeToString())
-            resp = ListSchedulesResponse()
-            resp.ParseFromString(resp_bytes)
-
-            for entry in resp.schedules:
-                # Extract basic info
-                wf_type = None
-                if entry.info.HasField("workflow_type"):
-                    wf_type = entry.info.workflow_type.name
-
-                paused = False
-                note = None
-                if entry.HasField("info"):
-                    paused = entry.info.paused
-                    note = entry.info.notes or None
-
-                # Recent actions
-                recent_actions = []
-                for ra in entry.info.recent_actions:
-                    from temporalio_trio.client._schedule import (
-                        ScheduleActionExecutionStartWorkflow,
-                        ScheduleActionResult,
-                    )
-
-                    sched_at = ra.schedule_time.ToDatetime().replace(
-                        tzinfo=timezone.utc
-                    )
-                    started_at = ra.actual_time.ToDatetime().replace(
-                        tzinfo=timezone.utc
-                    )
-                    exec_info = ScheduleActionExecutionStartWorkflow(
-                        workflow_id=ra.start_workflow_result.workflow_id,
-                        first_execution_run_id=ra.start_workflow_result.run_id,
-                    )
-                    recent_actions.append(
-                        ScheduleActionResult(
-                            scheduled_at=sched_at,
-                            started_at=started_at,
-                            action=exec_info,
-                        )
-                    )
-
-                # Next action times
-                next_times = [
-                    t.ToDatetime().replace(tzinfo=timezone.utc)
-                    for t in entry.info.future_action_times
-                ]
-
-                results.append(
-                    ScheduleListEntry(
-                        id=entry.schedule_id,
-                        workflow_type=wf_type,
-                        paused=paused,
-                        note=note,
-                        recent_actions=recent_actions,
-                        next_action_times=next_times,
-                    )
-                )
-
-            if resp.next_page_token:
-                next_page_token = resp.next_page_token
-            else:
-                break
-
-        return results
 
     async def update_worker_build_id_compatibility(
         self,
@@ -1441,6 +1518,24 @@ class Client:
         """
         self._config.rpc_metadata = value
 
+    def config(self) -> ClientConfig:
+        """Config used to create this client.
+
+        This makes a shallow copy of the config each call.
+        """
+        return ClientConfig(
+            target_url=self._config.target_url,
+            namespace=self._config.namespace,
+            identity=self._config.identity,
+            data_converter=self._config.data_converter,
+            tls=self._config.tls,
+            api_key=self._config.api_key,
+            rpc_metadata=self._config.rpc_metadata,
+            default_workflow_query_reject_condition=self._config.default_workflow_query_reject_condition,
+            retry_config=self._config.retry_config,
+            lazy=self._config.lazy,
+        )
+
     def get_workflow_handle_for(
         self,
         workflow: Any,
@@ -1532,4 +1627,12 @@ class Client:
         return Duration(seconds=seconds, nanos=nanos)
 
 
-__all__ = ["Client", "ClientConfig", "TLSConfig", "WorkflowExecutionInfo"]
+__all__ = [
+    "Client",
+    "ClientConfig",
+    "TLSConfig",
+    "WorkflowExecutionAsyncIterator",
+    "WorkflowExecutionCount",
+    "WorkflowExecutionCountAggregationGroup",
+    "WorkflowExecutionInfo",
+]

@@ -634,6 +634,8 @@ async def test_get_update_handle_for(mock_bridge):
 @pytest.mark.trio
 async def test_fetch_history_events_with_filter(mock_bridge):
     """Test fetch_history_events passes event_filter_type and skip_archival."""
+    from temporalio_trio.client import WorkflowHistoryEventFilterType
+
     history_response = GetWorkflowExecutionHistoryResponse()
     event = history_response.history.events.add()
     event.event_type = EventType.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED
@@ -645,15 +647,21 @@ async def test_fetch_history_events_with_filter(mock_bridge):
     client = await Client.connect("localhost:7233")
     handle = client.get_workflow_handle("wf-123")
 
-    events = await handle.fetch_history_events(
-        event_filter_type=2,
-        skip_archival=False,
-    )
+    # fetch_history_events now returns an async iterator
+    events = [
+        v
+        async for v in handle.fetch_history_events(
+            event_filter_type=WorkflowHistoryEventFilterType.ALL_EVENT,
+            skip_archival=False,
+        )
+    ]
 
     assert len(events) == 1
     mock_bridge.get_workflow_execution_history.assert_called_once()
     call_kwargs = mock_bridge.get_workflow_execution_history.call_args.kwargs
-    assert call_kwargs["event_filter_type"] == 2
+    assert call_kwargs["event_filter_type"] == int(
+        WorkflowHistoryEventFilterType.ALL_EVENT
+    )
     assert call_kwargs["skip_archival"] is False
 
 
@@ -719,3 +727,168 @@ async def test_with_start_requires_conflict_policy():
             id="wf-123",
             task_queue="queue",
         )
+
+
+@pytest.mark.trio
+async def test_list_workflows_returns_async_iterator(mock_bridge):
+    """Test list_workflows returns a lazy async iterator."""
+    from temporalio.api.common.v1 import WorkflowExecution as WfExec
+    from temporalio.api.common.v1 import WorkflowType as WfType
+    from temporalio.api.workflowservice.v1 import (
+        ListWorkflowExecutionsResponse,
+    )
+
+    from temporalio_trio.client import WorkflowExecutionAsyncIterator
+
+    # Build a response with 2 executions and no next_page_token
+    resp = ListWorkflowExecutionsResponse()
+    info1 = resp.executions.add()
+    info1.execution.CopyFrom(WfExec(workflow_id="wf-1", run_id="run-1"))
+    info1.type.CopyFrom(WfType(name="MyWorkflow"))
+    info2 = resp.executions.add()
+    info2.execution.CopyFrom(WfExec(workflow_id="wf-2", run_id="run-2"))
+    info2.type.CopyFrom(WfType(name="MyWorkflow"))
+
+    mock_bridge.list_workflows.return_value = resp.SerializeToString()
+
+    client = await Client.connect("localhost:7233")
+    # list_workflows is sync and returns an iterator
+    it = client.list_workflows("WorkflowType='MyWorkflow'")
+    assert isinstance(it, WorkflowExecutionAsyncIterator)
+
+    # No request until iteration
+    mock_bridge.list_workflows.assert_not_called()
+
+    # Iterate
+    results = [v async for v in it]
+    assert len(results) == 2
+    assert results[0].workflow_id == "wf-1"
+    assert results[1].workflow_id == "wf-2"
+    mock_bridge.list_workflows.assert_called_once()
+
+
+@pytest.mark.trio
+async def test_list_workflows_with_limit(mock_bridge):
+    """Test list_workflows respects limit parameter."""
+    from temporalio.api.common.v1 import WorkflowExecution as WfExec
+    from temporalio.api.common.v1 import WorkflowType as WfType
+    from temporalio.api.workflowservice.v1 import (
+        ListWorkflowExecutionsResponse,
+    )
+
+    resp = ListWorkflowExecutionsResponse()
+    for i in range(5):
+        info = resp.executions.add()
+        info.execution.CopyFrom(WfExec(workflow_id=f"wf-{i}", run_id=f"run-{i}"))
+        info.type.CopyFrom(WfType(name="MyWorkflow"))
+
+    mock_bridge.list_workflows.return_value = resp.SerializeToString()
+
+    client = await Client.connect("localhost:7233")
+    results = [v async for v in client.list_workflows(limit=3)]
+    assert len(results) == 3
+    assert results[0].workflow_id == "wf-0"
+    assert results[2].workflow_id == "wf-2"
+
+
+@pytest.mark.trio
+async def test_list_workflows_pagination(mock_bridge):
+    """Test list_workflows paginates through multiple pages."""
+    from temporalio.api.common.v1 import WorkflowExecution as WfExec
+    from temporalio.api.common.v1 import WorkflowType as WfType
+    from temporalio.api.workflowservice.v1 import (
+        ListWorkflowExecutionsResponse,
+    )
+
+    # First page with next_page_token
+    resp1 = ListWorkflowExecutionsResponse()
+    info1 = resp1.executions.add()
+    info1.execution.CopyFrom(WfExec(workflow_id="wf-1", run_id="run-1"))
+    info1.type.CopyFrom(WfType(name="MyWorkflow"))
+    resp1.next_page_token = b"page2"
+
+    # Second page without next_page_token
+    resp2 = ListWorkflowExecutionsResponse()
+    info2 = resp2.executions.add()
+    info2.execution.CopyFrom(WfExec(workflow_id="wf-2", run_id="run-2"))
+    info2.type.CopyFrom(WfType(name="MyWorkflow"))
+
+    mock_bridge.list_workflows.side_effect = [
+        resp1.SerializeToString(),
+        resp2.SerializeToString(),
+    ]
+
+    client = await Client.connect("localhost:7233")
+    results = [v async for v in client.list_workflows()]
+    assert len(results) == 2
+    assert results[0].workflow_id == "wf-1"
+    assert results[1].workflow_id == "wf-2"
+    assert mock_bridge.list_workflows.call_count == 2
+
+
+@pytest.mark.trio
+async def test_count_workflows_returns_count_object(mock_bridge):
+    """Test count_workflows returns WorkflowExecutionCount."""
+    from temporalio.api.workflowservice.v1 import (
+        CountWorkflowExecutionsResponse,
+    )
+
+    from temporalio_trio.client import WorkflowExecutionCount
+
+    resp = CountWorkflowExecutionsResponse(count=42)
+    mock_bridge.count_workflows.return_value = resp.SerializeToString()
+
+    client = await Client.connect("localhost:7233")
+    result = await client.count_workflows()
+    assert isinstance(result, WorkflowExecutionCount)
+    assert result.count == 42
+    assert result.groups == []
+
+
+@pytest.mark.trio
+async def test_history_event_filter_type_values():
+    """Test WorkflowHistoryEventFilterType enum values."""
+    from temporalio_trio.client import WorkflowHistoryEventFilterType
+
+    assert WorkflowHistoryEventFilterType.ALL_EVENT == 1
+    assert WorkflowHistoryEventFilterType.CLOSE_EVENT == 2
+
+
+@pytest.mark.trio
+async def test_fetch_history_events_returns_async_iterator(mock_bridge):
+    """Test fetch_history_events returns a lazy async iterator."""
+    from temporalio_trio.client import (
+        WorkflowHistoryEventAsyncIterator,
+        WorkflowHistoryEventFilterType,
+    )
+
+    history_response = GetWorkflowExecutionHistoryResponse()
+    event = history_response.history.events.add()
+    event.event_type = EventType.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED
+
+    mock_bridge.get_workflow_execution_history.return_value = (
+        history_response.SerializeToString()
+    )
+
+    client = await Client.connect("localhost:7233")
+    handle = client.get_workflow_handle("wf-123")
+
+    # fetch_history_events is sync, returns iterator
+    it = handle.fetch_history_events()
+    assert isinstance(it, WorkflowHistoryEventAsyncIterator)
+
+    # No request until iteration
+    mock_bridge.get_workflow_execution_history.assert_not_called()
+
+    events = [v async for v in it]
+    assert len(events) == 1
+    mock_bridge.get_workflow_execution_history.assert_called_once()
+
+
+@pytest.mark.trio
+async def test_client_config_method(mock_bridge):
+    """Test Client.config() returns a copy of config."""
+    client = await Client.connect("localhost:7233")
+    config = client.config()
+    assert "localhost:7233" in config.target_url
+    assert config.namespace == "default"

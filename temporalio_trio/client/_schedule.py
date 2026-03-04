@@ -606,6 +606,138 @@ class ScheduleListEntry:
     next_action_times: Sequence[datetime]
 
 
+class ScheduleListAction(ABC):
+    """Base class for an action a listed schedule can take."""
+
+    pass
+
+
+@dataclass
+class ScheduleListActionStartWorkflow(ScheduleListAction):
+    """Action to start a workflow on a listed schedule."""
+
+    workflow: str
+    """Workflow type name."""
+
+
+@dataclass
+class ScheduleListState:
+    """State of a listed schedule."""
+
+    note: str | None
+    """Human readable message for the schedule."""
+
+    paused: bool
+    """Whether the schedule is paused."""
+
+    @staticmethod
+    def _from_proto(
+        info: Any,
+    ) -> ScheduleListState:
+        return ScheduleListState(
+            note=info.notes or None,
+            paused=info.paused,
+        )
+
+
+@dataclass
+class ScheduleListInfo:
+    """Information about a listed schedule."""
+
+    recent_actions: Sequence[ScheduleActionResult]
+    """Most recent actions, oldest first."""
+
+    next_action_times: Sequence[datetime]
+    """Next scheduled action times."""
+
+    @staticmethod
+    def _from_proto(
+        info: Any,
+    ) -> ScheduleListInfo:
+        return ScheduleListInfo(
+            recent_actions=[
+                ScheduleActionResult(
+                    scheduled_at=r.schedule_time.ToDatetime().replace(
+                        tzinfo=timezone.utc
+                    ),
+                    started_at=r.actual_time.ToDatetime().replace(
+                        tzinfo=timezone.utc
+                    ),
+                    action=ScheduleActionExecutionStartWorkflow(
+                        workflow_id=r.start_workflow_result.workflow_id,
+                        first_execution_run_id=r.start_workflow_result.run_id,
+                    ),
+                )
+                for r in info.recent_actions
+            ],
+            next_action_times=[
+                f.ToDatetime().replace(tzinfo=timezone.utc)
+                for f in info.future_action_times
+            ],
+        )
+
+
+@dataclass
+class ScheduleListSchedule:
+    """Details for a listed schedule."""
+
+    action: ScheduleListAction
+    """Action taken when scheduled."""
+
+    spec: ScheduleSpec
+    """When the action is taken."""
+
+    state: ScheduleListState
+    """State of the schedule."""
+
+    @staticmethod
+    def _from_proto(
+        info: Any,
+    ) -> ScheduleListSchedule:
+        if not info.HasField("workflow_type"):
+            raise ValueError("Unknown action on schedule")
+        return ScheduleListSchedule(
+            action=ScheduleListActionStartWorkflow(
+                workflow=info.workflow_type.name
+            ),
+            spec=ScheduleSpec._from_proto(info.spec),
+            state=ScheduleListState._from_proto(info),
+        )
+
+
+@dataclass
+class ScheduleListDescription:
+    """Description of a listed schedule."""
+
+    id: str
+    """ID of the schedule."""
+
+    schedule: ScheduleListSchedule | None
+    """Schedule details that can be mutated."""
+
+    info: ScheduleListInfo | None
+    """Information about the schedule."""
+
+    raw_entry: Any
+    """Raw protobuf entry."""
+
+    @staticmethod
+    def _from_proto(
+        entry: Any,
+        converter: Any,
+    ) -> ScheduleListDescription:
+        return ScheduleListDescription(
+            id=entry.schedule_id,
+            schedule=ScheduleListSchedule._from_proto(entry.info)
+            if entry.HasField("info")
+            else None,
+            info=ScheduleListInfo._from_proto(entry.info)
+            if entry.HasField("info")
+            else None,
+            raw_entry=entry,
+        )
+
+
 # --- Handle ---
 
 
@@ -776,6 +908,96 @@ class ScheduleHandle:
         await self._client._bridge.update_schedule(req.SerializeToString())
 
 
+class ScheduleAsyncIterator:
+    """Asynchronous iterator for :py:class:`ScheduleListDescription` values.
+
+    Most users should use ``async for`` on this iterator and not call any of the
+    methods within.
+    """
+
+    def __init__(
+        self,
+        client: Client,
+        query: str | None,
+        page_size: int,
+        next_page_token: bytes | None,
+        rpc_metadata: Mapping[str, str],
+        rpc_timeout: Optional[timedelta],
+    ) -> None:
+        self._client = client
+        self._query = query
+        self._page_size = page_size
+        self._next_page_token = next_page_token
+        self._rpc_metadata = rpc_metadata
+        self._rpc_timeout = rpc_timeout
+        self._current_page: Sequence[ScheduleListDescription] | None = None
+        self._current_page_index = 0
+
+    @property
+    def current_page_index(self) -> int:
+        """Index of the entry in the current page that will be returned from
+        the next :py:meth:`__anext__` call.
+        """
+        return self._current_page_index
+
+    @property
+    def current_page(self) -> Sequence[ScheduleListDescription] | None:
+        """Current page, if it has been fetched yet."""
+        return self._current_page
+
+    @property
+    def next_page_token(self) -> bytes | None:
+        """Token for the next page request if any."""
+        return self._next_page_token
+
+    async def fetch_next_page(self, *, page_size: int | None = None) -> None:
+        """Fetch the next page if any.
+
+        Args:
+            page_size: Override the page size this iterator was originally
+                created with.
+        """
+        req = ListSchedulesRequest(
+            namespace=self._client.namespace,
+            maximum_page_size=page_size or self._page_size,
+            next_page_token=self._next_page_token or b"",
+            query=self._query or "",
+        )
+        resp_bytes = await self._client._bridge.list_schedules(
+            req.SerializeToString()
+        )
+        resp = ListSchedulesResponse()
+        resp.ParseFromString(resp_bytes)
+
+        self._current_page = [
+            ScheduleListDescription._from_proto(v, self._client.data_converter)
+            for v in resp.schedules
+        ]
+        self._current_page_index = 0
+        self._next_page_token = resp.next_page_token or None
+
+    def __aiter__(self) -> ScheduleAsyncIterator:
+        """Return self as the iterator."""
+        return self
+
+    async def __anext__(self) -> ScheduleListDescription:
+        """Get the next description on this iterator, fetching next page if
+        necessary.
+        """
+        while True:
+            if self._current_page is None:
+                await self.fetch_next_page()
+                continue
+            if self._current_page_index >= len(self._current_page):
+                if self._next_page_token is not None:
+                    await self.fetch_next_page()
+                    continue
+                raise StopAsyncIteration
+            ret = self._current_page[self._current_page_index]
+            self._current_page_index += 1
+            return ret
+
+
 __all__ = [
     "Schedule",
     "ScheduleAction",
@@ -783,13 +1005,20 @@ __all__ = [
     "ScheduleActionResult",
     "ScheduleActionStartWorkflow",
     "ScheduleAlreadyRunningError",
+    "ScheduleAsyncIterator",
     "ScheduleBackfill",
     "ScheduleCalendarSpec",
     "ScheduleDescription",
     "ScheduleHandle",
     "ScheduleInfo",
     "ScheduleIntervalSpec",
+    "ScheduleListAction",
+    "ScheduleListActionStartWorkflow",
+    "ScheduleListDescription",
     "ScheduleListEntry",
+    "ScheduleListInfo",
+    "ScheduleListSchedule",
+    "ScheduleListState",
     "ScheduleOverlapPolicy",
     "SchedulePolicy",
     "ScheduleRange",

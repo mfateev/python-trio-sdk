@@ -365,10 +365,10 @@ async def test_fetch_history_events_with_params(client, worker_with_workflows):
 
     handle = client.get_workflow_handle(workflow_id)
 
-    # Fetch all events (default)
-    all_events = await handle.fetch_history_events()
+    # Fetch all events (default) - now returns an async iterator
+    all_events = [v async for v in handle.fetch_history_events()]
     assert len(all_events) > 0
 
     # Fetch with skip_archival=True
-    events_no_archive = await handle.fetch_history_events(skip_archival=True)
+    events_no_archive = [v async for v in handle.fetch_history_events(skip_archival=True)]
     assert len(events_no_archive) > 0

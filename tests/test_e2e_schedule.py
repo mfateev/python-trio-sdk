@@ -257,9 +257,9 @@ async def test_list_schedules(client, worker):
         # Give server a moment to index
         await trio.sleep(1.0)
 
-        entries = await client.list_schedules()
+        entries = client.list_schedules()
         # At least our schedule should be in the list
-        ids = [e.id for e in entries]
+        ids = [e.id async for e in entries]
         assert schedule_id in ids
     finally:
         await handle.delete()
