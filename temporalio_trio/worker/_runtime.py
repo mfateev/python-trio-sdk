@@ -1903,35 +1903,44 @@ class WorkflowRuntime:
             await self.workflow_sleep(backoff_seconds)
 
         # Get the original ScheduleLocalActivityCommand to reschedule
-        # We need to find the original input to reuse its parameters
         original_cmd = None
         for cmd in self.commands:
             if isinstance(cmd, ScheduleLocalActivityCommand) and cmd.seq == old_seq:
                 original_cmd = cmd
                 break
 
+        if original_cmd is None:
+            raise RuntimeError(
+                f"Failed finding original local activity command for sequence {old_seq}"
+            )
+
         # Allocate new sequence number
         new_seq = self.next_activity_seq()
 
-        if original_cmd is not None:
-            # Reschedule with backoff info
-            self.commands.append(
-                ScheduleLocalActivityCommand(
-                    seq=new_seq,
-                    activity_id=original_cmd.activity_id,
-                    activity_type=original_cmd.activity_type,
-                    args=original_cmd.args,
-                    schedule_to_close_timeout=original_cmd.schedule_to_close_timeout,
-                    schedule_to_start_timeout=original_cmd.schedule_to_start_timeout,
-                    start_to_close_timeout=original_cmd.start_to_close_timeout,
-                    retry_policy=original_cmd.retry_policy,
-                    local_retry_threshold=original_cmd.local_retry_threshold,
-                    cancellation_type=original_cmd.cancellation_type,
-                    headers=original_cmd.headers,
-                    attempt=backoff.attempt,
-                    original_schedule_time=backoff.original_schedule_time,
-                )
+        # Reschedule with backoff info, including summary_payload
+        self.commands.append(
+            ScheduleLocalActivityCommand(
+                seq=new_seq,
+                activity_id=original_cmd.activity_id,
+                activity_type=original_cmd.activity_type,
+                args=original_cmd.args,
+                schedule_to_close_timeout=original_cmd.schedule_to_close_timeout,
+                schedule_to_start_timeout=original_cmd.schedule_to_start_timeout,
+                start_to_close_timeout=original_cmd.start_to_close_timeout,
+                retry_policy=original_cmd.retry_policy,
+                local_retry_threshold=original_cmd.local_retry_threshold,
+                cancellation_type=original_cmd.cancellation_type,
+                headers=original_cmd.headers,
+                summary_payload=original_cmd.summary_payload,
+                attempt=backoff.attempt,
+                original_schedule_time=backoff.original_schedule_time,
             )
+        )
+
+        # Transfer stored input to new seq for type-aware resolution
+        old_input = self.activity_inputs.pop(old_seq, None)
+        if old_input is not None:
+            self.activity_inputs[new_seq] = old_input
 
         # Create pending event for the new seq
         event = trio.Event()
