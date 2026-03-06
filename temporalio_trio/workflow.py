@@ -506,8 +506,8 @@ class _Runtime(ABC):
         start_to_close_timeout: timedelta | None = None,
         heartbeat_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
-        activity_id: str | None = None,
         cancellation_type: "ActivityCancellationType" = ActivityCancellationType.TRY_CANCEL,
+        activity_id: str | None = None,
     ) -> Any:
         """Execute an activity and wait for its result.
 
@@ -520,8 +520,8 @@ class _Runtime(ABC):
             start_to_close_timeout: Max time for activity execution.
             heartbeat_timeout: Max time between heartbeats.
             retry_policy: Retry policy for the activity.
-            activity_id: Optional unique identifier for the activity.
             cancellation_type: How an activity cancellation should be handled.
+            activity_id: Optional unique identifier for the activity.
 
         Returns:
             The activity result.
@@ -541,8 +541,8 @@ class _Runtime(ABC):
         start_to_close_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
         local_retry_threshold: timedelta | None = None,
-        activity_id: str | None = None,
         cancellation_type: "ActivityCancellationType" = ActivityCancellationType.TRY_CANCEL,
+        activity_id: str | None = None,
     ) -> Any:
         """Execute a local activity and wait for its result.
 
@@ -559,8 +559,8 @@ class _Runtime(ABC):
             retry_policy: Retry policy for the activity.
             local_retry_threshold: Duration after which retries happen on the server
                 instead of locally. If unset, retries always happen locally.
-            activity_id: Optional unique identifier for the activity.
             cancellation_type: How an activity cancellation should be handled.
+            activity_id: Optional unique identifier for the activity.
 
         Returns:
             The activity result.
@@ -2024,15 +2024,15 @@ def start_activity(
     arg: Any = temporalio.common._arg_unset,
     *,
     args: Sequence[Any] = [],
-    result_type: type | None = None,
     task_queue: str | None = None,
+    result_type: type | None = None,
     schedule_to_close_timeout: timedelta | None = None,
     schedule_to_start_timeout: timedelta | None = None,
     start_to_close_timeout: timedelta | None = None,
     heartbeat_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
-    activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    activity_id: str | None = None,
     versioning_intent: VersioningIntent | None = None,
     summary: str | None = None,
     priority: temporalio.common.Priority = temporalio.common.Priority.default,
@@ -2046,10 +2046,10 @@ def start_activity(
         activity: Activity name or function reference.
         arg: Single argument to the activity.
         args: Multiple arguments to the activity. Cannot be set if arg is.
-        result_type: For string activities, this can set the specific result
-            type hint to deserialize into.
         task_queue: Task queue to run the activity on. Defaults to the current
             workflow's task queue.
+        result_type: For string activities, this can set the specific result
+            type hint to deserialize into.
         schedule_to_close_timeout: Max amount of time the activity can take from
             first being scheduled to being completed. This is inclusive of all
             retries.
@@ -2100,15 +2100,15 @@ async def execute_activity(
     arg: Any = temporalio.common._arg_unset,
     *,
     args: Sequence[Any] = [],
-    result_type: type | None = None,
     task_queue: str | None = None,
+    result_type: type | None = None,
     schedule_to_close_timeout: timedelta | None = None,
     schedule_to_start_timeout: timedelta | None = None,
     start_to_close_timeout: timedelta | None = None,
     heartbeat_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
-    activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    activity_id: str | None = None,
     versioning_intent: VersioningIntent | None = None,
     summary: str | None = None,
     priority: temporalio.common.Priority = temporalio.common.Priority.default,
@@ -2148,8 +2148,8 @@ def start_local_activity(
     start_to_close_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
     local_retry_threshold: timedelta | None = None,
-    activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    activity_id: str | None = None,
     summary: str | None = None,
 ) -> ActivityHandle[Any]:
     """Start a local activity and return its handle.
@@ -2175,11 +2175,11 @@ def start_local_activity(
             retries.
         local_retry_threshold: Duration after which retries happen on the server
             instead of locally.
+        cancellation_type: How the activity is treated when it is cancelled from
+            the workflow.
         activity_id: Optional unique identifier for the activity. This is an
             advanced setting that should not be set unless users are sure they
             need to. Contact Temporal before setting this value.
-        cancellation_type: How the activity is treated when it is cancelled from
-            the workflow.
 
     Returns:
         An activity handle that can be awaited for the result.
@@ -2210,8 +2210,8 @@ async def execute_local_activity(
     start_to_close_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
     local_retry_threshold: timedelta | None = None,
-    activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    activity_id: str | None = None,
     summary: str | None = None,
 ) -> Any:
     """Start a local activity and wait for completion.
@@ -2244,15 +2244,15 @@ def start_activity_class(
     arg: Any = temporalio.common._arg_unset,
     *,
     args: Sequence[Any] = [],
-    result_type: type | None = None,
     task_queue: str | None = None,
+    result_type: type | None = None,
     schedule_to_close_timeout: timedelta | None = None,
     schedule_to_start_timeout: timedelta | None = None,
     start_to_close_timeout: timedelta | None = None,
     heartbeat_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
-    activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    activity_id: str | None = None,
     versioning_intent: VersioningIntent | None = None,
     summary: str | None = None,
     priority: temporalio.common.Priority = temporalio.common.Priority.default,
@@ -2285,15 +2285,15 @@ async def execute_activity_class(
     arg: Any = temporalio.common._arg_unset,
     *,
     args: Sequence[Any] = [],
-    result_type: type | None = None,
     task_queue: str | None = None,
+    result_type: type | None = None,
     schedule_to_close_timeout: timedelta | None = None,
     schedule_to_start_timeout: timedelta | None = None,
     start_to_close_timeout: timedelta | None = None,
     heartbeat_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
-    activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    activity_id: str | None = None,
     versioning_intent: VersioningIntent | None = None,
     summary: str | None = None,
     priority: temporalio.common.Priority = temporalio.common.Priority.default,
@@ -2326,15 +2326,15 @@ def start_activity_method(
     arg: Any = temporalio.common._arg_unset,
     *,
     args: Sequence[Any] = [],
-    result_type: type | None = None,
     task_queue: str | None = None,
+    result_type: type | None = None,
     schedule_to_close_timeout: timedelta | None = None,
     schedule_to_start_timeout: timedelta | None = None,
     start_to_close_timeout: timedelta | None = None,
     heartbeat_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
-    activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    activity_id: str | None = None,
     versioning_intent: VersioningIntent | None = None,
     summary: str | None = None,
     priority: temporalio.common.Priority = temporalio.common.Priority.default,
@@ -2367,15 +2367,15 @@ async def execute_activity_method(
     arg: Any = temporalio.common._arg_unset,
     *,
     args: Sequence[Any] = [],
-    result_type: type | None = None,
     task_queue: str | None = None,
+    result_type: type | None = None,
     schedule_to_close_timeout: timedelta | None = None,
     schedule_to_start_timeout: timedelta | None = None,
     start_to_close_timeout: timedelta | None = None,
     heartbeat_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
-    activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    activity_id: str | None = None,
     versioning_intent: VersioningIntent | None = None,
     summary: str | None = None,
     priority: temporalio.common.Priority = temporalio.common.Priority.default,
@@ -2414,8 +2414,8 @@ def start_local_activity_class(
     start_to_close_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
     local_retry_threshold: timedelta | None = None,
-    activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    activity_id: str | None = None,
     summary: str | None = None,
 ) -> ActivityHandle[Any]:
     """Start a class-based local activity and return its handle.
@@ -2449,8 +2449,8 @@ async def execute_local_activity_class(
     start_to_close_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
     local_retry_threshold: timedelta | None = None,
-    activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    activity_id: str | None = None,
     summary: str | None = None,
 ) -> Any:
     """Start a class-based local activity and wait for completion.
@@ -2484,8 +2484,8 @@ def start_local_activity_method(
     start_to_close_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
     local_retry_threshold: timedelta | None = None,
-    activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    activity_id: str | None = None,
     summary: str | None = None,
 ) -> ActivityHandle[Any]:
     """Start a method-based local activity and return its handle.
@@ -2519,8 +2519,8 @@ async def execute_local_activity_method(
     start_to_close_timeout: timedelta | None = None,
     retry_policy: temporalio.common.RetryPolicy | None = None,
     local_retry_threshold: timedelta | None = None,
-    activity_id: str | None = None,
     cancellation_type: ActivityCancellationType = ActivityCancellationType.TRY_CANCEL,
+    activity_id: str | None = None,
     summary: str | None = None,
 ) -> Any:
     """Start a method-based local activity and wait for completion.
