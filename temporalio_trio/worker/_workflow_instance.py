@@ -1086,8 +1086,8 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         start_to_close_timeout: timedelta | None = None,
         heartbeat_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
-        activity_id: str | None = None,
         cancellation_type: int = 0,
+        activity_id: str | None = None,
     ) -> Any:
         """Execute an activity and wait for its result.
 
@@ -1104,6 +1104,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             start_to_close_timeout: Max time for activity execution.
             heartbeat_timeout: Max time between heartbeats.
             retry_policy: Retry policy for the activity.
+            cancellation_type: How an activity cancellation should be handled.
             activity_id: Optional unique identifier for the activity.
 
         Returns:
@@ -1180,8 +1181,8 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
         start_to_close_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
         local_retry_threshold: timedelta | None = None,
-        activity_id: str | None = None,
         cancellation_type: int = 0,
+        activity_id: str | None = None,
     ) -> Any:
         """Execute a local activity and wait for its result.
 
@@ -1197,6 +1198,7 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
             start_to_close_timeout: Max time for activity execution.
             retry_policy: Retry policy for the activity.
             local_retry_threshold: Duration after which retries use the server.
+            cancellation_type: How an activity cancellation should be handled.
             activity_id: Optional unique identifier for the activity.
 
         Returns:

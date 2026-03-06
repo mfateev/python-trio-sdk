@@ -1364,8 +1364,8 @@ class WorkflowRuntime:
         activity: str,
         args: tuple[Any, ...] = (),
         *,
-        activity_id: str | None = None,
         task_queue: str | None = None,
+        activity_id: str | None = None,
         schedule_to_close_timeout: timedelta | None = None,
         schedule_to_start_timeout: timedelta | None = None,
         start_to_close_timeout: timedelta | None = None,
@@ -1461,13 +1461,13 @@ class WorkflowRuntime:
         activity: str,
         args: tuple[Any, ...] = (),
         *,
-        activity_id: str | None = None,
         schedule_to_close_timeout: timedelta | None = None,
         schedule_to_start_timeout: timedelta | None = None,
         start_to_close_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
         local_retry_threshold: timedelta | None = None,
         cancellation_type: int = 0,
+        activity_id: str | None = None,
     ) -> Any:
         """Execute a local activity using event-based suspension.
 
@@ -1556,8 +1556,8 @@ class WorkflowRuntime:
         start_to_close_timeout: timedelta | None = None,
         heartbeat_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
-        activity_id: str | None = None,
         cancellation_type: "ActivityCancellationType" = ActivityCancellationType.TRY_CANCEL,
+        activity_id: str | None = None,
         versioning_intent: "VersioningIntent | None" = None,
         summary: str | None = None,
         priority: temporalio.common.Priority = temporalio.common.Priority.default,
@@ -1696,8 +1696,8 @@ class WorkflowRuntime:
         start_to_close_timeout: timedelta | None = None,
         retry_policy: temporalio.common.RetryPolicy | None = None,
         local_retry_threshold: timedelta | None = None,
-        activity_id: str | None = None,
         cancellation_type: "ActivityCancellationType" = ActivityCancellationType.TRY_CANCEL,
+        activity_id: str | None = None,
         summary: str | None = None,
     ) -> "ActivityHandle[Any]":
         """Start a local activity and return an ActivityHandle without waiting.
