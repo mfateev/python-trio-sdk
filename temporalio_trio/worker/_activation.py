@@ -419,26 +419,28 @@ class ActivityResolvedJob:
     """Job indicating an activity has completed (success, failure, or backoff).
 
     This job is sent when a previously scheduled activity finishes execution.
-    The workflow can then access the result, handle the failure, or reschedule
-    with backoff (local activities only).
+    It carries raw protobuf data so that the workflow runtime can deserialize
+    using type-aware and context-aware converters (matching sdk-python).
 
     Attributes:
         seq: Sequence number matching ScheduleActivityCommand.
-        result: Activity result value (if successful).
-        failure: Exception if activity failed (mutually exclusive with result).
-        backoff: Backoff proto if the local activity needs to be retried after
-            a delay. Contains attempt number, backoff duration, and original
-            schedule time.
+        status: Resolution status string ("completed", "failed", "cancelled", "backoff").
+        result_payload: Raw result payload proto (if completed successfully).
+        failure_proto: Raw failure proto (if failed or cancelled).
+        backoff: DoBackoff proto for local activity retry (if backoff).
     """
 
     seq: int
     """Sequence number matching the ScheduleActivityCommand."""
 
-    result: Any | None = None
-    """Activity result value (if successful)."""
+    status: str
+    """Resolution status: 'completed', 'failed', 'cancelled', or 'backoff'."""
 
-    failure: BaseException | None = None
-    """Exception if activity failed."""
+    result_payload: Any | None = None
+    """Raw result payload proto (if completed successfully)."""
+
+    failure_proto: Any | None = None
+    """Raw Failure proto (if failed or cancelled)."""
 
     backoff: Any | None = None
     """DoBackoff proto for local activity retry (None if not a backoff)."""

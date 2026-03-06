@@ -48,6 +48,35 @@ def _to_payload(value: Any) -> Any:
     )[0]
 
 
+def _activity_resolved(
+    seq: int,
+    result: Any = None,
+    failure: BaseException | None = None,
+    backoff: Any | None = None,
+) -> ActivityResolvedJob:
+    """Create an ActivityResolvedJob with properly encoded data for tests."""
+    if backoff is not None:
+        return ActivityResolvedJob(seq=seq, status="backoff", backoff=backoff)
+    elif failure is not None:
+        # Convert exception to protobuf Failure
+        import temporalio.api.failure.v1
+
+        failure_converter = temporalio.converter.DataConverter.default.failure_converter
+        payload_converter = (
+            temporalio.converter.DataConverter.default.payload_converter
+        )
+        failure_proto = temporalio.api.failure.v1.Failure()
+        failure_converter.to_failure(failure, payload_converter, failure_proto)
+        return ActivityResolvedJob(
+            seq=seq, status="failed", failure_proto=failure_proto
+        )
+    else:
+        result_payload = _to_payload(result) if result is not None else None
+        return ActivityResolvedJob(
+            seq=seq, status="completed", result_payload=result_payload
+        )
+
+
 # =============================================================================
 # Test Workflows
 # =============================================================================
@@ -821,7 +850,7 @@ class TestSingleThreadWorkerActivityExecution:
 
             # Deliver activity resolved activation
             activity_activation = _create_activation(
-                jobs=[ActivityResolvedJob(seq=1, result="activity completed!")],
+                jobs=[_activity_resolved(seq=1, result="activity completed!")],
                 timestamp_ns=2_000_000_000,
                 run_id="run-activity",
             )
@@ -868,7 +897,7 @@ class TestSingleThreadWorkerActivityExecution:
 
             # Complete the activity
             activity_activation = _create_activation(
-                jobs=[ActivityResolvedJob(seq=1, result="woken up!")],
+                jobs=[_activity_resolved(seq=1, result="woken up!")],
                 timestamp_ns=2_000_000_000,
                 run_id="run-wake",
             )
@@ -907,7 +936,7 @@ class TestSingleThreadWorkerActivityExecution:
 
             # Complete first activity
             activity1_activation = _create_activation(
-                jobs=[ActivityResolvedJob(seq=1, result="result1")],
+                jobs=[_activity_resolved(seq=1, result="result1")],
                 timestamp_ns=2_000_000_000,
                 run_id="run-multi-activity",
             )
@@ -917,7 +946,7 @@ class TestSingleThreadWorkerActivityExecution:
 
             # Complete second activity
             activity2_activation = _create_activation(
-                jobs=[ActivityResolvedJob(seq=2, result="result2")],
+                jobs=[_activity_resolved(seq=2, result="result2")],
                 timestamp_ns=3_000_000_000,
                 run_id="run-multi-activity",
             )
@@ -959,7 +988,7 @@ class TestSingleThreadWorkerActivityExecution:
             # Fail the activity
             activity_activation = _create_activation(
                 jobs=[
-                    ActivityResolvedJob(seq=1, failure=RuntimeError("Activity failed!"))
+                    _activity_resolved(seq=1, failure=RuntimeError("Activity failed!"))
                 ],
                 timestamp_ns=2_000_000_000,
                 run_id="run-fail",
@@ -1000,7 +1029,7 @@ class TestSingleThreadWorkerActivityExecution:
 
             # Complete the activity
             activity_activation = _create_activation(
-                jobs=[ActivityResolvedJob(seq=1, result="activity done")],
+                jobs=[_activity_resolved(seq=1, result="activity done")],
                 timestamp_ns=2_000_000_000,
                 run_id="run-combined",
             )
@@ -1844,7 +1873,7 @@ class TestSingleThreadWorkerChildWorkflowExecution:
             # Now workflow should be waiting for activity
             # Complete the activity
             activity_activation = _create_activation(
-                jobs=[ActivityResolvedJob(seq=1, result="activity done")],
+                jobs=[_activity_resolved(seq=1, result="activity done")],
                 timestamp_ns=3_000_000_000,
                 run_id="run-combined",
             )
@@ -2636,7 +2665,7 @@ class TestSingleThreadWorkerEviction:
                     WorkflowStartedJob(
                         workflow_type="ActivityWorkflow", args=("my_activity",)
                     ),
-                    ActivityResolvedJob(seq=1, result="activity done!"),
+                    _activity_resolved(seq=1, result="activity done!"),
                 ],
                 timestamp_ns=3_000_000_000,
                 run_id=run_id,

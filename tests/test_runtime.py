@@ -22,6 +22,7 @@ import random
 from datetime import timedelta
 
 import pytest
+import temporalio.api.failure.v1
 import temporalio.converter
 import trio
 
@@ -38,6 +39,37 @@ from temporalio_trio.worker._runtime import (
     reset_current_runtime,
     set_current_runtime,
 )
+from temporalio_trio.worker._activation import ActivityResolvedJob
+
+
+def _activity_resolved_job(
+    seq: int,
+    result: object = None,
+    error: BaseException | None = None,
+    backoff: object = None,
+) -> ActivityResolvedJob:
+    """Create an ActivityResolvedJob with properly encoded data for tests."""
+    if backoff is not None:
+        return ActivityResolvedJob(seq=seq, status="backoff", backoff=backoff)
+    elif error is not None:
+        failure_converter = temporalio.converter.DataConverter.default.failure_converter
+        payload_converter = (
+            temporalio.converter.DataConverter.default.payload_converter
+        )
+        failure_proto = temporalio.api.failure.v1.Failure()
+        failure_converter.to_failure(error, payload_converter, failure_proto)
+        return ActivityResolvedJob(
+            seq=seq, status="failed", failure_proto=failure_proto
+        )
+    else:
+        result_payload = None
+        if result is not None:
+            result_payload = temporalio.converter.DataConverter.default.payload_converter.to_payloads(
+                [result]
+            )[0]
+        return ActivityResolvedJob(
+            seq=seq, status="completed", result_payload=result_payload
+        )
 
 
 def _create_test_runtime(
@@ -947,7 +979,7 @@ class TestExecuteActivity:
 
         async def complete_activity() -> None:
             await trio.testing.wait_all_tasks_blocked()
-            runtime.apply_activity_resolved(1, result="activity result")
+            runtime.apply_activity_resolved(_activity_resolved_job(1, result="activity result"))
 
         async with trio.open_nursery() as nursery:
             nursery.start_soon(activity_task)
@@ -982,7 +1014,7 @@ class TestExecuteActivity:
             assert not runtime.pending_activities[1].is_set()
 
             # Complete the activity
-            runtime.apply_activity_resolved(1, result="done")
+            runtime.apply_activity_resolved(_activity_resolved_job(1, result="done"))
 
             await trio.testing.wait_all_tasks_blocked()
 
@@ -1002,7 +1034,7 @@ class TestExecuteActivity:
         async with trio.open_nursery() as nursery:
             nursery.start_soon(activity_task)
             await trio.testing.wait_all_tasks_blocked()
-            runtime.apply_activity_resolved(1, result="the result value")
+            runtime.apply_activity_resolved(_activity_resolved_job(1, result="the result value"))
 
         assert result_holder == ["the result value"]
 
@@ -1023,7 +1055,7 @@ class TestExecuteActivity:
 
         async def complete_activity() -> None:
             await trio.testing.wait_all_tasks_blocked()
-            runtime.apply_activity_resolved(1, result="done")
+            runtime.apply_activity_resolved(_activity_resolved_job(1, result="done"))
 
         async with trio.open_nursery() as nursery:
             nursery.start_soon(activity_task)
@@ -1051,7 +1083,7 @@ class TestExecuteActivity:
 
         async def complete_activity() -> None:
             await trio.testing.wait_all_tasks_blocked()
-            runtime.apply_activity_resolved(1, result="done")
+            runtime.apply_activity_resolved(_activity_resolved_job(1, result="done"))
 
         async with trio.open_nursery() as nursery:
             nursery.start_soon(activity_task)
@@ -1075,7 +1107,7 @@ class TestExecuteActivity:
 
         async def complete_activity() -> None:
             await trio.testing.wait_all_tasks_blocked()
-            runtime.apply_activity_resolved(1, result="done")
+            runtime.apply_activity_resolved(_activity_resolved_job(1, result="done"))
 
         async with trio.open_nursery() as nursery:
             nursery.start_soon(activity_task)
@@ -1093,7 +1125,7 @@ class TestApplyActivityResolved:
         """Test apply_activity_resolved stores the result."""
         runtime = _create_test_runtime()
 
-        runtime.apply_activity_resolved(1, result="my result")
+        runtime.apply_activity_resolved(_activity_resolved_job(1, result="my result"))
 
         assert runtime.completed_activities[1] == "my result"
 
@@ -1102,9 +1134,11 @@ class TestApplyActivityResolved:
         runtime = _create_test_runtime()
         error = ValueError("activity failed")
 
-        runtime.apply_activity_resolved(1, error=error)
+        runtime.apply_activity_resolved(_activity_resolved_job(1, error=error))
 
-        assert runtime.completed_activities[1] is error
+        stored = runtime.completed_activities[1]
+        assert isinstance(stored, BaseException)
+        assert "activity failed" in str(stored)
 
     @pytest.mark.trio
     async def test_apply_activity_resolved_wakes_up_workflow(self) -> None:
@@ -1124,7 +1158,7 @@ class TestApplyActivityResolved:
             assert 1 in runtime.pending_activities
 
             # Complete the activity
-            runtime.apply_activity_resolved(1, result="wake up!")
+            runtime.apply_activity_resolved(_activity_resolved_job(1, result="wake up!"))
 
         # Workflow should have woken with correct result
         assert results == ["wake up!"]
@@ -1138,7 +1172,7 @@ class TestApplyActivityResolved:
 
         assert not event.is_set()
 
-        runtime.apply_activity_resolved(1, result="done")
+        runtime.apply_activity_resolved(_activity_resolved_job(1, result="done"))
 
         assert event.is_set()
         assert runtime.completed_activities[1] == "done"
@@ -1151,7 +1185,7 @@ class TestApplyActivityResolved:
         assert 1 not in runtime.pending_activities
 
         # Should not raise, just store the result
-        runtime.apply_activity_resolved(1, result="replayed result")
+        runtime.apply_activity_resolved(_activity_resolved_job(1, result="replayed result"))
 
         assert runtime.completed_activities[1] == "replayed result"
 
@@ -1178,10 +1212,10 @@ class TestActivityFailure:
 
             # Fail the activity
             error = ValueError("Activity failed with error")
-            runtime.apply_activity_resolved(1, error=error)
+            runtime.apply_activity_resolved(_activity_resolved_job(1, error=error))
 
-        assert caught_exception is error
-        assert str(caught_exception) == "Activity failed with error"
+        assert caught_exception is not None
+        assert "Activity failed with error" in str(caught_exception)
 
     @pytest.mark.trio
     async def test_activity_failure_cleans_up_pending(self) -> None:
@@ -1202,7 +1236,7 @@ class TestActivityFailure:
             assert 1 in runtime.pending_activities
 
             # Fail the activity
-            runtime.apply_activity_resolved(1, error=RuntimeError("failed"))
+            runtime.apply_activity_resolved(_activity_resolved_job(1, error=RuntimeError("failed")))
 
         # After completion, pending activity should be cleaned up
         assert 1 not in runtime.pending_activities
@@ -1312,12 +1346,12 @@ class TestConcurrentActivities:
             assert 2 in runtime.pending_activities
 
             # Complete activity 1 first
-            runtime.apply_activity_resolved(1, result="result_1")
+            runtime.apply_activity_resolved(_activity_resolved_job(1, result="result_1"))
 
             await trio.testing.wait_all_tasks_blocked()
 
             # Complete activity 2
-            runtime.apply_activity_resolved(2, result="result_2")
+            runtime.apply_activity_resolved(_activity_resolved_job(2, result="result_2"))
 
         async with trio.open_nursery() as nursery:
             nursery.start_soon(activity_and_record, "activity_a")
@@ -1354,12 +1388,12 @@ class TestConcurrentActivities:
             assert 2 in runtime.pending_activities
 
             # Complete first activity with success
-            runtime.apply_activity_resolved(1, result="success!")
+            runtime.apply_activity_resolved(_activity_resolved_job(1, result="success!"))
 
             await trio.testing.wait_all_tasks_blocked()
 
             # Complete second activity with failure
-            runtime.apply_activity_resolved(2, error=RuntimeError("failed!"))
+            runtime.apply_activity_resolved(_activity_resolved_job(2, error=RuntimeError("failed!")))
 
         async with trio.open_nursery() as nursery:
             nursery.start_soon(activity_task, "activity_1", True)
@@ -1370,7 +1404,7 @@ class TestConcurrentActivities:
         assert len(results) == 1
         assert results[0] == "success!"
         assert len(errors) == 1
-        assert str(errors[0]) == "failed!"
+        assert "failed!" in str(errors[0])
 
 
 class TestScheduleActivityCommand:
@@ -2171,7 +2205,7 @@ class TestConcurrentChildWorkflows:
         assert len(results) == 1
         assert results[0] == "success!"
         assert len(errors) == 1
-        assert str(errors[0]) == "failed!"
+        assert "failed!" in str(errors[0])
 
 
 class TestStartChildWorkflowCommand:
@@ -2390,7 +2424,7 @@ class TestExecuteActivityCancellation:
             runtime.cancel_requested = True
 
             # Complete the activity to wake up the workflow
-            runtime.apply_activity_resolved(1, result="done")
+            runtime.apply_activity_resolved(_activity_resolved_job(1, result="done"))
 
         assert cancelled_error_raised is True
 
@@ -2412,7 +2446,7 @@ class TestExecuteActivityCancellation:
             await trio.testing.wait_all_tasks_blocked()
 
             # Complete the activity without cancellation
-            runtime.apply_activity_resolved(1, result="activity result")
+            runtime.apply_activity_resolved(_activity_resolved_job(1, result="activity result"))
 
         assert activity_completed is True
         assert result_holder == ["activity result"]

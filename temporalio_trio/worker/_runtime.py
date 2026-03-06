@@ -299,6 +299,9 @@ class WorkflowRuntime:
     pending_activities: dict[int, trio.Event] = field(default_factory=dict)
     """Activities waiting to complete: seq -> trio.Event."""
 
+    activity_inputs: dict[int, Any] = field(default_factory=dict)
+    """Stored activity inputs by seq for type-aware resolution: seq -> StartActivityInput|StartLocalActivityInput."""
+
     pending_child_starts: dict[int, trio.Event] = field(default_factory=dict)
     """Child workflows waiting to start: seq -> trio.Event."""
 
@@ -1660,6 +1663,9 @@ class WorkflowRuntime:
         # Generate activity_id if not provided
         actual_activity_id = input.activity_id if input.activity_id else str(seq)
 
+        # Store input for type-aware resolution later (matching sdk-python)
+        self.activity_inputs[seq] = input
+
         # Emit command
         self.commands.append(
             ScheduleActivityCommand(
@@ -1788,6 +1794,9 @@ class WorkflowRuntime:
 
         # Generate activity_id if not provided
         actual_activity_id = input.activity_id if input.activity_id else str(seq)
+
+        # Store input for type-aware resolution later (matching sdk-python)
+        self.activity_inputs[seq] = input
 
         # Emit command
         self.commands.append(
@@ -1940,30 +1949,105 @@ class WorkflowRuntime:
 
     def apply_activity_resolved(
         self,
-        seq: int,
-        result: Any = None,
-        error: BaseException | None = None,
-        backoff: Any | None = None,
+        job: "ActivityResolvedJob",
     ) -> None:
         """Handle an activity resolution job from an activation.
 
         This is called when the activation contains an ActivityResolved job.
-        It stores the result (or error or backoff) and wakes up any suspended
-        workflow that was waiting for this activity.
+        It deserializes the result using type-aware and context-aware converters
+        (matching sdk-python's _apply_resolve_activity pattern), then stores
+        the result and wakes up any suspended workflow.
 
         Args:
-            seq: The activity sequence number that completed.
-            result: The activity result (if successful).
-            error: The exception (if the activity failed).
-            backoff: DoBackoff proto for local activity retry (if backoff).
+            job: The ActivityResolvedJob with raw protobuf data.
         """
-        # Store result, error, or backoff sentinel
-        if backoff is not None:
-            self.completed_activities[seq] = _ActivityBackoff(backoff=backoff)
-        elif error is not None:
-            self.completed_activities[seq] = error
-        else:
+        from temporalio_trio.worker._activation import ActivityResolvedJob
+        from temporalio_trio.worker._failure_converter import failure_to_exception
+        from temporalio_trio.worker._interceptor import StartLocalActivityInput
+
+        seq = job.seq
+
+        if job.status == "backoff":
+            self.completed_activities[seq] = _ActivityBackoff(backoff=job.backoff)
+        elif job.status == "completed":
+            # Deserialize result with type-aware, context-aware converter
+            result = None
+            if job.result_payload is not None:
+                # Get stored input for type hints and context
+                activity_input = self.activity_inputs.get(seq)
+                if activity_input is not None:
+                    is_local = isinstance(activity_input, StartLocalActivityInput)
+                    activity_context = temporalio.converter.ActivitySerializationContext(
+                        namespace=self.namespace,
+                        workflow_id=self.workflow_id,
+                        workflow_type=self.workflow_type,
+                        activity_type=activity_input.activity,
+                        activity_id=activity_input.activity_id,
+                        activity_task_queue=(
+                            activity_input.task_queue
+                            if hasattr(activity_input, "task_queue")
+                            and activity_input.task_queue
+                            else self.task_queue
+                        ),
+                        is_local=is_local,
+                    )
+                    converter = self._payload_converter_with_context(activity_context)
+                    # Use ret_type for type-aware deserialization
+                    ret_types = (
+                        [activity_input.ret_type] if activity_input.ret_type else None
+                    )
+                    if ret_types:
+                        results = converter.from_payloads(
+                            [job.result_payload], type_hints=ret_types
+                        )
+                        result = results[0] if results else None
+                    else:
+                        result = converter.from_payload(job.result_payload)
+                else:
+                    # Fallback: no stored input (shouldn't happen normally)
+                    result = self.payload_converter.from_payload(job.result_payload)
             self.completed_activities[seq] = result
+        else:
+            # Failed, cancelled, or unknown
+            if job.failure_proto is not None:
+                # Get stored input for context-aware failure conversion
+                activity_input = self.activity_inputs.get(seq)
+                if activity_input is not None:
+                    is_local = isinstance(activity_input, StartLocalActivityInput)
+                    activity_context = temporalio.converter.ActivitySerializationContext(
+                        namespace=self.namespace,
+                        workflow_id=self.workflow_id,
+                        workflow_type=self.workflow_type,
+                        activity_type=activity_input.activity,
+                        activity_id=activity_input.activity_id,
+                        activity_task_queue=(
+                            activity_input.task_queue
+                            if hasattr(activity_input, "task_queue")
+                            and activity_input.task_queue
+                            else self.task_queue
+                        ),
+                        is_local=is_local,
+                    )
+                    failure_conv = self._failure_converter_with_context(
+                        activity_context
+                    )
+                    payload_conv = self._payload_converter_with_context(
+                        activity_context
+                    )
+                    error = failure_conv.from_failure(job.failure_proto, payload_conv)
+                else:
+                    # Fallback: no stored input
+                    error = failure_to_exception(
+                        job.failure_proto, self.payload_converter
+                    )
+            else:
+                error = RuntimeError(
+                    f"Unknown activity resolution status: {job.status}"
+                )
+            self.completed_activities[seq] = error
+
+        # Clean up stored input
+        self.activity_inputs.pop(seq, None)
 
         # Wake up the suspended workflow if waiting
         if seq in self.pending_activities:

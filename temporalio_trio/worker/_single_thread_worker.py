@@ -841,12 +841,7 @@ class SingleThreadWorker:
             if isinstance(job, TimerFiredJob):
                 runtime.apply_timer_fired(job.timer_id, activation.timestamp_ns)
             elif isinstance(job, ActivityResolvedJob):
-                runtime.apply_activity_resolved(
-                    seq=job.seq,
-                    result=job.result,
-                    error=job.failure,
-                    backoff=job.backoff,
-                )
+                runtime.apply_activity_resolved(job)
             elif isinstance(job, SignalWorkflowJob):
                 self._apply_signal(runtime, job)
             elif isinstance(job, QueryWorkflowJob):
