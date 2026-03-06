@@ -393,58 +393,62 @@ def _convert_resolve_activity(
 ) -> ActivityResolvedJob:
     """Convert ResolveActivity to ActivityResolvedJob.
 
+    This passes raw protobuf data through so that the workflow runtime can
+    deserialize using type-aware and context-aware converters (matching
+    sdk-python's approach where deserialization happens in
+    _apply_resolve_activity with access to the stored activity input).
+
     Args:
         resolve: Bridge ResolveActivity job
-        data_converter: Data converter for deserializing result payload
+        data_converter: Data converter (unused - deserialization deferred to runtime)
 
     Returns:
-        POC ActivityResolvedJob with result or failure.
-        Failures are converted to proper exception types (ActivityError, etc.)
-        using the failure converter.
+        ActivityResolvedJob with raw protobuf data for deferred deserialization.
     """
     seq = resolve.seq
-    result = None
-    failure = None
 
     # Get the activity resolution
     resolution = resolve.result
     status = resolution.WhichOneof("status")
 
     if status == "completed":
-        # Activity completed successfully - decode result
+        # Pass raw result payload for type-aware deserialization later
+        result_payload = None
         if resolution.completed.result.ByteSize() > 0:
-            result = data_converter.payload_converter.from_payload(
-                resolution.completed.result
-            )
-    elif status == "failed":
-        # Activity failed - convert to proper exception type
-        # The failure converter produces ActivityError with __cause__ set to
-        # the underlying exception (e.g., ApplicationError)
-        failure = failure_to_exception(
-            resolution.failed.failure,
-            data_converter.payload_converter,
-        )
-    elif status == "cancelled":
-        # Activity was cancelled - convert to proper exception type
-        failure = failure_to_exception(
-            resolution.cancelled.failure,
-            data_converter.payload_converter,
-        )
-    elif status == "backoff":
-        # Local activity needs to retry after backoff - preserve the backoff
-        # proto so the SDK can sleep then reschedule with attempt info
+            result_payload = resolution.completed.result
         return ActivityResolvedJob(
             seq=seq,
+            status="completed",
+            result_payload=result_payload,
+        )
+    elif status == "failed":
+        # Pass raw failure proto for context-aware conversion later
+        return ActivityResolvedJob(
+            seq=seq,
+            status="failed",
+            failure_proto=resolution.failed.failure,
+        )
+    elif status == "cancelled":
+        # Pass raw failure proto for context-aware conversion later
+        return ActivityResolvedJob(
+            seq=seq,
+            status="cancelled",
+            failure_proto=resolution.cancelled.failure,
+        )
+    elif status == "backoff":
+        # Local activity needs to retry after backoff
+        return ActivityResolvedJob(
+            seq=seq,
+            status="backoff",
             backoff=resolution.backoff,
         )
     else:
-        failure = RuntimeError(f"Unknown activity resolution status: {status}")
-
-    return ActivityResolvedJob(
-        seq=seq,
-        result=result,
-        failure=failure,
-    )
+        # Unknown status - create a failure directly
+        return ActivityResolvedJob(
+            seq=seq,
+            status="unknown",
+            failure_proto=None,
+        )
 
 
 def _convert_resolve_child_workflow_start(

@@ -526,13 +526,36 @@ class TrioWorkflowInstance(WorkflowInstance, _Runtime):
                 # Note: backoff is stored as a RuntimeError here for the legacy
                 # code path; the primary path (SingleThreadWorker) handles
                 # backoff properly via _ActivityBackoff sentinel.
-                if job.backoff is not None:
+                if job.status == "backoff":
                     self._resolved_activities[job.seq] = (
                         None,
                         RuntimeError("Activity scheduled for retry (backoff)"),
                     )
+                elif job.status == "completed":
+                    # Deserialize result payload (legacy path uses default converter)
+                    result = None
+                    if job.result_payload is not None:
+                        result = temporalio.converter.DataConverter.default.payload_converter.from_payload(
+                            job.result_payload
+                        )
+                    self._resolved_activities[job.seq] = (result, None)
                 else:
-                    self._resolved_activities[job.seq] = (job.result, job.failure)
+                    # Failed, cancelled, or unknown
+                    failure = None
+                    if job.failure_proto is not None:
+                        from temporalio_trio.worker._failure_converter import (
+                            failure_to_exception,
+                        )
+
+                        failure = failure_to_exception(
+                            job.failure_proto,
+                            temporalio.converter.DataConverter.default.payload_converter,
+                        )
+                    else:
+                        failure = RuntimeError(
+                            f"Unknown activity resolution status: {job.status}"
+                        )
+                    self._resolved_activities[job.seq] = (None, failure)
                 if self._pending_activity_seq == job.seq:
                     self._pending_activity_seq = None
                 # Set event to wake workflow (guest mode)
