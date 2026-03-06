@@ -300,10 +300,10 @@ class StartLocalActivityInput:
     local_retry_threshold: Optional[timedelta]
     cancellation_type: temporalio_trio.workflow.ActivityCancellationType
     headers: Mapping[str, temporalio.api.common.v1.Payload]
-    summary: Optional[str] = None
+    summary: Optional[str]
     # The types may be absent
-    arg_types: Optional[List[Type]] = None
-    ret_type: Optional[Type] = None
+    arg_types: Optional[List[Type]]
+    ret_type: Optional[Type]
 
 
 class WorkflowInboundInterceptor:

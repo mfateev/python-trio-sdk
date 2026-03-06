@@ -203,12 +203,16 @@ class ActivityHandle(Generic[ReturnType]):
     def cancel(self, msg: Any | None = None) -> bool:
         """Request cancellation of the activity.
 
+        Only sends a cancel command if the activity has not already completed
+        (matching sdk-python's behavior).
+
         Args:
             msg: Optional cancellation message (for API compatibility with
                 sdk-python's asyncio.Task-based ActivityHandle).
 
         Returns:
-            True if the cancellation request was sent.
+            True if the cancellation request was sent, False if activity is
+            already done.
         """
         from temporalio_trio.worker._activation import (
             RequestCancelActivityCommand,
@@ -218,6 +222,11 @@ class ActivityHandle(Generic[ReturnType]):
         runtime = _Runtime.current()
         rt = runtime._workflow_runtime()
         rt._assert_not_read_only("cancel activity handle")
+
+        # Don't send cancel command if activity is already completed
+        if self._seq in rt.completed_activities:
+            return False
+
         if self._is_local:
             rt.commands.append(RequestCancelLocalActivityCommand(seq=self._seq))
         else:
